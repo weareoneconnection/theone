@@ -1,0 +1,104 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model TheOneRun {
+  id                       String            @id
+  ok                       Boolean
+  mode                     String
+  intentType               String
+  objective                String
+  planJson                 String
+  resultJson               String
+  pendingOneClawTaskJson   String?
+  createdAt                DateTime          @default(now())
+  updatedAt                DateTime          @updatedAt
+
+  approvals                TheOneApproval[]
+  executions               TheOneExecution[]
+  proof                    TheOneProof[]
+  memories                 TheOneMemory[]
+
+  @@index([createdAt])
+  @@index([intentType])
+}
+
+model TheOneApproval {
+  id         String    @id
+  runId      String
+  stepId     String
+  action     String
+  risk       String
+  required   Boolean
+  status     String
+  mode       String
+  reason     String
+  gateJson   String
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  run        TheOneRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([status])
+  @@index([action])
+}
+
+model TheOneExecution {
+  id          String    @id
+  runId       String
+  provider    String
+  status      String
+  summary     String
+  externalId  String?
+  taskName    String?
+  rawJson     String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  run         TheOneRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([provider])
+  @@index([status])
+  @@index([externalId])
+}
+
+model TheOneProof {
+  id           String    @id @default(cuid())
+  runId        String
+  type         String
+  title        String
+  value        String?
+  metadataJson String?
+  timestamp    DateTime
+  createdAt    DateTime  @default(now())
+
+  run          TheOneRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([type])
+  @@index([timestamp])
+}
+
+model TheOneMemory {
+  id          String     @id @default(cuid())
+  runId       String?
+  kind        String
+  title       String
+  summary     String
+  contentJson String?
+  createdAt   DateTime   @default(now())
+
+  run         TheOneRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+
+  @@index([runId])
+  @@index([kind])
+  @@index([createdAt])
+}
