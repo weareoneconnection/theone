@@ -1188,6 +1188,63 @@ button, input, textarea { font: inherit; }
   margin-top: 12px;
 }
 
+.policy-edit-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 0.42fr);
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.policy-rule-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  max-height: 430px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.scheduler-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.compact-events {
+  max-height: 320px;
+}
+
+.agent-quorum-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.agent-card .automation-detail {
+  margin-top: 8px;
+}
+
+.package-list {
+  max-height: 520px;
+}
+
+.worker-catalog-list {
+  max-height: 680px;
+}
+
+.learning-list {
+  max-height: 560px;
+}
+
+.maturity-list {
+  max-height: 720px;
+}
+
+.maturity-row strong {
+  color: var(--text);
+}
+
 .policy-row-head {
   display: flex;
   align-items: flex-start;

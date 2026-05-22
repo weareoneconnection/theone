@@ -1,4 +1,5 @@
 import { ensureTheOneDatabase, prisma } from '../db/prisma';
+import { recordTheOneEvent } from '../events/event-ledger';
 import { computeExecutionStats } from '../metrics';
 import { canSubmitExternalTasks } from '../policy/approval-policy';
 import { getOneClawTask, runOneClawTask } from '../providers/oneclaw';
@@ -376,6 +377,19 @@ export async function saveRunResult(result: TheOneRunResult) {
       permissions: saved.permissions,
     },
   });
+  await recordTheOneEvent({
+    runId: saved.runId,
+    type: 'run.created',
+    provider: 'theone',
+    status: saved.ok ? 'success' : 'failed',
+    summary: saved.intent.objective,
+    payload: {
+      intent: saved.intent,
+      mode: saved.os?.mode,
+      approvals: saved.approvals?.length || 0,
+      executions: saved.executions?.length || 0,
+    },
+  });
 
   return cloneResult(saved);
 }
@@ -459,6 +473,14 @@ export async function approveRun(input: { runId: string; approvalId?: string; ap
         summary: `${stored.oneclawTask.taskName} submitted after approval.`,
         content: { oneclawRun, oneclawTask: stored.oneclawTask, receipt },
       });
+      await recordTheOneEvent({
+        runId: stored.result.runId,
+        type: 'execution.submitted',
+        provider: 'oneclaw',
+        status,
+        summary: `${stored.oneclawTask.taskName} submitted after approval.`,
+        payload: { oneclawRun, receipt },
+      });
     }
   });
 }
@@ -506,6 +528,14 @@ export async function rejectRun(input: { runId: string; approvalId?: string; rej
       title: 'Execution rejected',
       summary: 'The operator rejected an approval gate.',
       content: { approvals: stored.result.approvals },
+    });
+    await recordTheOneEvent({
+      runId: stored.result.runId,
+      type: 'approval.rejected',
+      provider: 'theone',
+      status: 'rejected',
+      summary: 'External execution rejected by approval gate.',
+      payload: { approvals: stored.result.approvals },
     });
   });
 }
@@ -565,7 +595,43 @@ export async function syncRunExecution(input: { runId: string }) {
         : `Task ${oneclawExecution.externalId} is ${status}.`,
       content: { latest, receipt: latestReceipt },
     });
+    await recordTheOneEvent({
+      runId: stored.result.runId,
+      type: 'execution.synced',
+      provider: 'oneclaw',
+      status: mapOneClawStatusToExecutionStatus(status),
+      summary: failureDetail
+        ? `Task ${oneclawExecution.externalId} is ${status}: ${failureDetail}`
+        : `Task ${oneclawExecution.externalId} is ${status}.`,
+      payload: { latest, receipt: latestReceipt },
+    });
   });
+}
+
+export async function getRunReplayInput(runId: string) {
+  const run = await getStoredRun(runId);
+  if (!run) return null;
+  return {
+    raw: run.intent.objective,
+    mode: run.os?.mode || 'assist',
+  };
+}
+
+export async function resumeRun(input: { runId: string }) {
+  const run = await getStoredRun(input.runId);
+  if (!run) throw new Error('TheOne run not found.');
+
+  const hasOneClawExecution = (run.executions || []).some((execution) => execution.provider === 'oneclaw' && execution.externalId);
+  if (hasOneClawExecution) {
+    return syncRunExecution({ runId: input.runId });
+  }
+
+  const pending = (run.approvals || []).some((approval) => approval.required && approval.status === 'pending');
+  if (pending) {
+    return approveRun({ runId: input.runId, approveAll: true });
+  }
+
+  return run;
 }
 
 export async function listRuns(limit = 20) {

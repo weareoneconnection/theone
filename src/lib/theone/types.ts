@@ -599,6 +599,7 @@ export type TheOneRunResult = {
   contextFrame?: ContextBusFrame;
   permissions?: PermissionDecision[];
   preflight?: ExecutionPreflightReport | null;
+  multiAgentRuntime?: unknown;
   os?: TheOneOsState;
   error?: string;
 };

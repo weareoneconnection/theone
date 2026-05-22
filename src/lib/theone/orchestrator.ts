@@ -18,6 +18,7 @@ import { evaluatePermissionPolicy } from './policy/permission-policy';
 import { queryMemoryGraph } from './state/run-store';
 import { TheOneEventBus } from './event-bus';
 import { getTheOneKernelStatus } from './kernel/status';
+import { runMultiAgentRuntime } from './agents/multi-agent-runtime';
 import { getOneClawCapabilityManifest } from './providers/oneclaw';
 import { preflightOneClawTask } from './execution/preflight';
 import {
@@ -106,6 +107,17 @@ export async function runTheOne(input: IntentInput): Promise<TheOneRunResult> {
     });
     assertPlanSafe(plan, mode === 'auto');
 
+    const multiAgentRuntimePromise = runMultiAgentRuntime({
+      runId,
+      mode,
+      intent,
+      plan,
+      approvals: planApprovals,
+      permissions,
+      memoryContext,
+      contextFrame,
+    });
+
     const runtimeContext = {
       runId,
       mode,
@@ -127,12 +139,16 @@ export async function runTheOne(input: IntentInput): Promise<TheOneRunResult> {
         const routed = await routeIntent(intent);
         return routed.agent({ intent, plan, context: runtimeContext });
       })();
+    const multiAgentRuntime = await multiAgentRuntimePromise;
 
     const approvals: ApprovalGate[] = [
       ...planApprovals,
       ...(agentResult.approvals || []),
     ];
-    const executions: ExecutionRecord[] = agentResult.executions || [];
+    const executions: ExecutionRecord[] = [
+      ...multiAgentRuntime.executions,
+      ...(agentResult.executions || []),
+    ];
     const preflight = preflightOneClawTask({
       task: agentResult.oneclawTask,
       intent,
@@ -146,7 +162,10 @@ export async function runTheOne(input: IntentInput): Promise<TheOneRunResult> {
     };
     const resolvedPlan = markApprovalBlockedSteps(resolvedPlanBeforePolicy, approvals);
 
-    const proof = await writeProof(agentResult.proof || []);
+    const proof = await writeProof([
+      ...multiAgentRuntime.proof,
+      ...(agentResult.proof || []),
+    ]);
     for (const record of proof) {
       bus.emit({ type: 'proof.recorded', payload: record });
     }
@@ -214,10 +233,13 @@ export async function runTheOne(input: IntentInput): Promise<TheOneRunResult> {
       contextFrame: finalContextFrame,
       permissions,
       preflight,
+      multiAgentRuntime,
       os,
       networkSignals: {
         synced: true,
         events: bus.getAll().length,
+        multiAgentStatus: multiAgentRuntime.status,
+        multiAgentAgents: multiAgentRuntime.agents.length,
         memoryHits: memoryContext.length,
         connectors: plan.capabilityRoute?.connectors.map((connector) => connector.key) || [],
         permissions: finalContextFrame.summary.permissionSummary,

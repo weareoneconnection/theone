@@ -20,6 +20,16 @@ import { RunLogPanel } from './RunLogPanel';
 import { ProductionExecutionPanel } from './ProductionExecutionPanel';
 import { RunTheOneSandbox } from './RunTheOneSandbox';
 import { AutomationPolicyPanel } from './AutomationPolicyPanel';
+import { PolicyRuleEditorPanel } from './PolicyRuleEditorPanel';
+import { RuntimeOpsPanel } from './RuntimeOpsPanel';
+import { EventLedgerPanel } from './EventLedgerPanel';
+import { AutomationSchedulerPanel } from './AutomationSchedulerPanel';
+import { EventSourcePanel } from './EventSourcePanel';
+import { MultiAgentRuntimePanel } from './MultiAgentRuntimePanel';
+import { PackageRegistryPanel } from './PackageRegistryPanel';
+import { LearningEnginePanel } from './LearningEnginePanel';
+import { ProductionMaturityPanel } from './ProductionMaturityPanel';
+import { OneClawWorkerCatalogPanel } from './OneClawWorkerCatalogPanel';
 
 export function TheOneShell({
   loading,
@@ -92,7 +102,7 @@ export function TheOneShell({
             <StatusMetric label="Run" value={runId} />
             <StatusMetric label="OneAI" value={oneAiMode} tone={oneAiMode} />
             <StatusMetric label="OneClaw" value={oneClawMode} tone={oneClawMode} />
-            <StatusMetric label="Level" value="L8" tone="online" />
+            <StatusMetric label="Level" value="L17" tone="online" />
           </div>
         </section>
 
@@ -135,7 +145,16 @@ export function TheOneShell({
               onRunOneClawAction={onRunOneClawAction}
               onRefreshOneClawTask={onRefreshOneClawTask}
             />
-            <AutomationPolicyPanel result={result} />
+            <AutomationPolicyPanel result={result} oneClawTasks={oneClawTasks} />
+            <EventSourcePanel />
+            <AutomationSchedulerPanel />
+            <PolicyRuleEditorPanel />
+            <MultiAgentRuntimePanel result={result} />
+            <OneClawWorkerCatalogPanel />
+            <PackageRegistryPanel />
+            <LearningEnginePanel />
+            <ProductionMaturityPanel />
+            <RuntimeOpsPanel result={result} ledger={ledger} />
             <ApprovalPanel
               result={result}
               loading={loading}
@@ -159,6 +178,7 @@ export function TheOneShell({
         <div className="os-ledger-zone">
           <div className="stack">
             <ProofPanel result={result} />
+            <EventLedgerPanel />
             <LedgerPanel proof={ledger.proof} memory={ledger.memory} />
           </div>
           <div className="stack">

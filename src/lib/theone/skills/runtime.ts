@@ -1,4 +1,5 @@
 import { canSubmitExternalTasks, evaluateOneClawTaskPolicy } from '../policy/approval-policy';
+import { attachAutomationPolicyToTask, evaluateAutomationPolicy } from '../policy/automation-engine';
 import { preflightOneClawTask } from '../execution/preflight';
 import { extractOneAIData, extractOneAIPlannedOneClawTask, runOneAI } from '../providers/oneai';
 import { runOneClawTask } from '../providers/oneclaw';
@@ -139,11 +140,36 @@ function shouldAutoSubmitOneClawTask(input: {
   approvals: ApprovalGate[];
   preflightStatus: string;
   context: AgentRuntimeContext;
+  canAutoRun?: boolean;
 }) {
   return Boolean(input.task) &&
     input.preflightStatus === 'ready' &&
     input.context.canSubmitExternalTasks &&
-    canSubmitExternalTasks(input.approvals);
+    canSubmitExternalTasks(input.approvals) &&
+    input.canAutoRun === true;
+}
+
+function applyAutomationPolicyToApprovals(
+  approvals: ApprovalGate[],
+  policy: Awaited<ReturnType<typeof evaluateAutomationPolicy>>
+) {
+  if (policy.decision === 'auto') {
+    return approvals.map((approval) => ({
+      ...approval,
+      required: false,
+      status: 'not_required' as const,
+      reason: `Automation policy allows auto-run. ${policy.reasons[0] || ''}`.trim(),
+    }));
+  }
+
+  return approvals.map((approval) => ({
+    ...approval,
+    required: true,
+    status: 'pending' as const,
+    reason: policy.decision === 'blocked'
+      ? `Automation policy blocked this action. ${policy.reasons[0] || ''}`.trim()
+      : `Automation policy requires approval. ${policy.reasons[0] || approval.reason}`.trim(),
+  }));
 }
 
 function materializeSkillInput(input: SkillRunnerInput): Record<string, unknown> {
@@ -296,19 +322,32 @@ async function runExternalPublish(input: SkillRunnerInput): Promise<SkillRunnerO
     oneclawTask?: OneClawTask | null;
     summary?: string;
   }>(result);
-  const oneclawTask = extractOneAIPlannedOneClawTask(data) ?? data?.oneclawTask ?? null;
-  const approvals = evaluateOneClawTaskPolicy(oneclawTask, input.context.mode);
+  const plannedTask = extractOneAIPlannedOneClawTask(data) ?? data?.oneclawTask ?? null;
   const preflight = preflightOneClawTask({
-    task: oneclawTask,
+    task: plannedTask,
     intent: input.intent,
     mode: input.context.mode,
     capabilities: input.context.oneClawManifest?.capabilities,
   });
+  const automationPolicy = await evaluateAutomationPolicy({
+    task: plannedTask,
+    mode: input.context.mode,
+    preflight,
+    capabilities: input.context.oneClawManifest?.capabilities,
+    connectors: input.context.oneClawManifest?.connectors,
+    canSubmitExternalTasks: input.context.canSubmitExternalTasks,
+  });
+  const oneclawTask = attachAutomationPolicyToTask(plannedTask, automationPolicy);
+  const approvals = applyAutomationPolicyToApprovals(
+    evaluateOneClawTaskPolicy(oneclawTask, input.context.mode),
+    automationPolicy
+  );
   const shouldSubmit = shouldAutoSubmitOneClawTask({
     task: oneclawTask,
     approvals,
     preflightStatus: preflight.status,
     context: input.context,
+    canAutoRun: automationPolicy.canAutoRun,
   });
   const startedAt = shouldSubmit ? Date.now() : 0;
   const oneclawRun = shouldSubmit && oneclawTask
@@ -320,7 +359,7 @@ async function runExternalPublish(input: SkillRunnerInput): Promise<SkillRunnerO
     : receiptForOneClawPlan(oneclawTask, oneclawTask ? 'blocked' : 'planned');
 
   return {
-    ok: result.success && preflight.ok,
+    ok: result.success && preflight.ok && !automationPolicy.blocked,
     step: oneclawRun
       ? completeStep(input.step, { oneclawTask, oneclawRun, reply: data?.reply, preflight })
       : blocked
@@ -332,9 +371,9 @@ async function runExternalPublish(input: SkillRunnerInput): Promise<SkillRunnerO
       oneAiExecution(result, 'OneAI planned an external publishing task.', 'oneai.oneclaw_execute'),
       createExecutionRecord({
         provider: 'oneclaw',
-        status: oneclawRun ? (oneclawRun.mock ? 'mock' : 'submitted') : preflight.status === 'blocked' ? 'failed' : oneclawTask ? 'blocked' : 'planned',
-        summary: preflight.status === 'blocked'
-          ? 'OneClaw task failed production preflight.'
+        status: oneclawRun ? (oneclawRun.mock ? 'mock' : 'submitted') : preflight.status === 'blocked' || automationPolicy.blocked ? 'failed' : oneclawTask ? 'blocked' : 'planned',
+        summary: preflight.status === 'blocked' || automationPolicy.blocked
+          ? 'OneClaw task failed production preflight or automation policy.'
           : oneclawRun
             ? 'OneClaw task auto-submitted by TheOne policy.'
             : oneclawTask
@@ -342,7 +381,7 @@ async function runExternalPublish(input: SkillRunnerInput): Promise<SkillRunnerO
             : 'No external OneClaw task was produced.',
         externalId: oneclawRun?.id ?? null,
         taskName: oneclawTask?.taskName,
-        raw: { task: oneclawTask, oneclawRun, preflight },
+        raw: { task: oneclawTask, oneclawRun, preflight, automationPolicy },
         receipt: oneclawReceipt,
       }),
     ],
@@ -353,8 +392,10 @@ async function runExternalPublish(input: SkillRunnerInput): Promise<SkillRunnerO
         title: 'External communication planned',
         value: preflight.status === 'blocked'
           ? 'Production preflight blocked external publish.'
+          : automationPolicy.blocked
+          ? 'Automation policy blocked external publish.'
           : oneclawRun ? 'TheOne auto-submitted this governed publish task.' : oneclawTask ? 'Approval required before external publish.' : 'No external publish task required.',
-        metadata: { skillKey: input.skill.key, oneclawTask, oneclawRun, preflight },
+        metadata: { skillKey: input.skill.key, oneclawTask, oneclawRun, preflight, automationPolicy },
       }),
     ],
   };
@@ -404,19 +445,32 @@ async function runExternalOperation(input: SkillRunnerInput): Promise<SkillRunne
     },
   });
   const data = extractOneAIData<{ oneclawTask?: OneClawTask | null; reply?: string }>(result);
-  const oneclawTask = extractOneAIPlannedOneClawTask(data) ?? data?.oneclawTask ?? null;
-  const approvals = evaluateOneClawTaskPolicy(oneclawTask, input.context.mode);
+  const plannedTask = extractOneAIPlannedOneClawTask(data) ?? data?.oneclawTask ?? null;
   const preflight = preflightOneClawTask({
-    task: oneclawTask,
+    task: plannedTask,
     intent: input.intent,
     mode: input.context.mode,
     capabilities: input.context.oneClawManifest?.capabilities,
   });
+  const automationPolicy = await evaluateAutomationPolicy({
+    task: plannedTask,
+    mode: input.context.mode,
+    preflight,
+    capabilities: input.context.oneClawManifest?.capabilities,
+    connectors: input.context.oneClawManifest?.connectors,
+    canSubmitExternalTasks: input.context.canSubmitExternalTasks,
+  });
+  const oneclawTask = attachAutomationPolicyToTask(plannedTask, automationPolicy);
+  const approvals = applyAutomationPolicyToApprovals(
+    evaluateOneClawTaskPolicy(oneclawTask, input.context.mode),
+    automationPolicy
+  );
   const shouldSubmit = shouldAutoSubmitOneClawTask({
     task: oneclawTask,
     approvals,
     preflightStatus: preflight.status,
     context: input.context,
+    canAutoRun: automationPolicy.canAutoRun,
   });
   const startedAt = shouldSubmit ? Date.now() : 0;
   const oneclawRun = shouldSubmit && oneclawTask
@@ -427,7 +481,7 @@ async function runExternalOperation(input: SkillRunnerInput): Promise<SkillRunne
     : receiptForOneClawPlan(oneclawTask, oneclawTask ? 'blocked' : 'planned');
 
   return {
-    ok: result.success && preflight.ok,
+    ok: result.success && preflight.ok && !automationPolicy.blocked,
     step: oneclawRun
       ? completeStep(input.step, { oneclawTask, oneclawRun, preflight })
       : oneclawTask ? blockedStep(input.step, { oneclawTask, preflight }) : completeStep(input.step, { preflight }),
@@ -437,13 +491,13 @@ async function runExternalOperation(input: SkillRunnerInput): Promise<SkillRunne
       oneAiExecution(result, 'OneAI planned an external operation.', 'oneai.oneclaw_execute'),
       createExecutionRecord({
         provider: 'oneclaw',
-        status: oneclawRun ? (oneclawRun.mock ? 'mock' : 'submitted') : preflight.status === 'blocked' ? 'failed' : oneclawTask ? 'blocked' : 'planned',
-        summary: preflight.status === 'blocked'
-          ? 'External operation failed production preflight.'
+        status: oneclawRun ? (oneclawRun.mock ? 'mock' : 'submitted') : preflight.status === 'blocked' || automationPolicy.blocked ? 'failed' : oneclawTask ? 'blocked' : 'planned',
+        summary: preflight.status === 'blocked' || automationPolicy.blocked
+          ? 'External operation failed production preflight or automation policy.'
           : oneclawRun ? 'External operation auto-submitted by TheOne policy.' : oneclawTask ? 'External operation waits for approval.' : 'No external operation needed.',
         externalId: oneclawRun?.id ?? null,
         taskName: oneclawTask?.taskName,
-        raw: { task: oneclawTask, oneclawRun, preflight },
+        raw: { task: oneclawTask, oneclawRun, preflight, automationPolicy },
         receipt: oneclawReceipt,
       }),
     ],
@@ -454,8 +508,10 @@ async function runExternalOperation(input: SkillRunnerInput): Promise<SkillRunne
         title: 'External operation planned',
         value: preflight.status === 'blocked'
           ? 'Production preflight blocked external operation.'
+          : automationPolicy.blocked
+          ? 'Automation policy blocked external operation.'
           : oneclawRun ? 'TheOne auto-submitted this governed operation.' : oneclawTask ? 'Approval required before operation.' : 'No external operation task required.',
-        metadata: { skillKey: input.skill.key, oneclawTask, oneclawRun, preflight },
+        metadata: { skillKey: input.skill.key, oneclawTask, oneclawRun, preflight, automationPolicy },
       }),
     ],
   };
