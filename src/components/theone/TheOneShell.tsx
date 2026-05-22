@@ -80,6 +80,7 @@ export function TheOneShell({
     || { allowed: 0, requiresApproval: 0, denied: 0 };
   const connectors = result?.plan?.capabilityRoute?.connectors || [];
   const capabilities = result?.plan?.capabilityRoute?.capabilities || [];
+  const workerRuntimes = result?.os?.workerRuntimes || [];
   const memoryHits = result?.memoryContext?.length || result?.plan?.memoryContext?.length || 0;
   const runId = result?.runId ? String(result.runId).slice(-8) : 'standby';
 
@@ -108,7 +109,7 @@ export function TheOneShell({
 
         <section className="os-summary-band">
           <SummaryMetric label="Capabilities" value={capabilities.length} detail={capabilities.slice(0, 4).join(' · ') || 'Waiting'} />
-          <SummaryMetric label="Connectors" value={connectors.length} detail={connectors.slice(0, 3).map((connector: any) => connector.title).join(' · ') || 'Waiting'} />
+          <SummaryMetric label="Workers" value={workerRuntimes.length} detail={workerRuntimes.slice(0, 3).map((worker: any) => worker.title).join(' · ') || 'OneClaw catalog'} />
           <SummaryMetric label="Memory Hits" value={memoryHits} detail="Context recall" />
           <SummaryMetric label="Allowed" value={permissionSummary.allowed} detail="Permission scope" />
           <SummaryMetric label="Approval" value={permissionSummary.requiresApproval} detail="Permission scope" />
@@ -138,6 +139,7 @@ export function TheOneShell({
           </div>
           <div className="stack os-secondary">
             <ProviderPanel result={result} providerChecks={providerChecks} />
+            <OneClawWorkerCatalogPanel />
             <ProductionExecutionPanel
               result={result}
               loading={loading}
@@ -150,7 +152,6 @@ export function TheOneShell({
             <AutomationSchedulerPanel />
             <PolicyRuleEditorPanel />
             <MultiAgentRuntimePanel result={result} />
-            <OneClawWorkerCatalogPanel />
             <PackageRegistryPanel />
             <LearningEnginePanel />
             <ProductionMaturityPanel />

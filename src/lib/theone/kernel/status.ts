@@ -7,6 +7,7 @@ import { listExecutionTemplates } from '../execution/templates';
 import { getOneAIProviderStatus } from '../providers/oneai';
 import { getOneClawProviderStatus } from '../providers/oneclaw';
 import { listSkills } from '../skills/registry';
+import { listWorkerRuntimes } from '../workers/runtime-registry';
 import type {
   ProviderStatus,
   OneClawCapabilityManifest,
@@ -171,5 +172,20 @@ export function getTheOneKernelStatus(
     oneClawManifest: oneClawManifest || null,
     executionTemplates,
     preflight: null,
+  };
+}
+
+export async function getTheOneKernelStatusWithWorkers(
+  mode: TheOneMode = THEONE_CONFIG.defaultMode,
+  oneClawManifest?: OneClawCapabilityManifest | null
+) {
+  const [os, workerRuntimes] = await Promise.all([
+    Promise.resolve(getTheOneKernelStatus(mode, oneClawManifest)),
+    listWorkerRuntimes(),
+  ]);
+
+  return {
+    ...os,
+    workerRuntimes,
   };
 }

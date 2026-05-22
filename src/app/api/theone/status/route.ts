@@ -1,4 +1,4 @@
-import { getTheOneKernelStatus } from '@/lib/theone/kernel/status';
+import { getTheOneKernelStatusWithWorkers } from '@/lib/theone/kernel/status';
 import { checkProviderConnections } from '@/lib/theone/providers/connections';
 import { getOneClawCapabilityManifest } from '@/lib/theone/providers/oneclaw';
 
@@ -11,7 +11,7 @@ export async function GET(req: Request) {
   return Response.json({
     ok: true,
     timestamp: new Date().toISOString(),
-    os: getTheOneKernelStatus(undefined, oneClawManifest),
+    os: await getTheOneKernelStatusWithWorkers(undefined, oneClawManifest),
     connections,
   });
 }
