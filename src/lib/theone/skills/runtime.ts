@@ -1,6 +1,7 @@
 import { canSubmitExternalTasks, evaluateOneClawTaskPolicy } from '../policy/approval-policy';
 import { attachAutomationPolicyToTask, evaluateAutomationPolicy } from '../policy/automation-engine';
 import { preflightOneClawTask } from '../execution/preflight';
+import { normalizeOneClawTaskContract } from '../execution/task-contracts';
 import { extractOneAIData, extractOneAIPlannedOneClawTask, runOneAI } from '../providers/oneai';
 import { runOneClawTask } from '../providers/oneclaw';
 import { receiptForOneClawPlan, receiptForTheOne, receiptFromOneAI, receiptFromOneClawRun } from '../providers/receipts';
@@ -322,7 +323,12 @@ async function runExternalPublish(input: SkillRunnerInput): Promise<SkillRunnerO
     oneclawTask?: OneClawTask | null;
     summary?: string;
   }>(result);
-  const plannedTask = extractOneAIPlannedOneClawTask(data) ?? data?.oneclawTask ?? null;
+  const rawPlannedTask = extractOneAIPlannedOneClawTask(data) ?? data?.oneclawTask ?? null;
+  const plannedTask = normalizeOneClawTaskContract({
+    task: rawPlannedTask,
+    intent: input.intent,
+    oneAiData: data,
+  });
   const preflight = preflightOneClawTask({
     task: plannedTask,
     intent: input.intent,
@@ -445,7 +451,12 @@ async function runExternalOperation(input: SkillRunnerInput): Promise<SkillRunne
     },
   });
   const data = extractOneAIData<{ oneclawTask?: OneClawTask | null; reply?: string }>(result);
-  const plannedTask = extractOneAIPlannedOneClawTask(data) ?? data?.oneclawTask ?? null;
+  const rawPlannedTask = extractOneAIPlannedOneClawTask(data) ?? data?.oneclawTask ?? null;
+  const plannedTask = normalizeOneClawTaskContract({
+    task: rawPlannedTask,
+    intent: input.intent,
+    oneAiData: data,
+  });
   const preflight = preflightOneClawTask({
     task: plannedTask,
     intent: input.intent,

@@ -112,11 +112,13 @@ export function preflightOneClawTask(input: {
     }
 
     if (!hasRequiredFields(step.input || {}, capability.inputRequired)) {
+      const missingFields = capability.inputRequired
+        .filter((field) => !hasRequiredFields(step.input || {}, [field]));
       checks.push(check(
         `input_${step.id}`,
         `${step.action} input`,
         'fail',
-        `Missing required input: ${capability.inputRequired.join(', ')}.`
+        `Missing required input: ${missingFields.join(', ')}. TheOne task contract must map generated output into ${step.action}.input.`
       ));
       deniedActions.push(step.action);
     }
