@@ -30,10 +30,13 @@ import { PackageRegistryPanel } from './PackageRegistryPanel';
 import { LearningEnginePanel } from './LearningEnginePanel';
 import { ProductionMaturityPanel } from './ProductionMaturityPanel';
 import { OneClawWorkerCatalogPanel } from './OneClawWorkerCatalogPanel';
+import { LocalDesktopBridgePanel } from './LocalDesktopBridgePanel';
 
 export function TheOneShell({
   loading,
   result,
+  osStatus,
+  workerCatalog,
   ledger,
   providerChecks,
   oneClawApprovals,
@@ -50,6 +53,8 @@ export function TheOneShell({
 }: {
   loading: boolean;
   result: any;
+  osStatus: any;
+  workerCatalog: any[];
   ledger: { runs: any[]; proof: any[]; memory: any[] };
   providerChecks: any[];
   oneClawApprovals: any[];
@@ -68,20 +73,31 @@ export function TheOneShell({
   onSync: () => void;
   onOpenRun: (runId: string) => void;
 }) {
-  const mode = result?.os?.mode || 'assist';
-  const providers = result?.os?.providers || [];
+  const activeOs = result?.os || osStatus || {};
+  const hydratedResult = result || (osStatus ? { ok: true, os: osStatus } : null);
+  const mode = activeOs?.mode || 'assist';
+  const providers = activeOs?.providers || [];
   const oneAiCheck = providerChecks.find((provider: any) => provider.key === 'oneai');
   const oneClawCheck = providerChecks.find((provider: any) => provider.key === 'oneclaw');
   const oneAiMode = providers.find((provider: any) => provider.key === 'oneai')?.mode || oneAiCheck?.mode || 'mock';
   const oneClawMode = providers.find((provider: any) => provider.key === 'oneclaw')?.mode || oneClawCheck?.mode || 'mock';
-  const workflowStatus = loading ? 'running' : result?.os?.workflow?.status || (result?.ok ? 'completed' : 'idle');
+  const workflowStatus = loading ? 'running' : activeOs?.workflow?.status || (result?.ok ? 'completed' : 'idle');
   const permissionSummary = result?.contextFrame?.summary?.permissionSummary
-    || result?.os?.contextFrame?.summary?.permissionSummary
+    || activeOs?.contextFrame?.summary?.permissionSummary
     || { allowed: 0, requiresApproval: 0, denied: 0 };
   const connectors = result?.plan?.capabilityRoute?.connectors || [];
-  const capabilities = result?.plan?.capabilityRoute?.capabilities || [];
-  const workerRuntimes = result?.os?.workerRuntimes || [];
-  const memoryHits = result?.memoryContext?.length || result?.plan?.memoryContext?.length || 0;
+  const runCapabilities = result?.plan?.capabilityRoute?.capabilities || [];
+  const osCapabilities = activeOs?.capabilities || [];
+  const capabilities = runCapabilities.length ? runCapabilities : osCapabilities;
+  const runWorkerRuntimes = result?.os?.workerRuntimes || [];
+  const osWorkerRuntimes = activeOs?.workerRuntimes || [];
+  const workerRuntimes = runWorkerRuntimes.length ? runWorkerRuntimes : (workerCatalog.length ? workerCatalog : osWorkerRuntimes);
+  const runMemoryHits = result?.memoryContext?.length || result?.plan?.memoryContext?.length || 0;
+  const memoryHits = runMemoryHits || ledger.memory.length;
+  const capabilitiesDetail = formatMetricList(capabilities, 'OS registry');
+  const workerDetail = formatMetricList(workerRuntimes, 'OneClaw catalog');
+  const memoryDetail = runMemoryHits ? 'Current run recall' : 'Saved memory ledger';
+  const permissionDetail = result?.runId ? 'Current run policy' : 'Latest policy scope';
   const runId = result?.runId ? String(result.runId).slice(-8) : 'standby';
 
   return (
@@ -108,12 +124,12 @@ export function TheOneShell({
         </section>
 
         <section className="os-summary-band">
-          <SummaryMetric label="Capabilities" value={capabilities.length} detail={capabilities.slice(0, 4).join(' · ') || 'Waiting'} />
-          <SummaryMetric label="Workers" value={workerRuntimes.length} detail={workerRuntimes.slice(0, 3).map((worker: any) => worker.title).join(' · ') || 'OneClaw catalog'} />
-          <SummaryMetric label="Memory Hits" value={memoryHits} detail="Context recall" />
-          <SummaryMetric label="Allowed" value={permissionSummary.allowed} detail="Permission scope" />
-          <SummaryMetric label="Approval" value={permissionSummary.requiresApproval} detail="Permission scope" />
-          <SummaryMetric label="Denied" value={permissionSummary.denied} detail="Permission scope" />
+          <SummaryMetric label="Capabilities" value={capabilities.length} detail={capabilitiesDetail} />
+          <SummaryMetric label="Workers" value={workerRuntimes.length} detail={workerDetail} />
+          <SummaryMetric label="Memory Hits" value={memoryHits} detail={memoryDetail} />
+          <SummaryMetric label="Allowed" value={permissionSummary.allowed} detail={permissionDetail} />
+          <SummaryMetric label="Approval" value={permissionSummary.requiresApproval} detail={permissionDetail} />
+          <SummaryMetric label="Denied" value={permissionSummary.denied} detail={permissionDetail} />
         </section>
 
         <section className="command-deck">
@@ -138,7 +154,8 @@ export function TheOneShell({
             <ExecutionFeed result={result} />
           </div>
           <div className="stack os-secondary">
-            <ProviderPanel result={result} providerChecks={providerChecks} />
+            <ProviderPanel result={hydratedResult} providerChecks={providerChecks} />
+            <LocalDesktopBridgePanel result={hydratedResult} />
             <OneClawWorkerCatalogPanel />
             <ProductionExecutionPanel
               result={result}
@@ -190,6 +207,18 @@ export function TheOneShell({
       </div>
     </main>
   );
+}
+
+function formatMetricList(items: any[], fallback: string) {
+  const labels = (items || [])
+    .slice(0, 4)
+    .map((item) => {
+      if (typeof item === 'string') return item;
+      return item?.title || item?.label || item?.name || item?.key || item?.action || '';
+    })
+    .filter(Boolean);
+
+  return labels.join(' · ') || fallback;
 }
 
 function StatusMetric({ label, value, tone }: { label: string; value: string; tone?: string }) {

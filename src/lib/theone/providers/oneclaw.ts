@@ -6,6 +6,7 @@ import type {
   OneClawApprovalRecord,
   OneClawTask,
   OneClawTaskRun,
+  OneClawBridgeStatus,
   ProviderConnectionCheck,
   ProviderStatus,
 } from '../types';
@@ -96,6 +97,38 @@ function fallbackManifest(error?: string): OneClawCapabilityManifest {
   };
 }
 
+function fallbackBridgeStatus(error?: string): OneClawBridgeStatus {
+  return {
+    ok: false,
+    bridge: {
+      id: 'oneclaw-bridge-unavailable',
+      name: 'OneClaw Local Desktop Bridge',
+      mode: 'api',
+      role: 'api_service',
+      online: false,
+      platform: 'unknown',
+      desktopEnabled: false,
+      appAllowlist: [],
+      appBlocklist: [],
+      actions: [],
+      routing: {
+        localExecution: false,
+        cloudForwarding: 'unavailable',
+        note: error || 'Bridge status is unavailable.',
+      },
+      security: {
+        approvalGated: [],
+        readOnly: [],
+        allowlistRequired: true,
+        blocklistSupported: true,
+      },
+    },
+    diagnostics: [],
+    error,
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
 export async function getOneClawCapabilityManifest(): Promise<OneClawCapabilityManifest> {
   const { baseUrl, token } = getOneClawConfig();
   if (!token) return fallbackManifest('ONECLAW token is not configured.');
@@ -120,12 +153,38 @@ export async function getOneClawCapabilityManifest(): Promise<OneClawCapabilityM
       maturity: raw.maturity && typeof raw.maturity === 'object' ? raw.maturity : undefined,
       capabilities: normalizeCapabilities(Array.isArray(raw.capabilities) ? raw.capabilities : []),
       connectors: Array.isArray(raw.connectors) ? raw.connectors as OneClawConnectorReadiness[] : [],
+      bridge: raw.bridge && typeof raw.bridge === 'object' ? raw.bridge : null,
       plugins: Array.isArray(raw.plugins) ? raw.plugins : [],
       source: 'live',
       fetchedAt: new Date().toISOString(),
     };
   } catch (error) {
     return fallbackManifest(error instanceof Error ? error.message : 'OneClaw manifest fetch failed.');
+  }
+}
+
+export async function getOneClawBridgeStatus(): Promise<OneClawBridgeStatus> {
+  const { baseUrl, token } = getOneClawConfig();
+
+  try {
+    const res = await fetch(`${baseUrl}/v1/bridge/status`, {
+      method: 'GET',
+      headers: getHeaders(token),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!res.ok) {
+      return fallbackBridgeStatus(`OneClaw bridge status returned ${res.status}.`);
+    }
+
+    const raw = await res.json() as OneClawBridgeStatus;
+    return {
+      ...raw,
+      fetchedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    return fallbackBridgeStatus(error instanceof Error ? error.message : 'OneClaw bridge status fetch failed.');
   }
 }
 

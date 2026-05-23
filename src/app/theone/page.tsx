@@ -9,11 +9,27 @@ export default function TheOnePage() {
   const [providerChecks, setProviderChecks] = useState<any[]>([]);
   const [oneClawApprovals, setOneClawApprovals] = useState<any[]>([]);
   const [oneClawTasks, setOneClawTasks] = useState<any[]>([]);
+  const [osStatus, setOsStatus] = useState<any>(null);
+  const [workerCatalog, setWorkerCatalog] = useState<any[]>([]);
   const [ledger, setLedger] = useState<{ runs: any[]; proof: any[]; memory: any[] }>({
     runs: [],
     proof: [],
     memory: [],
   });
+
+  async function refreshOsStatus() {
+    const data = await fetch('/api/theone/status')
+      .then((res) => res.json())
+      .catch(() => ({ os: null }));
+    setOsStatus(data.os || null);
+  }
+
+  async function refreshWorkerCatalog() {
+    const data = await fetch('/api/theone/workers')
+      .then((res) => res.json())
+      .catch(() => ({ workers: [] }));
+    setWorkerCatalog(data.workers || []);
+  }
 
   async function refreshProviderChecks() {
     const data = await fetch('/api/theone/providers/check')
@@ -90,6 +106,8 @@ export default function TheOnePage() {
   }
 
   useEffect(() => {
+    refreshOsStatus();
+    refreshWorkerCatalog();
     refreshLedger();
     refreshProviderChecks();
     refreshOneClawApprovals();
@@ -118,6 +136,8 @@ export default function TheOnePage() {
 
       const json = await res.json();
       setResult(json);
+      await refreshOsStatus();
+      await refreshWorkerCatalog();
       await refreshLedger();
       await refreshProviderChecks();
       await refreshOneClawApprovals();
@@ -150,6 +170,8 @@ export default function TheOnePage() {
 
       const json = await res.json();
       setResult(json);
+      await refreshOsStatus();
+      await refreshWorkerCatalog();
       await refreshLedger();
       await refreshProviderChecks();
       await refreshOneClawApprovals();
@@ -215,6 +237,8 @@ export default function TheOnePage() {
           ...((current?.proof || []).slice(0, 12)),
         ],
       }));
+      await refreshOsStatus();
+      await refreshWorkerCatalog();
       await refreshOneClawApprovals();
       await refreshOneClawTasks({ oneClawApprovalResult: json });
       await refreshLedger();
@@ -285,6 +309,8 @@ export default function TheOnePage() {
           ...((current?.proof || []).slice(0, 12)),
         ],
       }));
+      await refreshOsStatus();
+      await refreshWorkerCatalog();
       await refreshOneClawApprovals();
       await refreshOneClawTasks({ oneClawActionResult: json });
     } catch (error) {
@@ -348,6 +374,8 @@ export default function TheOnePage() {
     try {
       const json = await fetch(`/api/theone/runs/${encodeURIComponent(runId)}`).then((res) => res.json());
       setResult(json);
+      await refreshOsStatus();
+      await refreshWorkerCatalog();
     } catch (error) {
       setResult({
         ok: false,
@@ -362,6 +390,8 @@ export default function TheOnePage() {
     <TheOneShell
       loading={loading}
       result={result}
+      osStatus={osStatus}
+      workerCatalog={workerCatalog}
       ledger={ledger}
       providerChecks={providerChecks}
       oneClawApprovals={oneClawApprovals}

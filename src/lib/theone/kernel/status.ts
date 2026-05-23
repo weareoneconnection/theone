@@ -10,6 +10,7 @@ import { listSkills } from '../skills/registry';
 import { listWorkerRuntimes } from '../workers/runtime-registry';
 import type {
   ProviderStatus,
+  OneClawBridgeStatus,
   OneClawCapabilityManifest,
   TheOneAppSurface,
   TheOneLayer,
@@ -139,7 +140,8 @@ export function getTheOneProviderStatus(): ProviderStatus[] {
 
 export function getTheOneKernelStatus(
   mode: TheOneMode = THEONE_CONFIG.defaultMode,
-  oneClawManifest?: OneClawCapabilityManifest | null
+  oneClawManifest?: OneClawCapabilityManifest | null,
+  oneClawBridge?: OneClawBridgeStatus | null
 ): TheOneOsState {
   const providers = getTheOneProviderStatus();
   const capabilities = listCapabilities();
@@ -170,6 +172,12 @@ export function getTheOneKernelStatus(
     oneClawCapabilities,
     oneClawConnectors: oneClawManifest?.connectors || [],
     oneClawManifest: oneClawManifest || null,
+    oneClawBridge: oneClawBridge || (oneClawManifest?.bridge ? {
+      ok: true,
+      bridge: oneClawManifest.bridge,
+      diagnostics: [],
+      fetchedAt: oneClawManifest.fetchedAt,
+    } : null),
     executionTemplates,
     preflight: null,
   };
@@ -177,10 +185,11 @@ export function getTheOneKernelStatus(
 
 export async function getTheOneKernelStatusWithWorkers(
   mode: TheOneMode = THEONE_CONFIG.defaultMode,
-  oneClawManifest?: OneClawCapabilityManifest | null
+  oneClawManifest?: OneClawCapabilityManifest | null,
+  oneClawBridge?: OneClawBridgeStatus | null
 ) {
   const [os, workerRuntimes] = await Promise.all([
-    Promise.resolve(getTheOneKernelStatus(mode, oneClawManifest)),
+    Promise.resolve(getTheOneKernelStatus(mode, oneClawManifest, oneClawBridge)),
     listWorkerRuntimes(),
   ]);
 

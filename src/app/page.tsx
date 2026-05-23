@@ -13,7 +13,10 @@ export default function HomePage() {
           </p>
           <div className="landing-actions">
             <Link className="primary-link" href="/theone">
-              Open TheOne
+              Advanced Console
+            </Link>
+            <Link className="secondary-link" href="/run">
+              Run TheOne
             </Link>
             <span className="landing-status">OneAI plans · OneClaw executes · TheOne governs</span>
           </div>

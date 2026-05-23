@@ -22,6 +22,40 @@ type StoredRun = {
   oneclawTask: OneClawTask | null;
 };
 
+type OfflineProofRow = {
+  id: string;
+  runId: string;
+  type: ProofRecord['type'];
+  title: string;
+  value: string | null;
+  metadata: Record<string, unknown> | null;
+  timestamp: string;
+  run: {
+    id: string;
+    intentType: string;
+    objective: string;
+  };
+};
+
+type OfflineMemoryRow = {
+  id: string;
+  runId?: string | null;
+  kind: string;
+  title: string;
+  summary: string;
+  content: Record<string, unknown> | null;
+  createdAt: string;
+  run: {
+    id: string;
+    intentType: string;
+    objective: string;
+  } | null;
+};
+
+const offlineRuns = new Map<string, StoredRun>();
+const offlineProof: OfflineProofRow[] = [];
+const offlineMemory: OfflineMemoryRow[] = [];
+
 function now() {
   return new Date().toISOString();
 }
@@ -88,6 +122,60 @@ function serializeExecutionPayload(execution: ExecutionRecord) {
 
 function cloneResult(result: TheOneRunResult): TheOneRunResult {
   return structuredClone(result);
+}
+
+function rememberOfflineRun(result: TheOneRunResult, oneclawTask: OneClawTask | null) {
+  offlineRuns.set(result.runId, {
+    result: cloneResult(result),
+    oneclawTask: oneclawTask ? structuredClone(oneclawTask) : null,
+  });
+
+  const run = {
+    id: result.runId,
+    intentType: result.intent.type,
+    objective: result.intent.objective,
+  };
+
+  for (const proof of result.proof || []) {
+    offlineProof.unshift({
+      id: `offline_proof_${result.runId}_${shortHash(proof)}`,
+      runId: result.runId,
+      type: proof.type,
+      title: proof.title,
+      value: proof.value ?? null,
+      metadata: proof.metadata || null,
+      timestamp: proof.timestamp,
+      run,
+    });
+  }
+}
+
+function rememberOfflineMemory(input: {
+  runId?: string;
+  kind: string;
+  title: string;
+  summary: string;
+  content?: unknown;
+}) {
+  const stored = input.runId ? offlineRuns.get(input.runId) : null;
+  offlineMemory.unshift({
+    id: createLedgerId('offline_mem'),
+    runId: input.runId || null,
+    kind: input.kind,
+    title: input.title,
+    summary: input.summary,
+    content: input.content === undefined ? null : JSON.parse(safeStringify(input.content)),
+    createdAt: now(),
+    run: stored ? {
+      id: stored.result.runId,
+      intentType: stored.result.intent.type,
+      objective: stored.result.intent.objective,
+    } : null,
+  });
+}
+
+function databaseWarning(error: unknown) {
+  return error instanceof Error ? error.message : 'TheOne database is unavailable.';
 }
 
 function allApprovalsResolved(approvals: ApprovalGate[]) {
@@ -334,35 +422,60 @@ async function createMemory(input: {
   summary: string;
   content?: unknown;
 }) {
-  await ensureTheOneDatabase();
-  await prisma.theOneMemory.create({
-    data: {
-      id: createLedgerId('mem'),
-      runId: input.runId,
-      kind: input.kind,
-      title: input.title,
-      summary: input.summary,
-      contentJson: input.content === undefined ? null : safeStringify(input.content),
-    },
-  });
+  try {
+    await ensureTheOneDatabase();
+    await prisma.theOneMemory.create({
+      data: {
+        id: createLedgerId('mem'),
+        runId: input.runId,
+        kind: input.kind,
+        title: input.title,
+        summary: input.summary,
+        contentJson: input.content === undefined ? null : safeStringify(input.content),
+      },
+    });
+  } catch (error) {
+    rememberOfflineMemory(input);
+    console.warn('[theone] memory stored in offline ledger:', databaseWarning(error));
+  }
 }
 
 async function readStoredRun(runId: string): Promise<StoredRun | null> {
-  await ensureTheOneDatabase();
-  const row = await prisma.theOneRun.findUnique({ where: { id: runId } });
-  if (!row) return null;
+  try {
+    await ensureTheOneDatabase();
+    const row = await prisma.theOneRun.findUnique({ where: { id: runId } });
+    if (!row) return offlineRuns.get(runId) || null;
 
-  return {
-    result: safeParse<TheOneRunResult>(row.resultJson, null as unknown as TheOneRunResult),
-    oneclawTask: safeParse<OneClawTask | null>(row.pendingOneClawTaskJson, null),
-  };
+    return {
+      result: safeParse<TheOneRunResult>(row.resultJson, null as unknown as TheOneRunResult),
+      oneclawTask: safeParse<OneClawTask | null>(row.pendingOneClawTaskJson, null),
+    };
+  } catch (error) {
+    console.warn('[theone] reading run from offline ledger:', databaseWarning(error));
+    return offlineRuns.get(runId) || null;
+  }
 }
 
 export async function saveRunResult(result: TheOneRunResult) {
   const saved = cloneResult(result);
   const oneclawTask = saved.pendingOneClawTask ?? null;
   refreshResult(saved);
-  await persistRunSnapshot(saved, oneclawTask);
+  try {
+    await persistRunSnapshot(saved, oneclawTask);
+  } catch (error) {
+    rememberOfflineRun(saved, oneclawTask);
+    appendProof(saved, {
+      type: 'system',
+      title: 'Database offline fallback',
+      value: 'TheOne continued this run with an in-memory ledger because the database was unreachable.',
+      timestamp: now(),
+      metadata: {
+        provider: 'theone',
+        warning: databaseWarning(error),
+      },
+    });
+    console.warn('[theone] run stored in offline ledger:', databaseWarning(error));
+  }
   await createMemory({
     runId: saved.runId,
     kind: 'run.created',
@@ -377,19 +490,23 @@ export async function saveRunResult(result: TheOneRunResult) {
       permissions: saved.permissions,
     },
   });
-  await recordTheOneEvent({
-    runId: saved.runId,
-    type: 'run.created',
-    provider: 'theone',
-    status: saved.ok ? 'success' : 'failed',
-    summary: saved.intent.objective,
-    payload: {
-      intent: saved.intent,
-      mode: saved.os?.mode,
-      approvals: saved.approvals?.length || 0,
-      executions: saved.executions?.length || 0,
-    },
-  });
+  try {
+    await recordTheOneEvent({
+      runId: saved.runId,
+      type: 'run.created',
+      provider: 'theone',
+      status: saved.ok ? 'success' : 'failed',
+      summary: saved.intent.objective,
+      payload: {
+        intent: saved.intent,
+        mode: saved.os?.mode,
+        approvals: saved.approvals?.length || 0,
+        executions: saved.executions?.length || 0,
+      },
+    });
+  } catch (error) {
+    console.warn('[theone] event ledger skipped:', databaseWarning(error));
+  }
 
   return cloneResult(saved);
 }
@@ -635,98 +752,126 @@ export async function resumeRun(input: { runId: string }) {
 }
 
 export async function listRuns(limit = 20) {
-  await ensureTheOneDatabase();
-  const rows = await prisma.theOneRun.findMany({
-    orderBy: { createdAt: 'desc' },
-    take: Math.max(1, Math.min(limit, 100)),
-    include: {
-      approvals: true,
-      executions: true,
-      _count: {
-        select: {
-          proof: true,
-          memories: true,
+  try {
+    await ensureTheOneDatabase();
+    const rows = await prisma.theOneRun.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: Math.max(1, Math.min(limit, 100)),
+      include: {
+        approvals: true,
+        executions: true,
+        _count: {
+          select: {
+            proof: true,
+            memories: true,
+          },
         },
       },
-    },
-  });
+    });
 
-  return rows.map((row) => {
-    const result = safeParse<TheOneRunResult | null>(row.resultJson, null);
-    const pendingApprovals = row.approvals.filter((approval) => approval.required && approval.status === 'pending').length;
-    const latestExecution = [...row.executions].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0];
+    return rows.map((row) => {
+      const result = safeParse<TheOneRunResult | null>(row.resultJson, null);
+      const pendingApprovals = row.approvals.filter((approval) => approval.required && approval.status === 'pending').length;
+      const latestExecution = [...row.executions].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0];
 
-    return {
-      runId: row.id,
-      ok: row.ok,
-      mode: row.mode,
-      intentType: row.intentType,
-      objective: row.objective,
-      workflowStatus: result?.os?.workflow?.status || 'idle',
-      pendingApprovals,
-      latestExecutionStatus: latestExecution?.status || null,
-      proofCount: row._count.proof,
-      memoryCount: row._count.memories,
-      createdAt: row.createdAt.toISOString(),
-      updatedAt: row.updatedAt.toISOString(),
-    };
-  });
+      return {
+        runId: row.id,
+        ok: row.ok,
+        mode: row.mode,
+        intentType: row.intentType,
+        objective: row.objective,
+        workflowStatus: result?.os?.workflow?.status || 'idle',
+        pendingApprovals,
+        latestExecutionStatus: latestExecution?.status || null,
+        proofCount: row._count.proof,
+        memoryCount: row._count.memories,
+        createdAt: row.createdAt.toISOString(),
+        updatedAt: row.updatedAt.toISOString(),
+      };
+    });
+  } catch (error) {
+    console.warn('[theone] listing runs from offline ledger:', databaseWarning(error));
+    return Array.from(offlineRuns.values()).slice(0, Math.max(1, Math.min(limit, 100))).map((stored) => ({
+      runId: stored.result.runId,
+      ok: stored.result.ok,
+      mode: stored.result.os?.mode || 'assist',
+      intentType: stored.result.intent.type,
+      objective: stored.result.intent.objective,
+      workflowStatus: stored.result.os?.workflow?.status || 'idle',
+      pendingApprovals: (stored.result.approvals || []).filter((approval) => approval.required && approval.status === 'pending').length,
+      latestExecutionStatus: stored.result.executions?.[0]?.status || null,
+      proofCount: stored.result.proof?.length || 0,
+      memoryCount: offlineMemory.filter((memory) => memory.runId === stored.result.runId).length,
+      createdAt: stored.result.proof?.[0]?.timestamp || now(),
+      updatedAt: now(),
+    }));
+  }
 }
 
 export async function listProof(limit = 50) {
-  await ensureTheOneDatabase();
-  const rows = await prisma.theOneProof.findMany({
-    orderBy: { timestamp: 'desc' },
-    take: Math.max(1, Math.min(limit, 200)),
-    include: {
-      run: {
-        select: {
-          id: true,
-          intentType: true,
-          objective: true,
+  try {
+    await ensureTheOneDatabase();
+    const rows = await prisma.theOneProof.findMany({
+      orderBy: { timestamp: 'desc' },
+      take: Math.max(1, Math.min(limit, 200)),
+      include: {
+        run: {
+          select: {
+            id: true,
+            intentType: true,
+            objective: true,
+          },
         },
       },
-    },
-  });
+    });
 
-  return rows.map((row) => ({
-    id: row.id,
-    runId: row.runId,
-    type: row.type,
-    title: row.title,
-    value: row.value,
-    metadata: safeParse<Record<string, unknown> | null>(row.metadataJson, null),
-    timestamp: row.timestamp.toISOString(),
-    run: row.run,
-  }));
+    return rows.map((row) => ({
+      id: row.id,
+      runId: row.runId,
+      type: row.type,
+      title: row.title,
+      value: row.value,
+      metadata: safeParse<Record<string, unknown> | null>(row.metadataJson, null),
+      timestamp: row.timestamp.toISOString(),
+      run: row.run,
+    }));
+  } catch (error) {
+    console.warn('[theone] listing proof from offline ledger:', databaseWarning(error));
+    return offlineProof.slice(0, Math.max(1, Math.min(limit, 200)));
+  }
 }
 
 export async function listMemory(limit = 50) {
-  await ensureTheOneDatabase();
-  const rows = await prisma.theOneMemory.findMany({
-    orderBy: { createdAt: 'desc' },
-    take: Math.max(1, Math.min(limit, 200)),
-    include: {
-      run: {
-        select: {
-          id: true,
-          intentType: true,
-          objective: true,
+  try {
+    await ensureTheOneDatabase();
+    const rows = await prisma.theOneMemory.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: Math.max(1, Math.min(limit, 200)),
+      include: {
+        run: {
+          select: {
+            id: true,
+            intentType: true,
+            objective: true,
+          },
         },
       },
-    },
-  });
+    });
 
-  return rows.map((row) => ({
-    id: row.id,
-    runId: row.runId,
-    kind: row.kind,
-    title: row.title,
-    summary: row.summary,
-    content: safeParse<Record<string, unknown> | null>(row.contentJson, null),
-    createdAt: row.createdAt.toISOString(),
-    run: row.run,
-  }));
+    return rows.map((row) => ({
+      id: row.id,
+      runId: row.runId,
+      kind: row.kind,
+      title: row.title,
+      summary: row.summary,
+      content: safeParse<Record<string, unknown> | null>(row.contentJson, null),
+      createdAt: row.createdAt.toISOString(),
+      run: row.run,
+    }));
+  } catch (error) {
+    console.warn('[theone] listing memory from offline ledger:', databaseWarning(error));
+    return offlineMemory.slice(0, Math.max(1, Math.min(limit, 200)));
+  }
 }
 
 export async function queryMemoryGraph(input: {
@@ -735,55 +880,88 @@ export async function queryMemoryGraph(input: {
   capabilities?: string[];
   limit?: number;
 }): Promise<MemoryGraphHit[]> {
-  await ensureTheOneDatabase();
   const limit = Math.max(1, Math.min(input.limit || 5, 20));
   const terms = tokenizeMemoryQuery(input.query, [
     input.intentType || '',
     ...(input.capabilities || []),
   ]);
 
-  const rows = await prisma.theOneMemory.findMany({
-    orderBy: { createdAt: 'desc' },
-    take: 200,
-    include: {
-      run: {
-        select: {
-          id: true,
-          intentType: true,
-          objective: true,
+  try {
+    await ensureTheOneDatabase();
+    const rows = await prisma.theOneMemory.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+      include: {
+        run: {
+          select: {
+            id: true,
+            intentType: true,
+            objective: true,
+          },
         },
       },
-    },
-  });
+    });
 
-  return rows
-    .map((row) => {
-      const content = safeParse<Record<string, unknown> | null>(row.contentJson, null);
-      const haystack = [
-        row.kind,
-        row.title,
-        row.summary,
-        row.run?.intentType,
-        row.run?.objective,
-        content ? JSON.stringify(content) : '',
-      ].filter(Boolean).join(' ').toLowerCase();
-      const score = scoreMemoryText(haystack, terms)
-        + (input.intentType && row.run?.intentType === input.intentType ? 4 : 0);
-      const matchedTerms = terms.filter((term) => haystack.includes(term));
+    return rows
+      .map((row) => {
+        const content = safeParse<Record<string, unknown> | null>(row.contentJson, null);
+        const haystack = [
+          row.kind,
+          row.title,
+          row.summary,
+          row.run?.intentType,
+          row.run?.objective,
+          content ? JSON.stringify(content) : '',
+        ].filter(Boolean).join(' ').toLowerCase();
+        const score = scoreMemoryText(haystack, terms)
+          + (input.intentType && row.run?.intentType === input.intentType ? 4 : 0);
+        const matchedTerms = terms.filter((term) => haystack.includes(term));
 
-      return {
-        id: row.id,
-        runId: row.runId,
-        kind: row.kind,
-        title: row.title,
-        summary: row.summary,
-        score,
-        matchedTerms,
-        createdAt: row.createdAt.toISOString(),
-        run: row.run,
-      };
-    })
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score || b.createdAt.localeCompare(a.createdAt))
-    .slice(0, limit);
+        return {
+          id: row.id,
+          runId: row.runId,
+          kind: row.kind,
+          title: row.title,
+          summary: row.summary,
+          score,
+          matchedTerms,
+          createdAt: row.createdAt.toISOString(),
+          run: row.run,
+        };
+      })
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score || b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit);
+  } catch (error) {
+    console.warn('[theone] memory graph using offline ledger:', databaseWarning(error));
+    return offlineMemory
+      .map((row) => {
+        const haystack = [
+          row.kind,
+          row.title,
+          row.summary,
+          row.run?.intentType,
+          row.run?.objective,
+          row.content ? JSON.stringify(row.content) : '',
+        ].filter(Boolean).join(' ').toLowerCase();
+        const score = scoreMemoryText(haystack, terms)
+          + (input.intentType && row.run?.intentType === input.intentType ? 4 : 0);
+        const matchedTerms = terms.filter((term) => haystack.includes(term));
+
+        return {
+          id: row.id,
+          runId: row.runId || null,
+          kind: row.kind,
+          title: row.title,
+          summary: row.summary,
+          score,
+          matchedTerms,
+          createdAt: row.createdAt,
+          run: row.run,
+        };
+      })
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score || b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit);
+  }
 }

@@ -14,7 +14,7 @@ export const executionTemplates: ExecutionTemplateDefinition[] = [
   {
     key: 'web_research',
     title: 'Web Research',
-    intentHints: ['research', 'search', 'scrape', 'monitor', '研究', '搜索', '抓取', '监控'],
+    intentHints: ['research', 'search', 'scrape', 'monitor', 'website', 'browse', 'url', 'http', '研究', '搜索', '抓取', '监控', '网站', '网页'],
     capabilities: ['research', 'operate', 'monitor', 'record'],
     actions: ['browser.open', 'browser.extract', 'x.searchRecentTweets'],
     defaultApprovalMode: 'auto',

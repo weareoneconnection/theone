@@ -19,7 +19,7 @@ import { queryMemoryGraph } from './state/run-store';
 import { TheOneEventBus } from './event-bus';
 import { getTheOneKernelStatus } from './kernel/status';
 import { runMultiAgentRuntime } from './agents/multi-agent-runtime';
-import { getOneClawCapabilityManifest } from './providers/oneclaw';
+import { getOneClawBridgeStatus, getOneClawCapabilityManifest } from './providers/oneclaw';
 import { preflightOneClawTask } from './execution/preflight';
 import {
   createWorkflowTrace,
@@ -30,6 +30,7 @@ import type {
   ExecutionPlan,
   ExecutionRecord,
   IntentInput,
+  ProofRecord,
   TheOneMode,
   TheOneRunResult,
   ClassifiedIntent,
@@ -58,12 +59,41 @@ function fallbackPlan(raw: string): ExecutionPlan {
   };
 }
 
+function productSummary(input: {
+  agentSummary: string;
+  executions: ExecutionRecord[];
+  proof: ProofRecord[];
+  plan: ExecutionPlan;
+}) {
+  const oneClawExecution = [...input.executions]
+    .reverse()
+    .find((execution) => execution.provider === 'oneclaw');
+  if (oneClawExecution?.summary) {
+    return oneClawExecution.externalId
+      ? `${oneClawExecution.summary} Task: ${oneClawExecution.externalId}.`
+      : oneClawExecution.summary;
+  }
+
+  const proof = [...input.proof]
+    .reverse()
+    .find((record) => {
+      const text = `${record.title || ''} ${record.value || ''}`.toLowerCase();
+      return (record.value || record.title) && !text.includes('capability route');
+    });
+  if (proof?.value || proof?.title) return proof.value || proof.title;
+
+  return input.agentSummary || input.plan.summary;
+}
+
 export async function runTheOne(input: IntentInput): Promise<TheOneRunResult> {
   const runId = createRunId();
   const bus = new TheOneEventBus();
   const mode = (input.mode || THEONE_CONFIG.defaultMode) as TheOneMode;
-  const oneClawManifest = await getOneClawCapabilityManifest();
-  const kernel = getTheOneKernelStatus(mode, oneClawManifest);
+  const [oneClawManifest, oneClawBridge] = await Promise.all([
+    getOneClawCapabilityManifest(),
+    getOneClawBridgeStatus(),
+  ]);
+  const kernel = getTheOneKernelStatus(mode, oneClawManifest, oneClawBridge);
 
   try {
     if (!input.raw.trim()) {
@@ -214,10 +244,17 @@ export async function runTheOne(input: IntentInput): Promise<TheOneRunResult> {
       preflight,
     };
     const pendingOneClawTask = agentResult.oneclawTask ?? null;
+    const summary = productSummary({
+      agentSummary: agentResult.summary,
+      executions,
+      proof,
+      plan: resolvedPlan,
+    });
 
     return {
       ok: true,
       runId,
+      summary,
       intent,
       plan: resolvedPlan,
       execution: {

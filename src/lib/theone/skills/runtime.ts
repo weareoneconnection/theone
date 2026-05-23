@@ -136,6 +136,42 @@ function oneAiPayload(input: SkillRunnerInput, task: string) {
   };
 }
 
+function extractUrlFromObjective(objective: string) {
+  const explicit = objective.match(/https?:\/\/[^\s"'<>]+/i)?.[0];
+  if (explicit) return explicit.replace(/[),.;]+$/, '');
+
+  const domain = objective.match(/\b(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+\b/i)?.[0];
+  if (!domain) return '';
+  return `https://${domain.replace(/[),.;]+$/, '')}`;
+}
+
+function buildBrowserExtractTask(input: SkillRunnerInput): OneClawTask | null {
+  const url = extractUrlFromObjective(input.intent.objective);
+  if (!url) return null;
+
+  return {
+    taskName: 'web_research_extract',
+    approvalMode: input.context.mode === 'manual' ? 'manual' : 'auto',
+    steps: [
+      {
+        id: 'step_1',
+        action: 'browser.extract',
+        input: {
+          url,
+          objective: input.intent.objective,
+          format: 'summary',
+        },
+        dependsOn: [],
+      },
+    ],
+    metadata: {
+      source: 'theone.skill.research_summary',
+      url,
+      intentType: input.intent.type,
+    },
+  };
+}
+
 function shouldAutoSubmitOneClawTask(input: {
   task: OneClawTask | null;
   approvals: ApprovalGate[];
@@ -265,18 +301,81 @@ async function runObjectiveAnalysis(input: SkillRunnerInput): Promise<SkillRunne
 async function runResearchSummary(input: SkillRunnerInput): Promise<SkillRunnerOutput> {
   const result = await runOneAI(oneAiPayload(input, 'knowledge_retrieval'));
   const data = extractOneAIData<Record<string, unknown>>(result);
+  const plannedTask = buildBrowserExtractTask(input);
+  const preflight = preflightOneClawTask({
+    task: plannedTask,
+    intent: input.intent,
+    mode: input.context.mode,
+    capabilities: input.context.oneClawManifest?.capabilities,
+  });
+  const canSubmitReadOnlyBrowserTask = input.context.mode !== 'manual';
+  const automationPolicy = await evaluateAutomationPolicy({
+    task: plannedTask,
+    mode: input.context.mode,
+    preflight,
+    capabilities: input.context.oneClawManifest?.capabilities,
+    connectors: input.context.oneClawManifest?.connectors,
+    canSubmitExternalTasks: canSubmitReadOnlyBrowserTask,
+  });
+  const oneclawTask = attachAutomationPolicyToTask(plannedTask, automationPolicy);
+  const approvals = applyAutomationPolicyToApprovals(
+    evaluateOneClawTaskPolicy(oneclawTask, input.context.mode),
+    automationPolicy
+  );
+  const shouldSubmit = shouldAutoSubmitOneClawTask({
+    task: oneclawTask,
+    approvals,
+    preflightStatus: preflight.status,
+    context: {
+      ...input.context,
+      canSubmitExternalTasks: canSubmitReadOnlyBrowserTask,
+    },
+    canAutoRun: automationPolicy.canAutoRun,
+  });
+  const startedAt = shouldSubmit ? Date.now() : 0;
+  const oneclawRun = shouldSubmit && oneclawTask
+    ? await runOneClawTask<OneClawTaskRun>(oneclawTask)
+    : null;
+  const oneclawReceipt = oneclawRun
+    ? receiptFromOneClawRun(oneclawRun, 'oneclaw.task.run', startedAt)
+    : receiptForOneClawPlan(oneclawTask, 'planned');
 
   return {
-    ok: result.success,
-    step: completeStep(input.step, { oneAiMode: result.mock ? 'mock' : 'live', data }),
-    data: { research: data || null },
-    executions: [oneAiExecution(result, 'OneAI prepared a research and knowledge route.', 'oneai.knowledge_retrieval')],
+    ok: result.success && preflight.ok && !automationPolicy.blocked,
+    step: oneclawRun
+      ? completeStep(input.step, { oneAiMode: result.mock ? 'mock' : 'live', data, oneclawTask, oneclawRun, preflight })
+      : oneclawTask
+      ? blockedStep(input.step, { oneAiMode: result.mock ? 'mock' : 'live', data, oneclawTask, preflight })
+      : completeStep(input.step, { oneAiMode: result.mock ? 'mock' : 'live', data, preflight }),
+    data: { research: data || null, oneclawTask, oneclawRun, preflight },
+    approvals,
+    executions: [
+      oneAiExecution(result, 'OneAI prepared a research and knowledge route.', 'oneai.knowledge_retrieval'),
+      createExecutionRecord({
+        provider: 'oneclaw',
+        status: oneclawRun ? (oneclawRun.mock ? 'mock' : 'submitted') : preflight.status === 'blocked' || automationPolicy.blocked ? 'failed' : oneclawTask ? 'blocked' : 'planned',
+        summary: oneclawRun
+          ? 'OneClaw browser extraction was submitted for this website.'
+          : oneclawTask
+          ? 'OneClaw browser extraction is prepared and waiting for policy clearance.'
+          : 'No website URL was found, so TheOne prepared a research plan only.',
+        externalId: oneclawRun?.id ?? null,
+        taskName: oneclawTask?.taskName,
+        raw: { task: oneclawTask, oneclawRun, preflight, automationPolicy },
+        receipt: oneclawReceipt,
+      }),
+    ],
+    oneclawTask,
     proof: [
       proof({
         type: 'execution',
         title: 'Research summary prepared',
-        value: 'Research output is ready for durable memory.',
-        metadata: { skillKey: input.skill.key, result },
+        value: oneclawRun
+          ? 'Website extraction was submitted to OneClaw.'
+          : oneclawTask
+          ? 'Website extraction task is prepared for OneClaw.'
+          : 'Research output is ready for durable memory.',
+        metadata: { skillKey: input.skill.key, result, oneclawTask, oneclawRun, preflight, automationPolicy },
       }),
     ],
   };
@@ -799,7 +898,10 @@ export async function runSkillWorkflow(input: {
   return {
     ok,
     agent: 'skill.runtime',
-    summary: input.plan.capabilityRoute?.summary || `Skill workflow executed for: ${input.intent.objective}`,
+    summary: executions.find((execution) => execution.provider === 'oneclaw')?.summary
+      || proofRecords.find((record) => record.value)?.value
+      || input.plan.capabilityRoute?.summary
+      || `Skill workflow executed for: ${input.intent.objective}`,
     data,
     updatedSteps,
     approvals,

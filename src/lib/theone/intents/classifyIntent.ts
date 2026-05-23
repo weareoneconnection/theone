@@ -39,7 +39,19 @@ export async function classifyIntent(input: IntentInput): Promise<ClassifiedInte
     };
   }
 
-  if (raw.includes('research') || raw.includes('knowledge') || raw.includes('总结') || raw.includes('positioning')) {
+  if (
+    raw.includes('research') ||
+    raw.includes('knowledge') ||
+    raw.includes('summary') ||
+    raw.includes('summarize') ||
+    raw.includes('website') ||
+    raw.includes('browse') ||
+    raw.includes('check website') ||
+    raw.includes('http') ||
+    /\b[a-z0-9.-]+\.(com|org|ai|app|io|net|dev)\b/i.test(input.raw) ||
+    raw.includes('总结') ||
+    raw.includes('positioning')
+  ) {
     return {
       type: 'knowledge',
       objective: input.raw,

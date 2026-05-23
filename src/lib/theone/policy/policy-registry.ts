@@ -133,10 +133,15 @@ async function seedDefaultsIfEmpty() {
 }
 
 export async function listAutomationPolicyRules() {
-  await ensureTheOneDatabase();
-  await seedDefaultsIfEmpty();
-  const rows = await prisma.$queryRawUnsafe<any[]>('select * from "TheOnePolicyRule" order by domain asc, action asc');
-  return rows.map(parseRule);
+  try {
+    await ensureTheOneDatabase();
+    await seedDefaultsIfEmpty();
+    const rows = await prisma.$queryRawUnsafe<any[]>('select * from "TheOnePolicyRule" order by domain asc, action asc');
+    return rows.map(parseRule);
+  } catch (error) {
+    console.warn('[theone] using default automation policy rules:', error instanceof Error ? error.message : 'database unavailable');
+    return defaultRules;
+  }
 }
 
 export async function upsertAutomationPolicyRule(rule: Partial<AutomationPolicyRule>) {

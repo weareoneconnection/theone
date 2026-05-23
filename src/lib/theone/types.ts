@@ -381,10 +381,50 @@ export type OneClawCapabilityManifest = {
   maturity?: Record<string, number>;
   capabilities: OneClawCapabilityDefinition[];
   connectors?: OneClawConnectorReadiness[];
+  bridge?: OneClawBridgeStatus['bridge'] | null;
   plugins?: unknown[];
   source: 'live' | 'fallback';
   fetchedAt: string;
   error?: string;
+};
+
+export type OneClawBridgeDiagnostic = {
+  key: string;
+  label: string;
+  status: 'pass' | 'warn' | 'fail';
+  detail: string;
+};
+
+export type OneClawBridgeStatus = {
+  ok: boolean;
+  bridge: {
+    id: string;
+    name: string;
+    mode: 'api' | 'desktop' | string;
+    role: 'api_service' | 'local_desktop_bridge' | string;
+    online: boolean;
+    platform: string;
+    arch?: string;
+    hostname?: string;
+    desktopEnabled?: boolean;
+    appAllowlist?: string[];
+    appBlocklist?: string[];
+    actions?: string[];
+    routing?: {
+      localExecution?: boolean;
+      cloudForwarding?: string;
+      note?: string;
+    };
+    security?: {
+      approvalGated?: string[];
+      readOnly?: string[];
+      allowlistRequired?: boolean;
+      blocklistSupported?: boolean;
+    };
+  };
+  diagnostics?: OneClawBridgeDiagnostic[];
+  error?: string;
+  fetchedAt?: string;
 };
 
 export type OneClawApprovalRecord = {
@@ -516,6 +556,7 @@ export type TheOneOsState = {
   oneClawCapabilities?: OneClawCapabilityDefinition[];
   oneClawConnectors?: OneClawConnectorReadiness[];
   oneClawManifest?: OneClawCapabilityManifest | null;
+  oneClawBridge?: OneClawBridgeStatus | null;
   executionTemplates?: ExecutionTemplateDefinition[];
   preflight?: ExecutionPreflightReport | null;
 };
@@ -583,6 +624,7 @@ export type AgentExecutionResult = {
 export type TheOneRunResult = {
   ok: boolean;
   runId: string;
+  summary?: string;
   intent: ClassifiedIntent;
   plan: ExecutionPlan;
   execution: {

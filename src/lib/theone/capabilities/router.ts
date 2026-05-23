@@ -22,7 +22,7 @@ function inferCapabilities(intent: ClassifiedIntent): CapabilityPrimitive[] {
   const raw = intent.objective.toLowerCase();
   const capabilities: CapabilityPrimitive[] = ['think', 'plan', 'govern', 'record'];
 
-  if (intent.type === 'knowledge' || /research|search|summar|positioning|知识|研究|总结|资料/.test(raw)) {
+  if (intent.type === 'knowledge' || /research|search|summar|positioning|website|browse|check website|http|知识|研究|总结|资料/.test(raw)) {
     capabilities.push('research', 'remember', 'learn');
   }
 
@@ -38,7 +38,7 @@ function inferCapabilities(intent: ClassifiedIntent): CapabilityPrimitive[] {
     capabilities.push('research', 'transact', 'monitor');
   }
 
-  if (/browser|file|api|system|integrat|operate|construction|project|rfi|inspection|浏览器|文件|接口|系统|建筑|项目|巡检/.test(raw)) {
+  if (/browser|browse|website|web site|url|http|file|api|system|integrat|operate|construction|project|rfi|inspection|浏览器|网页|网站|文件|接口|系统|建筑|项目|巡检/.test(raw)) {
     capabilities.push('operate', 'integrate', 'coordinate');
   }
 
@@ -57,9 +57,21 @@ function routeRisk(skills: SkillDefinition[], intent: ClassifiedIntent): 'low' |
   return 'low';
 }
 
+function isWebsiteResearch(intent: ClassifiedIntent) {
+  const raw = intent.objective.toLowerCase();
+  return intent.type === 'knowledge' && (
+    /website|browse|check website|web site|url|http|网页|网站/.test(raw) ||
+    /\b[a-z0-9.-]+\.(com|org|ai|app|io|net|dev)\b/i.test(intent.objective)
+  );
+}
+
 export function routeCapabilities(intent: ClassifiedIntent): CapabilityRoute {
   const capabilities = inferCapabilities(intent);
-  const skills = findSkillsByCapabilities(capabilities).slice(0, 3);
+  const routedSkills = findSkillsByCapabilities(capabilities);
+  const skills = (isWebsiteResearch(intent)
+    ? routedSkills.filter((skill) => skill.key === 'objective_analysis' || skill.key === 'research_summary')
+    : routedSkills
+  ).slice(0, 3);
   const apps = findAppBundlesByCapabilities(capabilities).slice(0, 3);
   const connectors = findConnectorsByCapabilities(capabilities).slice(0, 4);
   const risk = routeRisk(skills, intent);
