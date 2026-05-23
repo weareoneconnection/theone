@@ -18,6 +18,7 @@ const quickPrompts = [
 function plainResult(result: any) {
   const error = String(result?.error || '');
   if (error) return error.replace(/Invalid `prisma[^`]+` invocation:[\s\S]*/i, 'TheOne switched to safe mode because the memory database is temporarily unavailable.');
+  if (result?.appResult?.summary) return result.appResult.summary;
   if (result?.appRoute?.summary) return result.appRoute.summary;
   if (result?.summary) return result.summary;
   const oneClaw = [...(result?.executions || [])].reverse().find((execution: any) => execution.provider === 'oneclaw');
@@ -139,7 +140,9 @@ export default function RunPage() {
               <div className="app-readable-result">
                 <strong>{plainResult(result)}</strong>
                 <div className="app-next-list">
-                  <span>{result.appRoute ? `TheOne routed this to the ${result.appRoute.app} App and submitted the worker action.` : 'TheOne selected capabilities and policy for this request.'}</span>
+                  <span>{result.appRoute ? `TheOne routed this to the ${result.appRoute.app} App workflow and recorded proof.` : 'TheOne selected capabilities and policy for this request.'}</span>
+                  {result.appResult?.status ? <span>App status: {friendlyStatus(result.appResult.status)}</span> : null}
+                  {result.appMemoryPack ? <span>Memory saved: {result.appMemoryPack.title}</span> : null}
                   <span>Use Apps for focused workspaces, or Advanced for the full trace.</span>
                 </div>
               </div>

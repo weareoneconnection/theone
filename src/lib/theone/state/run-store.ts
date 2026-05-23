@@ -490,6 +490,15 @@ export async function saveRunResult(result: TheOneRunResult) {
       permissions: saved.permissions,
     },
   });
+  if (saved.appMemoryPack) {
+    await createMemory({
+      runId: saved.runId,
+      kind: `app.${saved.appMemoryPack.app}.memory_pack`,
+      title: saved.appMemoryPack.title,
+      summary: saved.appMemoryPack.summary,
+      content: saved.appMemoryPack,
+    });
+  }
   try {
     await recordTheOneEvent({
       runId: saved.runId,

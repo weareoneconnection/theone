@@ -2153,6 +2153,159 @@ button, input, textarea { font: inherit; }
   font-size: 16px;
 }
 
+.app-memory-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 16px;
+  margin: 20px auto 0;
+  max-width: 1480px;
+  padding: 22px;
+}
+
+.app-memory-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.app-memory-card {
+  background: rgba(255,255,255,0.035);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  min-height: 210px;
+  padding: 16px;
+}
+
+.app-memory-top {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.app-memory-top span,
+.app-memory-top small {
+  color: rgba(255,255,255,0.54);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.app-memory-card h3 {
+  font-size: 17px;
+  margin: 0;
+}
+
+.app-memory-card p {
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.app-memory-list,
+.app-memory-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.app-memory-list span,
+.app-memory-actions strong {
+  background: rgba(0,0,0,0.2);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  color: rgba(245,247,244,0.78);
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 8px;
+}
+
+.workspace-board {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 20px auto 0;
+  max-width: 1480px;
+}
+
+.workspace-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+}
+
+.workspace-card-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.workspace-card h2 {
+  font-size: 24px;
+  margin: 8px 0 0;
+}
+
+.workspace-card p {
+  color: var(--muted);
+  line-height: 1.55;
+  margin: 0;
+}
+
+.workspace-command {
+  background: rgba(0,0,0,0.28);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  color: rgba(255,255,255,0.78);
+  line-height: 1.5;
+  padding: 14px;
+}
+
+.workspace-run-list {
+  border-top: 1px solid rgba(255,255,255,0.08);
+  display: grid;
+  gap: 10px;
+  padding-top: 14px;
+}
+
+.workspace-run-list > span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.workspace-run-row {
+  align-items: center;
+  background: rgba(255,255,255,0.035);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 10px;
+}
+
+.workspace-run-row p {
+  color: var(--text);
+  font-size: 13px;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-run-row small {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
 .settings-health-grid {
   display: grid;
   gap: 20px;
@@ -2399,6 +2552,8 @@ button, input, textarea { font: inherit; }
   .phase-app-grid,
   .app-workflow-band,
   .app-system-strip,
+  .app-memory-grid,
+  .workspace-board,
   .settings-health-grid,
   .settings-system-grid,
   .settings-capability-grid,

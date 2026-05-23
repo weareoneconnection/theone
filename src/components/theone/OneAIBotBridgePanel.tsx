@@ -5,7 +5,9 @@ import { ProductEmpty, ProductStatusStrip, friendlyStatus } from './ProductNav';
 
 export function OneAIBotBridgePanel() {
   const [bot, setBot] = useState<any>(null);
+  const [workflow, setWorkflow] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [running, setRunning] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -28,6 +30,26 @@ export function OneAIBotBridgePanel() {
     load();
   }, []);
 
+  async function runBridgeCheck() {
+    setRunning(true);
+    setWorkflow(null);
+    try {
+      const res = await fetch('/api/theone/apps/bot/bridge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'assist' }),
+      });
+      setWorkflow(await res.json());
+    } catch (error) {
+      setWorkflow({
+        ok: false,
+        error: error instanceof Error ? error.message : 'Bot bridge workflow failed.',
+      });
+    } finally {
+      setRunning(false);
+    }
+  }
+
   const connected = Boolean(bot?.ok);
   const configured = Boolean(bot?.configured);
 
@@ -39,7 +61,12 @@ export function OneAIBotBridgePanel() {
             <h2 className="panel-title">Bridge Contract</h2>
             <p className="panel-subtitle">TheOne registers the existing bot as an external community agent runtime. The bot repository is not modified.</p>
           </div>
-          <button className="mini-action" type="button" onClick={load} disabled={loading}>Refresh</button>
+          <div className="button-row">
+            <button className="mini-action" type="button" onClick={load} disabled={loading}>Refresh</button>
+            <button className="mini-action primary" type="button" onClick={runBridgeCheck} disabled={running}>
+              {running ? 'Checking' : 'Record Proof'}
+            </button>
+          </div>
         </div>
 
         <ProductStatusStrip
@@ -61,6 +88,14 @@ export function OneAIBotBridgePanel() {
           <span>3. Safe execution: Bot-triggered OneClaw work remains inside the Bot's existing bridge and approval context.</span>
           <span>4. Next bridge: add a small Bot-side HTTP command endpoint later, only if you choose to change the Bot code.</span>
         </div>
+
+        {workflow ? (
+          <div className="run-route-card">
+            <span>Bridge workflow</span>
+            <strong>{workflow.appResult?.summary || workflow.error || 'Bot bridge proof recorded.'}</strong>
+            <p>{workflow.runId ? `Run ${workflow.runId}` : 'No run id returned.'}</p>
+          </div>
+        ) : null}
       </div>
 
       <aside className="product-result-card worker-app-result">

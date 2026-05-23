@@ -1,4 +1,13 @@
 import { getTheOneKernelStatus } from '../kernel/status';
+import { runBotBridgeApp } from './bot-bridge';
+import { runApiOperationApp } from './api-operation';
+import { runBrowserOperationApp } from './browser-operation';
+import { runDesktopControlApp } from './desktop-control';
+import { runFilesWorkflowApp } from './files-workflow';
+import { runGitHubAnalysisApp } from './github-analysis';
+import { runReportGenerateApp } from './report-generate';
+import { runWebAnalysisApp } from './web-analysis';
+import { runXGrowthApp } from './x-growth';
 import { runOneClawAction, getOneClawBridgeStatus, getOneClawCapabilityManifest } from '../providers/oneclaw';
 import { createRunId, createPlanId } from '../runtime';
 import { createExecutionRecord, createWorkflowTrace } from '../runtime/workflow-runtime';
@@ -43,6 +52,11 @@ function extractRepo(input: string) {
 
 function extractPath(input: string) {
   return input.match(/(?:\/Users|\/tmp|\/private|~\/|\.\/)[^\s]+/)?.[0] || '/tmp';
+}
+
+function extractHttpUrl(input: string) {
+  const match = input.match(/https?:\/\/[^\s)]+/i);
+  return match?.[0] || '';
 }
 
 function contentAfterColon(input: string) {
@@ -90,6 +104,48 @@ export function routeRunToApp(raw: string): AppRoute | null {
       approvalMode: 'auto',
       risk: 'low',
       summary: `Read GitHub repository status for ${repo}.`,
+    };
+  }
+
+  if (/(bot|telegram|oneai bot|机器人|电报)/i.test(value)) {
+    return {
+      app: 'bot',
+      title: 'OneAI Bot Bridge',
+      action: 'oneai.bot.bridge.status',
+      input: {},
+      approvalMode: 'auto',
+      risk: 'low',
+      summary: 'Check the OneAI Bot bridge and record the runtime contract.',
+    };
+  }
+
+  if (/(report|brief|memo|报告|简报|总结文档)/i.test(value)) {
+    return {
+      app: 'report',
+      title: 'Report Generation',
+      action: 'report.generate',
+      input: {
+        topic: contentAfterColon(value) || value,
+        source: value,
+        format: /investor|投资/i.test(value) ? 'Investor summary' : 'Brief',
+      },
+      approvalMode: 'auto',
+      risk: 'low',
+      summary: 'Generate a report and store it as reusable memory.',
+    };
+  }
+
+  if (/(api|webhook|接口|sync|同步)/i.test(value)) {
+    const url = extractHttpUrl(value) || 'https://oneclaw-production.up.railway.app/health';
+    const method = value.match(/\b(GET|POST|PUT|PATCH|DELETE)\b/i)?.[0]?.toUpperCase() || 'GET';
+    return {
+      app: 'api',
+      title: 'API Operations',
+      action: 'api.request',
+      input: { url, method, body: contentAfterColon(value) },
+      approvalMode: method === 'GET' ? 'auto' : 'manual',
+      risk: method === 'GET' ? 'medium' : 'high',
+      summary: `Run ${method} API operation for ${url}.`,
     };
   }
 
@@ -189,6 +245,19 @@ export function routeRunToApp(raw: string): AppRoute | null {
     };
   }
 
+  if (/(browser|浏览器|screenshot page|open page)/i.test(value)) {
+    const url = extractUrl(value);
+    return {
+      app: 'browser',
+      title: 'Browser Operations',
+      action: /open|打开/i.test(value) ? 'browser.open' : /screenshot|截图/i.test(value) ? 'browser.screenshot' : 'browser.extract',
+      input: { url },
+      approvalMode: 'auto',
+      risk: 'medium',
+      summary: `Run a browser operation for ${url}.`,
+    };
+  }
+
   if (/(website|web page|browse|网页|网站|浏览)/i.test(valueLower) || /https?:\/\/|(?:[a-z0-9-]+\.)+[a-z]{2,}/i.test(value)) {
     const url = extractUrl(value);
     return {
@@ -203,6 +272,111 @@ export function routeRunToApp(raw: string): AppRoute | null {
   }
 
   return null;
+}
+
+export async function runUnifiedAppRoute(input: {
+  raw: string;
+  mode: TheOneMode;
+  route: AppRoute;
+}): Promise<TheOneRunResult> {
+  if (input.route.app === 'web') {
+    return runWebAnalysisApp({
+      url: String(input.route.input.url || ''),
+      focus: contentAfterColon(input.raw) || 'Useful findings',
+      mode: input.mode,
+      language: 'en',
+    });
+  }
+
+  if (input.route.app === 'github' && input.route.action !== 'git.issue.create') {
+    return runGitHubAnalysisApp({
+      repo: String(input.route.input.repo || ''),
+      branch: String(input.route.input.branch || 'main'),
+      focus: /release|发布/i.test(input.raw) ? 'Release readiness' : /risk|风险/i.test(input.raw) ? 'Risk check' : 'CI health',
+      mode: input.mode,
+      language: 'en',
+    });
+  }
+
+  if (input.route.app === 'x') {
+    return runXGrowthApp({
+      topic: String(input.route.input.query || input.route.input.content || contentAfterColon(input.raw) || 'AI agents workflow'),
+      goal: input.route.action === 'x.searchRecentTweets' ? 'Summarize market conversation' : 'Prepare a high-signal X post',
+      mode: input.mode,
+      language: 'en',
+    });
+  }
+
+  if (input.route.app === 'desktop') {
+    const action = input.route.action;
+    const operation = action === 'desktop.screenshot'
+      ? 'screenshot'
+      : action === 'desktop.type'
+        ? 'type'
+        : action === 'desktop.hotkey'
+          ? 'hotkey'
+          : 'state';
+    return runDesktopControlApp({
+      app: String(input.route.input.app || 'Google Chrome'),
+      operation,
+      text: input.route.input.text ? String(input.route.input.text) : undefined,
+      keys: Array.isArray(input.route.input.keys) ? input.route.input.keys.map(String) : undefined,
+      mode: input.mode,
+    });
+  }
+
+  if (input.route.app === 'api') {
+    return runApiOperationApp({
+      url: String(input.route.input.url || ''),
+      method: String(input.route.input.method || 'GET'),
+      body: input.route.input.body ? String(input.route.input.body) : undefined,
+      mode: input.mode,
+    });
+  }
+
+  if (input.route.app === 'browser') {
+    const action = input.route.action;
+    return runBrowserOperationApp({
+      url: String(input.route.input.url || ''),
+      operation: action === 'browser.open' ? 'open' : action === 'browser.screenshot' ? 'screenshot' : 'extract',
+      mode: input.mode,
+    });
+  }
+
+  if (input.route.app === 'report') {
+    return runReportGenerateApp({
+      topic: String(input.route.input.topic || input.raw),
+      source: String(input.route.input.source || input.raw),
+      format: String(input.route.input.format || 'Brief'),
+      mode: input.mode,
+      language: 'en',
+    });
+  }
+
+  if (input.route.app === 'files') {
+    const action = input.route.action;
+    const operation = action === 'file.exists'
+      ? 'exists'
+      : action === 'file.read'
+        ? 'read'
+        : action === 'file.write'
+          ? 'write'
+          : action === 'file.append'
+            ? 'append'
+            : 'list';
+    return runFilesWorkflowApp({
+      path: String(input.route.input.path || '/tmp'),
+      operation,
+      content: input.route.input.content ? String(input.route.input.content) : undefined,
+      mode: input.mode,
+    });
+  }
+
+  if (input.route.app === 'bot') {
+    return runBotBridgeApp({ mode: input.mode });
+  }
+
+  return runAppRoutedAction(input);
 }
 
 function statusFromTask(task: any): 'submitted' | 'success' | 'blocked' | 'failed' | 'mock' {

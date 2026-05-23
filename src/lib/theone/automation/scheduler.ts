@@ -31,6 +31,16 @@ export type AutomationRouteEvent = {
   payload?: unknown;
 };
 
+export type AutomationRunRecord = {
+  id: string;
+  jobId: string;
+  runId?: string | null;
+  status: string;
+  summary: string;
+  payload?: unknown;
+  createdAt?: string;
+};
+
 function id(prefix: string) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -72,6 +82,18 @@ function parseJob(row: any): AutomationJob {
     nextRunAt: iso(row.nextrunat ?? row.nextRunAt),
     createdAt: iso(row.createdat ?? row.createdAt) || undefined,
     updatedAt: iso(row.updatedat ?? row.updatedAt) || undefined,
+  };
+}
+
+function parseRun(row: any): AutomationRunRecord {
+  return {
+    id: row.id,
+    jobId: row.jobid ?? row.jobId,
+    runId: row.runid ?? row.runId,
+    status: row.status,
+    summary: row.summary,
+    payload: parseJson(row.payloadjson ?? row.payloadJson),
+    createdAt: iso(row.createdat ?? row.createdAt) || undefined,
   };
 }
 
@@ -134,6 +156,20 @@ export async function listAutomationJobs() {
   await seedDefaultsIfEmpty();
   const rows = await prisma.$queryRawUnsafe<any[]>('select * from "TheOneAutomationJob" order by createdAt desc');
   return rows.map(parseJob);
+}
+
+export async function listAutomationRuns(input: { jobIds?: string[]; limit?: number } = {}) {
+  await ensureTheOneDatabase();
+  const limit = Math.max(1, Math.min(input.limit || 50, 200));
+  const jobIds = (input.jobIds || []).filter(Boolean);
+  const rows = jobIds.length
+    ? await prisma.$queryRawUnsafe<any[]>(
+      `select * from "TheOneAutomationRun" where jobId = any($1::text[]) order by createdAt desc limit $2`,
+      jobIds,
+      limit
+    )
+    : await prisma.$queryRawUnsafe<any[]>(`select * from "TheOneAutomationRun" order by createdAt desc limit $1`, limit);
+  return rows.map(parseRun);
 }
 
 export async function upsertAutomationJob(input: Partial<AutomationJob>) {

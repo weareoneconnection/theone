@@ -7,6 +7,7 @@ import type { ReactNode } from 'react';
 const links = [
   { href: '/run', label: 'Run' },
   { href: '/apps', label: 'Apps' },
+  { href: '/workspaces', label: 'Workspaces' },
   { href: '/workers', label: 'Workers' },
   { href: '/runs', label: 'Runs' },
   { href: '/proof', label: 'Proof' },

@@ -20,7 +20,7 @@ export type ProductionMaturityCapability = {
 
 export type ProductionMaturityReport = {
   ok: true;
-  level: 'L22';
+  level: 'L25';
   label: string;
   score: number;
   readiness: 'prototype' | 'alpha' | 'production_candidate';
@@ -104,16 +104,52 @@ export async function getProductionMaturityReport(): Promise<ProductionMaturityR
 
   const osLevels: ProductionMaturityCapability[] = [
     {
+      key: 'l25_autonomous_workspace_os',
+      title: 'L25 Autonomous Workspace OS',
+      level: 'L25',
+      status: automationStats.total > 0 ? 'guarded' : 'partial',
+      score: Math.min(82, 58 + automationStats.active * 5 + Math.max(0, 5 - automationStats.circuitOpen) * 2),
+      current: 'TheOne can turn App workflows into ongoing autonomous workspaces backed by scheduler jobs, cadence, daily limits, proof, memory, and circuit breakers.',
+      target: 'Every App can become a durable workspace with triggers, queue leases, cross-App handoffs, escalation, replay, and operator-visible controls.',
+      controls: ['workspace templates', 'automation jobs', 'cooldown', 'daily limits', 'failure circuit breaker', 'proof and memory'],
+      gaps: ['workspace queue still runs through the simple scheduler', 'cross-App handoff chains are template-level, not visual DAGs yet'],
+      nextActions: ['add workspace run timeline', 'add cross-App handoff DAGs', 'add per-workspace memory recall and evaluation'],
+    },
+    {
+      key: 'l24_app_memory_os',
+      title: 'L24 App Memory OS',
+      level: 'L24',
+      status: 'guarded',
+      score: 76,
+      current: 'Report, API, Browser, Web, GitHub, X, Desktop, Files, and Bot Apps now have product workflows, and new App workflows can attach memory packs to run storage.',
+      target: 'Every App result becomes structured reusable context with facts, decisions, next actions, source receipts, and app-specific recall.',
+      controls: ['app-specific API', 'appMemoryPack', 'proof ledger', 'memory store', 'Run router'],
+      gaps: ['memory recall is not yet app-specific in the UI', 'memory packs do not yet have versioned schemas per App'],
+      nextActions: ['add app memory recall panels', 'version memory pack schemas', 'connect Reports to selected prior proof records'],
+    },
+    {
+      key: 'l23_app_workflow_closure',
+      title: 'L23 App Workflow Closure',
+      level: 'L23',
+      status: 'guarded',
+      score: 88,
+      current: 'The Web, GitHub, X, Desktop, Files, Bot, Report, API, and Browser Apps have dedicated workflow closures that route input through TheOne policy, OneClaw or bridge workers, proof, and readable product results.',
+      target: 'Every core App has a dedicated product workflow, app-specific API, proof receipt, memory write, and next-action output.',
+      controls: ['app-specific API', 'OneClaw worker receipt', 'OneAI summarization', 'proof save', 'plain result panel'],
+      gaps: ['Calendar, Email, Database, and vertical Apps are still capability paths', 'Some App results still use summary-level memory'],
+      nextActions: ['upgrade Email and Calendar App closures', 'add Database App closure', 'deepen app result memory packs'],
+    },
+    {
       key: 'l19_multi_app_automation_os',
       title: 'L19 Multi-App Automation OS',
       level: 'L19',
       status: connectedApps.length >= 5 && liveOrGuardedWorkers >= 4 ? 'guarded' : 'partial',
       score: Math.min(88, 48 + connectedApps.length * 7 + liveOrGuardedWorkers * 3),
-      current: `${connectedApps.length} user-facing app(s) are connected to OneClaw actions: Web, X, GitHub, Desktop, and Files.`,
+      current: `${connectedApps.length} core user-facing app(s) are connected to OneClaw actions; additional Report, API, and Browser apps now have full product workflow closures and Run can route into them.`,
       target: 'Every proven OneClaw worker has a focused App, Run can route to the right App automatically, and each result writes proof.',
       controls: ['Run entrypoint', 'Apps directory', 'OneClaw action bridge', 'approval-gated writes', 'proof-ready results'],
       gaps: ['Run does not yet deep-link every intent into the matching App', 'Report/API/Browser apps are not fully productized yet'],
-      nextActions: ['add Browser and API apps', 'route Run intents into app templates', 'persist app-specific receipts into proof'],
+      nextActions: ['add Email and Calendar apps', 'turn vertical Apps into product workflows', 'add app-specific memory recall'],
     },
     {
       key: 'l20_parallel_agent_runtime',
@@ -257,11 +293,11 @@ export async function getProductionMaturityReport(): Promise<ProductionMaturityR
 
   return {
     ok: true,
-    level: 'L22',
-    label: 'Agent OS Evolution Layer',
+    level: 'L25',
+    label: 'Autonomous Workspace OS Layer',
     score,
     readiness: readiness(score),
-    summary: 'TheOne now has the L19-L22 foundation: multi-app automation, parallel agent runtime concepts, installable OS packages, and a self-evolution loop. The next gap is durable runtime hardening and deeper App execution.',
+    summary: 'TheOne now has the L19-L25 foundation: multi-app automation, parallel agent runtime concepts, installable OS packages, self-evolution loop, App Memory Packs, and autonomous workspaces with cadence, limits, proof, and circuit breakers.',
     capabilities,
     evidence: {
       workers: workerStats,

@@ -25,6 +25,7 @@ export default function ProofPage() {
 
   const social = proof.filter((item) => item.type === 'social').length;
   const execution = proof.filter((item) => item.type === 'execution').length;
+  const appMemory = memory.filter((item) => String(item.kind || '').startsWith('app.') && String(item.kind || '').endsWith('.memory_pack')).length;
 
   return (
     <ProductPage
@@ -38,6 +39,7 @@ export default function ProofPage() {
             { label: 'Execution', value: execution },
             { label: 'Social', value: social },
             { label: 'Memory', value: memory.length },
+            { label: 'App Packs', value: appMemory, tone: 'assist' },
           ]}
         />
       )}
@@ -76,8 +78,13 @@ export default function ProofPage() {
               <ProductEmpty title="No memory yet" detail="Useful run summaries will be stored here." />
             ) : memory.map((item) => (
               <article key={item.id} className="product-memory-item">
-                <strong>{item.kind || 'memory'}</strong>
+                <strong>{String(item.kind || 'memory').replace(/^app\./, '').replace(/\.memory_pack$/, ' memory')}</strong>
                 <p>{item.summary || item.value || 'Stored context.'}</p>
+                {item.content?.nextActions?.length ? (
+                  <div className="app-next-list">
+                    {item.content.nextActions.slice(0, 2).map((action: string) => <span key={action}>{action}</span>)}
+                  </div>
+                ) : null}
               </article>
             ))}
           </div>

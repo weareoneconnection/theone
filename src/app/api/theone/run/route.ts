@@ -1,6 +1,6 @@
 import { runTheOne } from '@/lib/theone/orchestrator';
 import { saveRunResult } from '@/lib/theone/state/run-store';
-import { routeRunToApp, runAppRoutedAction } from '@/lib/theone/apps/run-app-router';
+import { routeRunToApp, runUnifiedAppRoute } from '@/lib/theone/apps/run-app-router';
 import type { TheOneMode } from '@/lib/theone/types';
 
 export async function POST(req: Request) {
@@ -11,7 +11,7 @@ export async function POST(req: Request) {
     const appRoute = routeRunToApp(raw);
 
     if (appRoute) {
-      const appResult = await runAppRoutedAction({
+      const appResult = await runUnifiedAppRoute({
         raw,
         mode,
         route: appRoute,

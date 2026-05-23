@@ -8,14 +8,14 @@ const phases = [
     summary: 'The first product surfaces people can use directly.',
     apps: [
       ['Web Analysis', '/apps/web', 'Ready', 'online', 'Read websites, summarize findings, and prepare next actions.'],
-      ['Search Research', '/workers', 'Next', 'assist', 'Search sources, compare evidence, and store reusable context.'],
+      ['Browser Operations', '/apps/browser', 'Ready', 'online', 'Open, extract, screenshot, and keep browser proof.'],
       ['X Growth', '/apps/x', 'Guarded', 'manual', 'Prepare posts, replies, limits, approvals, and public proof.'],
       ['GitHub Workflow', '/apps/github', 'Ready', 'online', 'Inspect repos, issues, actions, pull requests, and engineering status.'],
       ['Desktop Control', '/apps/desktop', 'Local', 'manual', 'Use the local OneClaw bridge to operate this computer safely.'],
       ['Files', '/apps/files', 'Ready', 'online', 'Read, transform, write, and route local or cloud artifacts.'],
       ['OneAI Bot', '/apps/bot', 'Bridge', 'assist', 'Connect the existing Telegram community bot without changing its code.'],
-      ['Reports', '/workers', 'Planned', 'assist', 'Turn research, files, and proof into documents and briefs.'],
-      ['Monitor', '/runs', 'Planned', 'assist', 'Watch runs, approvals, signals, failures, and recurring work.'],
+      ['Reports', '/apps/report', 'Ready', 'online', 'Turn research, files, and proof into documents and briefs.'],
+      ['Monitor', '/workspaces', 'Ready', 'assist', 'Watch runs, approvals, signals, failures, and recurring work.'],
     ],
   },
   {
@@ -26,7 +26,7 @@ const phases = [
       ['Email', '/workers', 'Planned', 'manual', 'Draft, search, summarize, and send email with consent controls.'],
       ['Calendar', '/workers', 'Planned', 'manual', 'Check availability, schedule events, and prepare meetings.'],
       ['Messages', '/workers', 'Planned', 'manual', 'Coordinate Slack, Teams, Telegram, and operator notifications.'],
-      ['API Operations', '/workers', 'Planned', 'assist', 'Call APIs, submit webhooks, sync systems, and record proof.'],
+      ['API Operations', '/apps/api', 'Ready', 'online', 'Call APIs, submit webhooks, sync systems, and record proof.'],
       ['Database', '/workers', 'Planned', 'manual', 'Query, inspect schemas, and prepare guarded writes.'],
       ['Tasks', '/workers', 'Planned', 'assist', 'Create missions, owners, checklists, approvals, and handoffs.'],
       ['Memory', '/proof', 'Planned', 'assist', 'Preserve preferences, decisions, proof, context, and patterns.'],
@@ -57,6 +57,8 @@ const osLevels = [
   ['L20', 'Parallel Agent Runtime', 'Planner, Executor, Reviewer, Policy, and Memory roles coordinate before execution.'],
   ['L21', 'Installable OS', 'Apps, workers, connectors, and policy packs become versioned installable packages.'],
   ['L22', 'Self-Evolving OS', 'TheOne learns from failures and proposes safe upgrades with simulation and rollback.'],
+  ['L24', 'App Memory OS', 'Focused Apps generate reusable memory packs, not just one-time outputs.'],
+  ['L25', 'Autonomous Workspace OS', 'Apps can become ongoing workspaces with cadence, limits, proof, and circuit breakers.'],
 ];
 
 export default function AppsPage() {
@@ -115,7 +117,7 @@ export default function AppsPage() {
             </div>
             <div className="phase-app-grid">
               {phase.apps.map(([title, href, status, tone, description]) => (
-                <Link key={title} href={href} className={title === 'Web Analysis' || title === 'OneAI Bot' ? 'phase-app-card primary' : 'phase-app-card'}>
+                <Link key={title} href={href} className={href.startsWith('/apps/') ? 'phase-app-card primary' : 'phase-app-card'}>
                   <div className="app-launch-top">
                     <span className="product-card-kicker">{href.startsWith('/apps/') ? href : 'capability'}</span>
                     <span className={`status-pill status-${tone}`}>{status}</span>

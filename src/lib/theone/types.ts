@@ -642,6 +642,14 @@ export type TheOneRunResult = {
   permissions?: PermissionDecision[];
   preflight?: ExecutionPreflightReport | null;
   multiAgentRuntime?: unknown;
+  appMemoryPack?: {
+    app: string;
+    title: string;
+    summary: string;
+    facts: string[];
+    nextActions: string[];
+    sourceRunId?: string;
+  };
   os?: TheOneOsState;
   error?: string;
 };

@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { AppMemoryRecall } from '@/components/theone/AppMemoryRecall';
 import { ProductEmpty, ProductPage, ProductStatusStrip, friendlyStatus } from '@/components/theone/ProductNav';
 
 const reportTypes = [
@@ -19,6 +20,7 @@ function normalizeUrl(value: string) {
 }
 
 function resultMessage(result: any) {
+  if (result?.appResult?.summary) return result.appResult.summary;
   const error = String(result?.error || '');
   if (/database|prisma|neon/i.test(error)) {
     return 'TheOne used safe mode because the memory database is temporarily unavailable. The website task can still run.';
@@ -42,6 +44,15 @@ function nextSteps(result: any) {
   return ['Review the summary', 'Save the useful points', 'Turn the findings into a post or report'];
 }
 
+function completedSteps(result: any) {
+  const steps = result?.plan?.steps || result?.os?.workflow?.steps || [];
+  return steps.filter((step: any) => step.status === 'completed').length;
+}
+
+function totalSteps(result: any) {
+  return (result?.plan?.steps || result?.os?.workflow?.steps || []).length;
+}
+
 export default function WebAppPage() {
   const [url, setUrl] = useState('weareoneconnection.org');
   const [reportType, setReportType] = useState(reportTypes[0]);
@@ -56,11 +67,12 @@ export default function WebAppPage() {
     setLoading(true);
     setResult(null);
     try {
-      const res = await fetch('/api/theone/run', {
+      const res = await fetch('/api/theone/apps/web/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          input: `Analyze website ${preparedUrl}. Focus: ${reportType}. Summarize the useful findings for a normal user.`,
+          url: preparedUrl,
+          focus: reportType,
           mode: 'assist',
           language: 'en',
         }),
@@ -155,11 +167,32 @@ export default function WebAppPage() {
           ) : (
             <div className="app-readable-result">
               <strong>{resultMessage(result)}</strong>
+              <div className="run-result-stats">
+                <div>
+                  <span>Steps</span>
+                  <strong>{completedSteps(result)}/{totalSteps(result) || 4}</strong>
+                </div>
+                <div>
+                  <span>Proof</span>
+                  <strong>{result.proofCount ?? result.proof?.length ?? 1}</strong>
+                </div>
+                <div>
+                  <span>Worker</span>
+                  <strong>{result.appResult?.oneClawTaskId ? 'receipt' : 'ready'}</strong>
+                </div>
+              </div>
               <div className="app-next-list">
                 {nextSteps(result).map((step) => (
                   <span key={step}>{step}</span>
                 ))}
               </div>
+              {result.appResult?.oneClawTaskId ? (
+                <div className="run-route-card">
+                  <span>OneClaw receipt</span>
+                  <strong>{result.appResult.oneClawTaskId}</strong>
+                  <p>{result.appResult.extractedTextLength || 0} characters captured for analysis.</p>
+                </div>
+              ) : null}
             </div>
           )}
         </aside>
@@ -183,6 +216,8 @@ export default function WebAppPage() {
           <strong>Run receipt and summary</strong>
         </div>
       </section>
+
+      <AppMemoryRecall app="web" title="Web Memory" detail="Website findings TheOne can reuse for future analysis, reports, and content." />
     </ProductPage>
   );
 }
