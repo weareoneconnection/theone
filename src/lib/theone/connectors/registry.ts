@@ -38,6 +38,18 @@ export const connectorRegistry: ConnectorDefinition[] = [
     riskProfile: 'high',
   },
   {
+    key: 'oneai_bot_connector',
+    title: 'OneAI Bot Connector',
+    kind: 'communication',
+    status: 'available',
+    description: 'Connects TheOne to the existing WAOC OneAI Telegram Bot runtime through a no-code-change bridge contract.',
+    capabilities: ['communicate', 'coordinate', 'monitor', 'govern', 'record', 'remember', 'learn'],
+    provider: 'theone',
+    actions: ['oneai.bot.status', 'oneai.bot.community_context', 'oneai.bot.oneclaw_bridge'],
+    permissionScopes: ['use_connector', 'read_context', 'read_memory', 'write_memory', 'submit_external', 'send_message'],
+    riskProfile: 'high',
+  },
+  {
     key: 'knowledge_connector',
     title: 'Knowledge Connector',
     kind: 'knowledge',

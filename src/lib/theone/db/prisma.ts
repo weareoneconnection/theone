@@ -76,6 +76,19 @@ async function ensurePostgresAuxTables() {
   `);
   await prisma.$executeRawUnsafe(`create index if not exists "TheOneAutomationJob_status_idx" on "TheOneAutomationJob"(status)`);
   await prisma.$executeRawUnsafe(`create index if not exists "TheOneAutomationJob_nextRunAt_idx" on "TheOneAutomationJob"(nextRunAt)`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationJob" add column if not exists triggerType text not null default 'manual'`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationJob" add column if not exists triggerJson text not null default '{}'`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationJob" add column if not exists command text not null default ''`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationJob" add column if not exists mode text not null default 'assist'`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationJob" add column if not exists status text not null default 'active'`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationJob" add column if not exists maxRunsPerDay integer not null default 3`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationJob" add column if not exists cooldownMinutes integer not null default 60`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationJob" add column if not exists failureStreak integer not null default 0`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationJob" add column if not exists circuitOpen boolean not null default false`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationJob" add column if not exists lastRunAt timestamptz`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationJob" add column if not exists nextRunAt timestamptz`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationJob" add column if not exists createdAt timestamptz not null default now()`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationJob" add column if not exists updatedAt timestamptz not null default now()`);
 
   await prisma.$executeRawUnsafe(`
     create table if not exists "TheOneAutomationRun" (
@@ -90,6 +103,12 @@ async function ensurePostgresAuxTables() {
   `);
   await prisma.$executeRawUnsafe(`create index if not exists "TheOneAutomationRun_jobId_idx" on "TheOneAutomationRun"(jobId)`);
   await prisma.$executeRawUnsafe(`create index if not exists "TheOneAutomationRun_createdAt_idx" on "TheOneAutomationRun"(createdAt)`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationRun" add column if not exists jobId text not null default 'unknown'`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationRun" add column if not exists runId text`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationRun" add column if not exists status text not null default 'unknown'`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationRun" add column if not exists summary text not null default ''`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationRun" add column if not exists payloadJson text`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneAutomationRun" add column if not exists createdAt timestamptz not null default now()`);
 
   await prisma.$executeRawUnsafe(`
     create table if not exists "TheOneExternalEvent" (
@@ -378,7 +397,10 @@ export function ensureTheOneDatabase() {
     await prisma.$executeRawUnsafe(`create index if not exists TheOneLearningInsight_category_idx on TheOneLearningInsight(category)`);
     await prisma.$executeRawUnsafe(`create index if not exists TheOneLearningInsight_status_idx on TheOneLearningInsight(status)`);
     await prisma.$executeRawUnsafe(`create index if not exists TheOneLearningInsight_target_idx on TheOneLearningInsight(targetType, targetId)`);
-  })();
+  })().catch((error) => {
+    ensurePromise = null;
+    throw error;
+  });
 
   return ensurePromise;
 }

@@ -47,8 +47,12 @@ function readiness(score: number): ProductionMaturityReport['readiness'] {
   return 'prototype';
 }
 
+function fallback<T>(result: PromiseSettledResult<T>, value: T): T {
+  return result.status === 'fulfilled' ? result.value : value;
+}
+
 export async function getProductionMaturityReport(): Promise<ProductionMaturityReport> {
-  const [workers, jobs, packages, rules, insights, events] = await Promise.all([
+  const [workersResult, jobsResult, packagesResult, rulesResult, insightsResult, eventsResult] = await Promise.allSettled([
     listWorkerRuntimes(),
     listAutomationJobs(),
     packageRegistrySummary(),
@@ -56,6 +60,18 @@ export async function getProductionMaturityReport(): Promise<ProductionMaturityR
     listLearningInsights(50),
     listTheOneEvents(120),
   ]);
+  const workers = fallback(workersResult, [] as Awaited<ReturnType<typeof listWorkerRuntimes>>);
+  const jobs = fallback(jobsResult, [] as Awaited<ReturnType<typeof listAutomationJobs>>);
+  const packages = fallback(packagesResult, {
+    total: 0,
+    installed: 0,
+    enabled: 0,
+    byKind: {},
+    packages: [],
+  } as Awaited<ReturnType<typeof packageRegistrySummary>>);
+  const rules = fallback(rulesResult, [] as Awaited<ReturnType<typeof listAutomationPolicyRules>>);
+  const insights = fallback(insightsResult, [] as Awaited<ReturnType<typeof listLearningInsights>>);
+  const events = fallback(eventsResult, [] as Awaited<ReturnType<typeof listTheOneEvents>>);
 
   const workerStats = {
     total: workers.length,

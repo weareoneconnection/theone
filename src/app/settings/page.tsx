@@ -102,6 +102,7 @@ export default function SettingsPage() {
   const oneAiCheck = providerCheck(checks, 'oneai');
   const oneClaw = providerByKey(providers, checks, 'oneclaw');
   const oneClawCheck = providerCheck(checks, 'oneclaw');
+  const oneAiBotCheck = providerCheck(checks, 'oneai_bot');
   const oneClawBase = oneClaw?.baseUrl || oneClawCheck?.baseUrl || oneClawCheck?.endpoint || '';
   const oneClawLocalTarget = isLocalEndpoint(oneClawBase);
   const desktopReady = Boolean(bridge?.desktopEnabled);
@@ -136,6 +137,13 @@ export default function SettingsPage() {
       tone: desktopReady ? 'online' : 'manual',
       detail: desktopReady ? `Desktop bridge is enabled on ${bridge?.platform || 'this computer'}.` : 'Start local OneClaw when desktop control is needed.',
     }),
+    connectionCard({
+      title: 'OneAI Bot Runtime',
+      role: 'Existing Telegram community bot, OneAI chat, community graph, and Bot-side OneClaw bridge.',
+      status: oneAiBotCheck?.ok ? 'ready' : oneAiBotCheck?.configured ? 'configured' : 'local repo',
+      tone: oneAiBotCheck?.ok ? 'online' : 'assist',
+      detail: oneAiBotCheck?.endpoint || oneAiBotCheck?.repoPath || 'WAOC OneAI Bot is registered as a no-code-change bridge.',
+    }),
   ];
 
   return (
@@ -146,7 +154,7 @@ export default function SettingsPage() {
       aside={(
         <ProductStatusStrip
           items={[
-            { label: 'Core systems', value: 4 },
+            { label: 'Core systems', value: 5 },
             { label: 'Online', value: Math.max(1, onlineProviders), tone: onlineProviders ? 'online' : 'assist' },
             { label: 'Capabilities', value: capabilityGroups.length },
             { label: 'Local desktop', value: desktopReady ? 'ready' : 'off', tone: desktopReady ? 'online' : 'manual' },

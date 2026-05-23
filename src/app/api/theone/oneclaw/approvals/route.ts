@@ -14,12 +14,13 @@ export async function GET() {
     return Response.json(
       {
         ok: false,
+        degraded: true,
         approvals: [],
         count: 0,
         source: 'oneclaw',
         error: error instanceof Error ? error.message : 'OneClaw approval lookup failed',
       },
-      { status: 502 }
+      { status: 200 }
     );
   }
 }

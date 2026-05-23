@@ -47,6 +47,17 @@ export const appBundleRegistry: AppBundleDefinition[] = [
     riskProfile: 'medium',
   },
   {
+    key: 'oneai_bot',
+    title: 'OneAI Bot OS',
+    domain: 'telegram community, missions, scoring, and OneClaw execution bridge',
+    status: 'installed',
+    description: 'Registers the existing WAOC OneAI Telegram Bot as an external community agent runtime without modifying the bot code.',
+    capabilities: ['communicate', 'coordinate', 'monitor', 'govern', 'record', 'remember', 'learn'],
+    skills: ['status_monitor', 'mission_orchestration', 'external_publish'],
+    requiredProviders: ['theone', 'oneai', 'oneclaw'],
+    riskProfile: 'high',
+  },
+  {
     key: 'operations',
     title: 'Operations OS',
     domain: 'browser, files, APIs, enterprise systems, field systems, and tools',

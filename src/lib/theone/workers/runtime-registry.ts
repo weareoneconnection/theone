@@ -171,6 +171,16 @@ const baseWorkers: WorkerRuntimeDefinition[] = [
     eventSources: ['webhook.generic'],
     policy: 'Inbound events are normalized first, then routed through policy before execution.',
   },
+  {
+    key: 'oneai_bot_worker',
+    title: 'OneAI Bot Worker',
+    provider: 'theone',
+    domain: 'community',
+    status: 'prepared',
+    actions: ['oneai.bot.status', 'oneai.bot.community_context', 'oneai.bot.oneclaw_bridge'],
+    eventSources: ['telegram.webhook', 'bot.community_event', 'bot.oneclaw_execution'],
+    policy: 'TheOne may inspect bot readiness and route community context; Telegram sends and bot-triggered OneClaw execution stay approval and bot-context gated.',
+  },
 ];
 
 export async function listWorkerRuntimes() {

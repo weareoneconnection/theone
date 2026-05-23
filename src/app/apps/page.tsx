@@ -13,6 +13,7 @@ const phases = [
       ['GitHub Workflow', '/apps/github', 'Ready', 'online', 'Inspect repos, issues, actions, pull requests, and engineering status.'],
       ['Desktop Control', '/apps/desktop', 'Local', 'manual', 'Use the local OneClaw bridge to operate this computer safely.'],
       ['Files', '/apps/files', 'Ready', 'online', 'Read, transform, write, and route local or cloud artifacts.'],
+      ['OneAI Bot', '/apps/bot', 'Bridge', 'assist', 'Connect the existing Telegram community bot without changing its code.'],
       ['Reports', '/workers', 'Planned', 'assist', 'Turn research, files, and proof into documents and briefs.'],
       ['Monitor', '/runs', 'Planned', 'assist', 'Watch runs, approvals, signals, failures, and recurring work.'],
     ],
@@ -114,7 +115,7 @@ export default function AppsPage() {
             </div>
             <div className="phase-app-grid">
               {phase.apps.map(([title, href, status, tone, description]) => (
-                <Link key={title} href={href} className={title === 'Web Analysis' ? 'phase-app-card primary' : 'phase-app-card'}>
+                <Link key={title} href={href} className={title === 'Web Analysis' || title === 'OneAI Bot' ? 'phase-app-card primary' : 'phase-app-card'}>
                   <div className="app-launch-top">
                     <span className="product-card-kicker">{href.startsWith('/apps/') ? href : 'capability'}</span>
                     <span className={`status-pill status-${tone}`}>{status}</span>
@@ -122,9 +123,9 @@ export default function AppsPage() {
                   <h3>{title}</h3>
                   <p>{description}</p>
                   <div className="app-powered-chain">
-                    <span>{title === 'Web Analysis' ? 'Open live app' : 'View capability path'}</span>
+                    <span>{href.startsWith('/apps/') ? 'Open live app' : 'View capability path'}</span>
                   </div>
-                  <strong>{title === 'Web Analysis' ? 'Open app' : 'View'}</strong>
+                  <strong>{href.startsWith('/apps/') ? 'Open app' : 'View'}</strong>
                 </Link>
               ))}
             </div>
