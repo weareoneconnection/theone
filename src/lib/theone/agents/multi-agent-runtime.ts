@@ -15,6 +15,15 @@ import type {
 
 export type MultiAgentRole = 'planner' | 'policy' | 'critic' | 'operator' | 'memory';
 
+export type MultiAgentLease = {
+  id: string;
+  role: MultiAgentRole;
+  status: 'leased' | 'released';
+  acquiredAt: string;
+  expiresAt: string;
+  scope: string[];
+};
+
 export type MultiAgentFinding = {
   role: MultiAgentRole;
   status: 'pass' | 'warn' | 'block';
@@ -30,9 +39,11 @@ export type MultiAgentRuntimeResult = {
   id: string;
   mode: TheOneMode;
   status: 'pass' | 'warn' | 'block';
+  qualityScore: number;
   startedAt: string;
   finishedAt: string;
   durationMs: number;
+  leases: MultiAgentLease[];
   agents: MultiAgentFinding[];
   consensus: {
     status: 'pass' | 'warn' | 'block';
@@ -40,6 +51,13 @@ export type MultiAgentRuntimeResult = {
     blockers: string[];
     warnings: string[];
     recommendations: string[];
+  };
+  merge: {
+    strategy: 'weighted_consensus';
+    acceptedAgents: MultiAgentRole[];
+    blockedAgents: MultiAgentRole[];
+    warningAgents: MultiAgentRole[];
+    selectedRecommendationCount: number;
   };
   executions: ExecutionRecord[];
   proof: ProofRecord[];
@@ -62,6 +80,27 @@ function now() {
 
 function runtimeId() {
   return `mar_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createLease(role: MultiAgentRole, runId: string): MultiAgentLease {
+  const acquiredAt = now();
+  const expiresAt = new Date(Date.now() + 60_000).toISOString();
+  const scopes: Record<MultiAgentRole, string[]> = {
+    planner: ['plan.read', 'workflow.shape'],
+    policy: ['policy.evaluate', 'approval.read'],
+    critic: ['plan.review', 'risk.review'],
+    operator: ['worker.route', 'connector.read'],
+    memory: ['memory.read', 'proof.suggest'],
+  };
+
+  return {
+    id: `lease_${role}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    role,
+    status: 'leased',
+    acquiredAt,
+    expiresAt,
+    scope: [`run:${runId}`, ...scopes[role]],
+  };
 }
 
 async function timed(role: MultiAgentRole, fn: () => Omit<MultiAgentFinding, 'role' | 'durationMs'>): Promise<MultiAgentFinding> {
@@ -196,9 +235,19 @@ function consensus(agents: MultiAgentFinding[]): MultiAgentRuntimeResult['consen
   };
 }
 
+function qualityScore(agents: MultiAgentFinding[]) {
+  if (!agents.length) return 0;
+  const confidence = agents.reduce((sum, agent) => sum + agent.confidence, 0) / agents.length;
+  const warningPenalty = agents.filter((agent) => agent.status === 'warn').length * 0.08;
+  const blockPenalty = agents.filter((agent) => agent.status === 'block').length * 0.22;
+  return Math.max(0, Math.min(100, Math.round((confidence - warningPenalty - blockPenalty) * 100)));
+}
+
 export async function runMultiAgentRuntime(input: MultiAgentInput): Promise<MultiAgentRuntimeResult> {
   const startedAt = now();
   const startedMs = Date.now();
+  const leases = (['planner', 'policy', 'critic', 'operator', 'memory'] as MultiAgentRole[])
+    .map((role) => createLease(role, input.runId));
   const agents = await Promise.all([
     plannerAgent(input),
     policyAgent(input),
@@ -209,6 +258,14 @@ export async function runMultiAgentRuntime(input: MultiAgentInput): Promise<Mult
   const finalConsensus = consensus(agents);
   const finishedAt = now();
   const id = runtimeId();
+  const score = qualityScore(agents);
+  const merge: MultiAgentRuntimeResult['merge'] = {
+    strategy: 'weighted_consensus',
+    acceptedAgents: agents.filter((agent) => agent.status === 'pass').map((agent) => agent.role),
+    blockedAgents: agents.filter((agent) => agent.status === 'block').map((agent) => agent.role),
+    warningAgents: agents.filter((agent) => agent.status === 'warn').map((agent) => agent.role),
+    selectedRecommendationCount: finalConsensus.recommendations.length,
+  };
 
   const executions = agents.map((agent) => createExecutionRecord({
     provider: 'theone',
@@ -222,11 +279,14 @@ export async function runMultiAgentRuntime(input: MultiAgentInput): Promise<Mult
     id,
     mode: input.mode,
     status: finalConsensus.status,
+    qualityScore: score,
     startedAt,
     finishedAt,
     durationMs: Date.now() - startedMs,
+    leases: leases.map((lease) => ({ ...lease, status: 'released' })),
     agents,
     consensus: finalConsensus,
+    merge,
     executions,
     proof: [{
       type: 'system',
@@ -236,6 +296,9 @@ export async function runMultiAgentRuntime(input: MultiAgentInput): Promise<Mult
       metadata: {
         runtimeId: id,
         status: finalConsensus.status,
+        qualityScore: score,
+        leases,
+        merge,
         agents,
         recommendations: finalConsensus.recommendations,
       },

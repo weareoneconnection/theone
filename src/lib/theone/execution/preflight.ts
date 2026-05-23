@@ -23,6 +23,69 @@ function hasRequiredFields(input: Record<string, unknown>, required: string[]) {
   return required.every((field) => input[field] !== undefined && input[field] !== null && input[field] !== '');
 }
 
+function sandboxBoundaryForAction(action: string): ExecutionPreflightCheck {
+  if (action.startsWith('desktop.')) {
+    return check(
+      `sandbox_${action}`,
+      `${action} sandbox`,
+      'warn',
+      'Desktop control must run through a local bridge, app allowlist, and operator approval boundary.'
+    );
+  }
+
+  if (['file.write', 'file.append', 'file.delete'].includes(action)) {
+    return check(
+      `sandbox_${action}`,
+      `${action} sandbox`,
+      'warn',
+      'Filesystem writes require scoped paths, approval, and rollback or receipt evidence.'
+    );
+  }
+
+  if (action === 'social.post') {
+    return check(
+      `sandbox_${action}`,
+      `${action} sandbox`,
+      'warn',
+      'Public communication requires approval, account limits, duplicate checks, and rate-limit guardrails.'
+    );
+  }
+
+  if (action.startsWith('api.') || action.startsWith('browser.')) {
+    return check(
+      `sandbox_${action}`,
+      `${action} sandbox`,
+      'pass',
+      'Network execution is constrained by host allowlists, timeout policy, and proof receipts.'
+    );
+  }
+
+  if (action.startsWith('git.') || action.startsWith('x.')) {
+    return check(
+      `sandbox_${action}`,
+      `${action} sandbox`,
+      'pass',
+      'External connector read/write boundaries are covered by scoped credentials and action-level policy.'
+    );
+  }
+
+  if (action.startsWith('shell.') || action.startsWith('payment.') || action.startsWith('web3.')) {
+    return check(
+      `sandbox_${action}`,
+      `${action} sandbox`,
+      'warn',
+      'Critical actions require explicit approval and should remain disabled or prepared until a policy pack allows them.'
+    );
+  }
+
+  return check(
+    `sandbox_${action}`,
+    `${action} sandbox`,
+    'pass',
+    'Action runs inside the default TheOne sandbox boundary.'
+  );
+}
+
 export function preflightOneClawTask(input: {
   task: OneClawTask | null | undefined;
   intent: ClassifiedIntent;
@@ -126,6 +189,8 @@ export function preflightOneClawTask(input: {
     if (capability.approvalRequired || input.mode === 'manual' || task.approvalMode === 'manual') {
       approvalActions.push(step.action);
     }
+
+    checks.push(sandboxBoundaryForAction(step.action));
   }
 
   const hasFailures = checks.some((item) => item.status === 'fail');

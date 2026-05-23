@@ -20,7 +20,7 @@ export type ProductionMaturityCapability = {
 
 export type ProductionMaturityReport = {
   ok: true;
-  level: 'L17';
+  level: 'L22';
   label: string;
   score: number;
   readiness: 'prototype' | 'alpha' | 'production_candidate';
@@ -83,7 +83,61 @@ export async function getProductionMaturityReport(): Promise<ProductionMaturityR
   };
 
   const packageKinds = packages.byKind || {};
-  const capabilities: ProductionMaturityCapability[] = [
+  const connectedApps = ['web', 'x', 'github', 'desktop', 'files'];
+  const liveOrGuardedWorkers = workerStats.live + workerStats.guarded;
+
+  const osLevels: ProductionMaturityCapability[] = [
+    {
+      key: 'l19_multi_app_automation_os',
+      title: 'L19 Multi-App Automation OS',
+      level: 'L19',
+      status: connectedApps.length >= 5 && liveOrGuardedWorkers >= 4 ? 'guarded' : 'partial',
+      score: Math.min(88, 48 + connectedApps.length * 7 + liveOrGuardedWorkers * 3),
+      current: `${connectedApps.length} user-facing app(s) are connected to OneClaw actions: Web, X, GitHub, Desktop, and Files.`,
+      target: 'Every proven OneClaw worker has a focused App, Run can route to the right App automatically, and each result writes proof.',
+      controls: ['Run entrypoint', 'Apps directory', 'OneClaw action bridge', 'approval-gated writes', 'proof-ready results'],
+      gaps: ['Run does not yet deep-link every intent into the matching App', 'Report/API/Browser apps are not fully productized yet'],
+      nextActions: ['add Browser and API apps', 'route Run intents into app templates', 'persist app-specific receipts into proof'],
+    },
+    {
+      key: 'l20_parallel_agent_runtime',
+      title: 'L20 Parallel Agent Runtime',
+      level: 'L20',
+      status: 'partial',
+      score: 62,
+      current: 'TheOne has Planner, Policy, Critic, Operator, and Memory role concepts with proof and replay hooks.',
+      target: 'Planner, Executor, Reviewer, Memory, and Policy agents run in parallel with leases, cancellation, merge rules, and shared trace IDs.',
+      controls: ['multi-agent quorum', 'policy verdict', 'critic verdict', 'run replay', 'proof ledger'],
+      gaps: ['no durable per-agent lease table', 'parallel worker merge is not yet exposed in product UI', 'no per-agent quality score'],
+      nextActions: ['add agent run table', 'add parallel execution board', 'score and merge agent outputs'],
+    },
+    {
+      key: 'l21_installable_os',
+      title: 'L21 Installable App / Worker / Connector OS',
+      level: 'L21',
+      status: packages.total > 0 ? 'guarded' : 'partial',
+      score: Math.min(84, 46 + pct(packages.enabled, packages.total) / 2 + Object.keys(packageKinds).length * 5),
+      current: `${packages.total} package(s) are registered across apps, workers, connectors, and policy packs.`,
+      target: 'Apps, workers, connectors, policy packs, memory packs, and UI schemas are installable, versioned, scoped, and composable.',
+      controls: ['package registry', 'manifest', 'dependencies', 'enabled flag', 'install endpoint'],
+      gaps: ['no signature verification', 'no compatibility solver', 'limited tenant-scoped installs'],
+      nextActions: ['add signed package manifests', 'add compatibility constraints', 'add package-level sandbox profiles'],
+    },
+    {
+      key: 'l22_self_evolving_os',
+      title: 'L22 Self-Evolving OS',
+      level: 'L22',
+      status: learningStats.total > 0 ? 'partial' : 'planned',
+      score: Math.min(78, 36 + learningStats.suggested * 6 + learningStats.applied * 12 + (eventStats.traces > 0 ? 8 : 0)),
+      current: 'The learning engine can inspect runs, events, approvals, package state, and failures to produce improvement insights.',
+      target: 'TheOne proposes safe upgrades to apps, policies, workers, prompts, memory rules, and automation loops, then simulates before applying.',
+      controls: ['learning insights', 'evidence records', 'apply/dismiss state', 'policy registry', 'event ledger'],
+      gaps: ['learning does not yet generate executable diffs', 'no simulation gate before applying suggestions', 'no rollback bundle per upgrade'],
+      nextActions: ['generate policy/app diffs from insights', 'run simulations before apply', 'attach rollback plans to every self-upgrade'],
+    },
+  ];
+
+  const hardeningCapabilities: ProductionMaturityCapability[] = [
     {
       key: 'stable_worker_queue',
       title: 'Stable Worker Queue',
@@ -182,15 +236,16 @@ export async function getProductionMaturityReport(): Promise<ProductionMaturityR
     },
   ];
 
-  const score = Math.round(capabilities.reduce((sum, item) => sum + item.score, 0) / capabilities.length);
+  const capabilities = [...osLevels, ...hardeningCapabilities];
+  const score = Math.round(osLevels.reduce((sum, item) => sum + item.score, 0) / osLevels.length);
 
   return {
     ok: true,
-    level: 'L17',
-    label: 'Production Maturity Layer',
+    level: 'L22',
+    label: 'Agent OS Evolution Layer',
     score,
     readiness: readiness(score),
-    summary: 'TheOne has advanced from self-evolving OS prototype toward production-grade OS control plane. The next gap is runtime hardening rather than architecture.',
+    summary: 'TheOne now has the L19-L22 foundation: multi-app automation, parallel agent runtime concepts, installable OS packages, and a self-evolution loop. The next gap is durable runtime hardening and deeper App execution.',
     capabilities,
     evidence: {
       workers: workerStats,

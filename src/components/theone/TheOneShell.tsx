@@ -119,7 +119,7 @@ export function TheOneShell({
             <StatusMetric label="Run" value={runId} />
             <StatusMetric label="OneAI" value={oneAiMode} tone={oneAiMode} />
             <StatusMetric label="OneClaw" value={oneClawMode} tone={oneClawMode} />
-            <StatusMetric label="Level" value="L17" tone="online" />
+            <StatusMetric label="Level" value="L22" tone="online" />
           </div>
         </section>
 

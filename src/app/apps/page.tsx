@@ -9,10 +9,10 @@ const phases = [
     apps: [
       ['Web Analysis', '/apps/web', 'Ready', 'online', 'Read websites, summarize findings, and prepare next actions.'],
       ['Search Research', '/workers', 'Next', 'assist', 'Search sources, compare evidence, and store reusable context.'],
-      ['X Growth', '/workers', 'Planned', 'manual', 'Prepare posts, replies, limits, approvals, and public proof.'],
-      ['GitHub Workflow', '/workers', 'Planned', 'manual', 'Inspect repos, issues, actions, pull requests, and engineering status.'],
-      ['Desktop Control', '/workers', 'Local', 'manual', 'Use the local OneClaw bridge to operate this computer safely.'],
-      ['Files', '/workers', 'Planned', 'manual', 'Read, transform, write, and route local or cloud artifacts.'],
+      ['X Growth', '/apps/x', 'Guarded', 'manual', 'Prepare posts, replies, limits, approvals, and public proof.'],
+      ['GitHub Workflow', '/apps/github', 'Ready', 'online', 'Inspect repos, issues, actions, pull requests, and engineering status.'],
+      ['Desktop Control', '/apps/desktop', 'Local', 'manual', 'Use the local OneClaw bridge to operate this computer safely.'],
+      ['Files', '/apps/files', 'Ready', 'online', 'Read, transform, write, and route local or cloud artifacts.'],
       ['Reports', '/workers', 'Planned', 'assist', 'Turn research, files, and proof into documents and briefs.'],
       ['Monitor', '/runs', 'Planned', 'assist', 'Watch runs, approvals, signals, failures, and recurring work.'],
     ],
@@ -51,8 +51,16 @@ const phases = [
   },
 ];
 
+const osLevels = [
+  ['L19', 'Multi-App Automation OS', 'Run and Apps route proven OneClaw workers into real user-facing workspaces.'],
+  ['L20', 'Parallel Agent Runtime', 'Planner, Executor, Reviewer, Policy, and Memory roles coordinate before execution.'],
+  ['L21', 'Installable OS', 'Apps, workers, connectors, and policy packs become versioned installable packages.'],
+  ['L22', 'Self-Evolving OS', 'TheOne learns from failures and proposes safe upgrades with simulation and rollback.'],
+];
+
 export default function AppsPage() {
   const appCount = phases.reduce((count, phase) => count + phase.apps.length, 0);
+  const liveCount = phases.reduce((count, phase) => count + phase.apps.filter((app) => app[2] === 'Ready' || app[2] === 'Guarded' || app[2] === 'Local').length, 0);
 
   return (
     <ProductPage
@@ -64,7 +72,7 @@ export default function AppsPage() {
           items={[
             { label: 'Phases', value: phases.length },
             { label: 'Apps', value: appCount },
-            { label: 'Live', value: 1, tone: 'online' },
+            { label: 'Connected', value: liveCount, tone: 'online' },
           ]}
         />
       )}
@@ -84,6 +92,16 @@ export default function AppsPage() {
         </div>
       </section>
 
+      <section className="os-level-strip" aria-label="TheOne L19 to L22 foundation">
+        {osLevels.map(([level, title, description]) => (
+          <div key={level} className="os-level-item">
+            <span>{level}</span>
+            <strong>{title}</strong>
+            <p>{description}</p>
+          </div>
+        ))}
+      </section>
+
       <section className="phase-board" aria-label="TheOne app roadmap">
         {phases.map((phase) => (
           <section key={phase.title} className="phase-section">
@@ -98,7 +116,7 @@ export default function AppsPage() {
               {phase.apps.map(([title, href, status, tone, description]) => (
                 <Link key={title} href={href} className={title === 'Web Analysis' ? 'phase-app-card primary' : 'phase-app-card'}>
                   <div className="app-launch-top">
-                    <span className="product-card-kicker">{title === 'Web Analysis' ? '/apps/web' : 'capability'}</span>
+                    <span className="product-card-kicker">{href.startsWith('/apps/') ? href : 'capability'}</span>
                     <span className={`status-pill status-${tone}`}>{status}</span>
                   </div>
                   <h3>{title}</h3>

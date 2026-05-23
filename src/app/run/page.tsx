@@ -7,17 +7,18 @@ import { ProductEmpty, ProductPage, ProductStatusStrip, friendlyStatus } from '@
 const modes = ['manual', 'assist', 'auto'];
 
 const quickPrompts = [
-  'Analyze a website and summarize useful findings',
-  'Prepare a high-signal X post and wait for approval',
-  'Check a GitHub repo and explain what needs attention',
+  'Analyze website weareoneconnection.org and summarize useful findings',
+  'Prepare a high-signal X post: TheOne is becoming an AI operating system for real-world work.',
+  'Check GitHub repo weareoneconnection/theone and explain what needs attention',
   'Use the local desktop bridge to inspect Chrome',
+  'List files in /tmp',
   'Create a report from research and proof',
-  'Monitor something and alert me when it changes',
 ];
 
 function plainResult(result: any) {
   const error = String(result?.error || '');
   if (error) return error.replace(/Invalid `prisma[^`]+` invocation:[\s\S]*/i, 'TheOne switched to safe mode because the memory database is temporarily unavailable.');
+  if (result?.appRoute?.summary) return result.appRoute.summary;
   if (result?.summary) return result.summary;
   const oneClaw = [...(result?.executions || [])].reverse().find((execution: any) => execution.provider === 'oneclaw');
   if (oneClaw?.summary) return oneClaw.summary;
@@ -128,10 +129,17 @@ export default function RunPage() {
             <ProductEmpty title="Ready" detail="Run TheOne to see the route and result here." />
           ) : (
             <>
+              {result.appRoute ? (
+                <div className="run-route-card">
+                  <span>{result.appRoute.title}</span>
+                  <strong>{result.appRoute.action}</strong>
+                  <p>{result.appRoute.approvalMode === 'manual' ? 'Approval gated' : 'Auto runnable'} · routed by TheOne App Router</p>
+                </div>
+              ) : null}
               <div className="app-readable-result">
                 <strong>{plainResult(result)}</strong>
                 <div className="app-next-list">
-                  <span>TheOne selected capabilities and policy for this request.</span>
+                  <span>{result.appRoute ? `TheOne routed this to the ${result.appRoute.app} App and submitted the worker action.` : 'TheOne selected capabilities and policy for this request.'}</span>
                   <span>Use Apps for focused workspaces, or Advanced for the full trace.</span>
                 </div>
               </div>

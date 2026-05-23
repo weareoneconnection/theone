@@ -8,6 +8,8 @@ export function PackageRegistryPanel() {
   const [message, setMessage] = useState('');
   const packages = registry?.packages || [];
   const byKind = useMemo(() => registry?.byKind || {}, [registry]);
+  const sandboxed = packages.filter((item: any) => item.manifest?.os?.sandboxProfile).length;
+  const approvalGated = packages.filter((item: any) => item.manifest?.os?.sandboxProfile?.isolation === 'approval_gated').length;
 
   async function load() {
     setLoading(true);
@@ -50,9 +52,9 @@ export function PackageRegistryPanel() {
       <div className="panel-head">
         <div>
           <h2 className="panel-title">OS Package Registry</h2>
-          <p className="panel-subtitle">Installable apps, workers, connectors, and policy packs with versions and manifests.</p>
+          <p className="panel-subtitle">Installable apps, workers, connectors, runtimes, and policy packs with versions, permission scopes, and sandbox boundaries.</p>
         </div>
-        <span className="panel-count">L15</span>
+        <span className="panel-count">L21</span>
       </div>
 
       <div className="scheduler-actions">
@@ -65,6 +67,8 @@ export function PackageRegistryPanel() {
         <PackageKpi label="Installed" value={String(registry?.installed ?? 0)} />
         <PackageKpi label="Enabled" value={String(registry?.enabled ?? 0)} />
         <PackageKpi label="Kinds" value={String(Object.keys(byKind).length)} />
+        <PackageKpi label="Sandboxed" value={String(sandboxed)} />
+        <PackageKpi label="Gated" value={String(approvalGated)} />
       </div>
 
       <div className="policy-chip-row">
@@ -89,6 +93,7 @@ export function PackageRegistryPanel() {
               <span>{item.id}</span>
               <span>{(item.dependencies || []).slice(0, 2).join(' · ') || 'no dependencies'}</span>
             </div>
+            <SandboxSummary manifest={item.manifest} />
             <div className="approval-actions">
               <button className="mini-action" type="button" disabled={loading} onClick={() => toggle(item)}>
                 {item.enabled ? 'Disable' : 'Install / Enable'}
@@ -98,6 +103,31 @@ export function PackageRegistryPanel() {
         ))}
       </div>
     </section>
+  );
+}
+
+function SandboxSummary({ manifest }: { manifest: any }) {
+  const os = manifest?.os || {};
+  const sandbox = os.sandboxProfile || {};
+  const scopes = Array.isArray(os.permissionScopes) ? os.permissionScopes : [];
+  const compatibility = os.compatibility || {};
+
+  if (!sandbox.id && scopes.length === 0) return null;
+
+  return (
+    <div className="package-sandbox-summary">
+      <div className="ledger-meta-row">
+        <span>Sandbox · {sandbox.isolation || 'standard'} · egress {sandbox.egress || 'none'}</span>
+        <span>OS {os.level || 'L21'} · OneClaw {compatibility.oneclaw || 'optional'}</span>
+      </div>
+      <div className="policy-chip-row">
+        {(scopes.length ? scopes : ['read_context']).slice(0, 6).map((scope: string) => (
+          <span key={scope} className="capability-chip">{scope}</span>
+        ))}
+        {sandbox.filesystem ? <span className="capability-chip">fs · {sandbox.filesystem}</span> : null}
+        {sandbox.credentials ? <span className="capability-chip">secrets · {sandbox.credentials}</span> : null}
+      </div>
+    </div>
   );
 }
 

@@ -4,7 +4,7 @@ import { ensureTheOneDatabase, prisma } from '../db/prisma';
 import { listAutomationPolicyRules } from '../policy/policy-registry';
 import { listWorkerRuntimes } from '../workers/runtime-registry';
 
-export type TheOnePackageKind = 'app' | 'worker' | 'connector' | 'policy_pack';
+export type TheOnePackageKind = 'app' | 'worker' | 'connector' | 'policy_pack' | 'agent_runtime' | 'memory_pack' | 'ui_schema';
 
 export type TheOnePackage = {
   id: string;
@@ -42,6 +42,52 @@ function iso(value: unknown) {
   return String(value);
 }
 
+function sandboxProfile(kind: TheOnePackageKind, name: string, dependencies: string[]) {
+  const dependencyText = dependencies.join(' ');
+  const highRisk = /payment|trading|finance|legal|desktop|shell|database\.write|web3|social\.post|file\.write|file\.append/i.test(`${name} ${dependencyText}`);
+  const local = /desktop|file|browser/i.test(`${name} ${dependencyText}`);
+  const network = /api|webhook|github|x\.|social|email|calendar|browser|search/i.test(`${name} ${dependencyText}`);
+
+  return {
+    id: `${kind}.${name}.sandbox.v1`,
+    isolation: highRisk ? 'approval_gated' : 'standard',
+    egress: network ? 'allowlisted' : 'none',
+    filesystem: local ? 'allowlisted' : 'none',
+    credentials: highRisk ? 'scoped_and_redacted' : 'scoped',
+    approvals: highRisk ? 'required_for_writes' : 'required_for_high_risk_only',
+    rollback: highRisk ? 'receipt_and_manual_rollback' : 'receipt_only',
+  };
+}
+
+function permissionScopes(kind: TheOnePackageKind, dependencies: string[]) {
+  const scopes = new Set<string>(['read_context']);
+  const text = dependencies.join(' ');
+  if (kind === 'worker' || kind === 'connector') scopes.add('use_connector');
+  if (/social\.post|email\.send|message\.send|notification\.broadcast/i.test(text)) scopes.add('send_message');
+  if (/file\.read|document\.parse|spreadsheet\.read/i.test(text)) scopes.add('read_file');
+  if (/file\.write|file\.append|document\.generate|spreadsheet\.write/i.test(text)) scopes.add('write_file');
+  if (/payment|commerce\.order|web3\.transfer|trading|finance/i.test(text)) scopes.add('transact');
+  if (/desktop|browser|api|git|x\.|social|database|calendar|email/i.test(text)) scopes.add('submit_external');
+  if (/memory|proof|learning/i.test(text)) scopes.add('write_memory');
+  return Array.from(scopes);
+}
+
+function osManifest(kind: TheOnePackageKind, name: string, dependencies: string[], manifest: Record<string, unknown>) {
+  return {
+    ...manifest,
+    os: {
+      level: kind === 'agent_runtime' ? 'L20' : kind === 'memory_pack' ? 'L22' : 'L21',
+      sandboxProfile: sandboxProfile(kind, name, dependencies),
+      permissionScopes: permissionScopes(kind, dependencies),
+      compatibility: {
+        theone: '>=1.0.0',
+        oneclaw: dependencies.some((item) => /oneclaw|social|git|desktop|file|browser|api|email|calendar/i.test(item)) ? '>=5.0.0' : 'optional',
+      },
+      versionLock: true,
+    },
+  };
+}
+
 function parsePackage(row: any): TheOnePackage {
   return {
     id: row.id,
@@ -75,7 +121,7 @@ async function packageSeeds(): Promise<TheOnePackage[]> {
     enabled: app.status !== 'planned',
     source: 'theone.core',
     dependencies: app.requiredProviders,
-    manifest: app as unknown as Record<string, unknown>,
+    manifest: osManifest('app', app.key, app.requiredProviders, app as unknown as Record<string, unknown>),
   }));
   const connectors = listConnectors().map((connector) => ({
     id: `connector.${connector.key}`,
@@ -87,7 +133,7 @@ async function packageSeeds(): Promise<TheOnePackage[]> {
     enabled: connector.status === 'available',
     source: connector.provider,
     dependencies: connector.actions,
-    manifest: connector as unknown as Record<string, unknown>,
+    manifest: osManifest('connector', connector.key, connector.actions, connector as unknown as Record<string, unknown>),
   }));
   const workerPackages = workers.map((worker: any) => ({
     id: `worker.${worker.key}`,
@@ -99,7 +145,7 @@ async function packageSeeds(): Promise<TheOnePackage[]> {
     enabled: worker.status === 'live' || worker.status === 'guarded',
     source: worker.provider,
     dependencies: worker.actions || [],
-    manifest: worker,
+    manifest: osManifest('worker', worker.key, worker.actions || [], worker),
   }));
   const policyPack = {
     id: 'policy_pack.theone.default',
@@ -111,13 +157,61 @@ async function packageSeeds(): Promise<TheOnePackage[]> {
     enabled: true,
     source: 'theone.policy',
     dependencies: rules.map((rule) => rule.id),
-    manifest: {
+    manifest: osManifest('policy_pack', 'theone.default', rules.map((rule) => rule.id), {
       rules,
       summary: 'Default governance pack for read, reply, publish, and critical actions.',
-    },
+    }),
+  };
+  const agentRuntimePack = {
+    id: 'agent_runtime.theone.parallel',
+    kind: 'agent_runtime' as const,
+    name: 'theone.parallel',
+    title: 'TheOne Parallel Agent Runtime',
+    version: '0.1.0',
+    status: 'installed' as const,
+    enabled: true,
+    source: 'theone.agent_runtime',
+    dependencies: ['planner', 'executor', 'reviewer', 'policy', 'memory'],
+    manifest: osManifest('agent_runtime', 'theone.parallel', ['planner', 'executor', 'reviewer', 'policy', 'memory'], {
+      level: 'L20',
+      roles: ['planner', 'executor', 'reviewer', 'policy', 'memory'],
+      summary: 'Parallel agent runtime contract for planning, execution, review, governance, and memory.',
+    }),
+  };
+  const memoryPack = {
+    id: 'memory_pack.theone.default',
+    kind: 'memory_pack' as const,
+    name: 'theone.default',
+    title: 'TheOne Default Memory Pack',
+    version: '0.1.0',
+    status: 'installed' as const,
+    enabled: true,
+    source: 'theone.memory',
+    dependencies: ['proof', 'runs', 'events', 'learning'],
+    manifest: osManifest('memory_pack', 'theone.default', ['proof', 'runs', 'events', 'learning'], {
+      level: 'L22',
+      policies: ['summarize runs', 'preserve proof', 'learn from failures', 'suggest upgrades'],
+      summary: 'Default memory and learning contract for self-evolving OS behavior.',
+    }),
+  };
+  const uiSchemaPack = {
+    id: 'ui_schema.theone.apps',
+    kind: 'ui_schema' as const,
+    name: 'theone.apps',
+    title: 'TheOne App UI Schema Pack',
+    version: '0.1.0',
+    status: 'installed' as const,
+    enabled: true,
+    source: 'theone.ui',
+    dependencies: ['apps', 'workers', 'policy_pack.theone.default'],
+    manifest: osManifest('ui_schema', 'theone.apps', ['apps', 'workers', 'policy_pack.theone.default'], {
+      level: 'L21',
+      surfaces: ['run', 'apps', 'workers', 'runs', 'proof', 'settings', 'advanced'],
+      summary: 'Installable UI schema contract for app workspaces and worker-backed forms.',
+    }),
   };
 
-  return [...apps, ...connectors, ...workerPackages, policyPack];
+  return [...apps, ...connectors, ...workerPackages, policyPack, agentRuntimePack, memoryPack, uiSchemaPack];
 }
 
 async function syncPackageSeeds() {
@@ -127,6 +221,27 @@ async function syncPackageSeeds() {
   for (const item of await packageSeeds()) {
     if (!existing.has(item.id)) {
       await upsertTheOnePackage(item);
+    } else {
+      await prisma.$executeRawUnsafe(
+        `update "TheOnePackage"
+         set kind = $2,
+             name = $3,
+             title = $4,
+             version = $5,
+             source = $6,
+             dependenciesJson = $7,
+             manifestJson = $8,
+             updatedAt = now()
+         where id = $1`,
+        item.id,
+        item.kind,
+        item.name,
+        item.title,
+        item.version,
+        item.source,
+        safeJson(item.dependencies),
+        safeJson(item.manifest)
+      );
     }
   }
 }
@@ -150,7 +265,7 @@ export async function upsertTheOnePackage(input: Partial<TheOnePackage>) {
     enabled: input.enabled === true,
     source: String(input.source || 'theone.custom'),
     dependencies: input.dependencies || [],
-    manifest: input.manifest || {},
+    manifest: osManifest(input.kind || 'app', String(input.name || input.id || 'custom'), input.dependencies || [], input.manifest || {}),
     installedAt: input.installedAt || null,
   };
 
