@@ -35,13 +35,17 @@ button, input, textarea { font: inherit; }
 }
 
 .landing-panel {
-  width: min(760px, 100%);
+  width: min(980px, 100%);
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 40px;
   box-shadow: 0 18px 80px rgba(0,0,0,0.35);
   backdrop-filter: blur(18px);
+}
+
+.landing-hero-copy {
+  max-width: 760px;
 }
 
 .landing-panel h1 {
@@ -73,6 +77,57 @@ button, input, textarea { font: inherit; }
 }
 
 .primary-link { margin-top: 26px; }
+
+.landing-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+}
+
+.landing-status {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 26px;
+}
+
+.landing-system-grid {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 38px;
+  padding-top: 24px;
+}
+
+.landing-system-card {
+  background: rgba(255,255,255,0.035);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 0;
+  padding: 16px;
+}
+
+.landing-system-card span {
+  color: var(--accent);
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  margin-bottom: 18px;
+}
+
+.landing-system-card strong {
+  display: block;
+  font-size: 15px;
+}
+
+.landing-system-card p {
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 8px 0 0;
+}
 
 .run-sandbox {
   min-height: 0;

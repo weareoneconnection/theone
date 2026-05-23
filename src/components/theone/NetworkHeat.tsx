@@ -17,7 +17,7 @@ export function NetworkHeat() {
         ))}
       </div>
       <div className="footer-note">
-        This demo uses static heat items now. Later you can wire OneField and live community signals.
+        Network signals are ready for OneField and live community activity.
       </div>
     </section>
   );
