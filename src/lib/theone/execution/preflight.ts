@@ -23,6 +23,52 @@ function hasRequiredFields(input: Record<string, unknown>, required: string[]) {
   return required.every((field) => input[field] !== undefined && input[field] !== null && input[field] !== '');
 }
 
+function isReadOnlyAutoAction(action: string, stepInput: Record<string, unknown>) {
+  const method = String(stepInput.method || 'GET').toUpperCase();
+
+  if (action === 'api.request') return method === 'GET';
+  if ([
+    'browser.open',
+    'browser.extract',
+    'browser.scrape',
+    'browser.screenshot',
+    'git.repo.get',
+    'git.actions.runs',
+    'git.checks.list',
+    'git.ci.status',
+    'git.repo.search',
+    'x.getTweet',
+    'x.getTweets',
+    'x.getUserByUsername',
+    'x.getUserTweets',
+    'x.getUserTweetsByUsername',
+    'x.searchRecentTweets',
+    'file.read',
+    'file.list',
+    'file.exists',
+    'database.query',
+    'database.schema.inspect',
+    'knowledge.query',
+    'vector.query',
+    'storage.get',
+    'storage.signUrl',
+    'web3.balance',
+    'web3.tx',
+    'web3.contract.read',
+    'chain.query',
+    'secret.check',
+  ].includes(action)) return true;
+
+  return (
+    action.endsWith('.get') ||
+    action.endsWith('.list') ||
+    action.endsWith('.search') ||
+    action.endsWith('.query') ||
+    action.includes('.read') ||
+    action.includes('.inspect')
+  );
+}
+
 function sandboxBoundaryForAction(action: string): ExecutionPreflightCheck {
   if (action.startsWith('desktop.')) {
     return check(
@@ -186,7 +232,11 @@ export function preflightOneClawTask(input: {
       deniedActions.push(step.action);
     }
 
-    if (capability.approvalRequired || input.mode === 'manual' || task.approvalMode === 'manual') {
+    const readOnlyAuto = isReadOnlyAutoAction(step.action, step.input || {});
+    const manualModeRequiresApproval = input.mode === 'manual' && !readOnlyAuto;
+    const taskRequiresApproval = task.approvalMode === 'manual' && !readOnlyAuto;
+
+    if (capability.approvalRequired || manualModeRequiresApproval || taskRequiresApproval) {
       approvalActions.push(step.action);
     }
 

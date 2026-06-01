@@ -29,6 +29,7 @@ import { MultiAgentRuntimePanel } from './MultiAgentRuntimePanel';
 import { PackageRegistryPanel } from './PackageRegistryPanel';
 import { LearningEnginePanel } from './LearningEnginePanel';
 import { ProductionMaturityPanel } from './ProductionMaturityPanel';
+import { FinalStatePanel } from './FinalStatePanel';
 import { OneClawWorkerCatalogPanel } from './OneClawWorkerCatalogPanel';
 import { LocalDesktopBridgePanel } from './LocalDesktopBridgePanel';
 
@@ -119,7 +120,7 @@ export function TheOneShell({
             <StatusMetric label="Run" value={runId} />
             <StatusMetric label="OneAI" value={oneAiMode} tone={oneAiMode} />
             <StatusMetric label="OneClaw" value={oneClawMode} tone={oneClawMode} />
-            <StatusMetric label="Level" value="L22" tone="online" />
+            <StatusMetric label="Level" value="L34" tone="online" />
           </div>
         </section>
 
@@ -172,6 +173,7 @@ export function TheOneShell({
             <PackageRegistryPanel />
             <LearningEnginePanel />
             <ProductionMaturityPanel />
+            <FinalStatePanel />
             <RuntimeOpsPanel result={result} ledger={ledger} />
             <ApprovalPanel
               result={result}

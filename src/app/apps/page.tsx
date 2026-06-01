@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { ProductPage, ProductStatusStrip } from '@/components/theone/ProductNav';
+import { finalStateLayers } from '@/lib/theone/final-state/os-blueprint';
 
 const phases = [
   {
@@ -59,6 +60,15 @@ const osLevels = [
   ['L22', 'Self-Evolving OS', 'TheOne learns from failures and proposes safe upgrades with simulation and rollback.'],
   ['L24', 'App Memory OS', 'Focused Apps generate reusable memory packs, not just one-time outputs.'],
   ['L25', 'Autonomous Workspace OS', 'Apps can become ongoing workspaces with cadence, limits, proof, and circuit breakers.'],
+  ['L26', 'Mission Control Runtime', 'Each workspace has its own timeline, policy, memory, proof, packages, and diagnosis.'],
+  ['L27', 'Durable Recovery OS', 'Queues, replay, resume, circuit breakers, and recovery paths become first-class.'],
+  ['L28', 'Tenant Identity OS', 'Users, roles, consent, credentials, and workspaces become scoped boundaries.'],
+  ['L29', 'Package Marketplace', 'Apps, workers, connectors, and policy packs can be signed, installed, upgraded, and rolled back.'],
+  ['L30', 'Simulation OS', 'Plans are scored, simulated, and blocked before risky autonomous execution.'],
+  ['L31', 'Bridge Mesh', 'Cloud workers, local computers, browsers, and devices become a secure execution mesh.'],
+  ['L32', 'Memory Graph OS', 'People, projects, proof, files, tasks, and decisions become connected knowledge.'],
+  ['L33', 'Self-Evolving OS+', 'TheOne proposes, simulates, applies, monitors, and rolls back its own upgrades.'],
+  ['L34', 'Universal AI OS', 'The user states an outcome once; TheOne composes Apps, agents, workers, policy, memory, and proof.'],
 ];
 
 export default function AppsPage() {
@@ -95,7 +105,7 @@ export default function AppsPage() {
         </div>
       </section>
 
-      <section className="os-level-strip" aria-label="TheOne L19 to L22 foundation">
+      <section className="os-level-strip" aria-label="TheOne L19 to L34 foundation">
         {osLevels.map(([level, title, description]) => (
           <div key={level} className="os-level-item">
             <span>{level}</span>
@@ -103,6 +113,32 @@ export default function AppsPage() {
             <p>{description}</p>
           </div>
         ))}
+      </section>
+
+      <section className="product-card">
+        <div className="panel-head">
+          <div>
+            <h2 className="panel-title">Final OS Ladder</h2>
+            <p className="panel-subtitle">The L27-L34 layers TheOne needs to become a universal AI operating system, now represented as system-readable blueprint data.</p>
+          </div>
+          <span className="status-pill status-assist">L34 target</span>
+        </div>
+        <div className="settings-capability-grid">
+          {finalStateLayers.map((layer) => (
+            <article key={layer.level} className="product-mini-card">
+              <div className="panel-head">
+                <h2>{layer.level} · {layer.title}</h2>
+                <span className={`status-pill status-${layer.status === 'planned' ? 'idle' : 'assist'}`}>{layer.status}</span>
+              </div>
+              <p>{layer.productPromise}</p>
+              <div className="policy-chip-row">
+                {layer.runtimeContract.slice(0, 5).map((contract) => (
+                  <span key={contract} className="capability-chip">{contract}</span>
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
       </section>
 
       <section className="phase-board" aria-label="TheOne app roadmap">

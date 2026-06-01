@@ -184,6 +184,127 @@ function normalizeOneClawExecuteInput(payload: OneAIGeneratePayload) {
   };
 }
 
+function firstAvailableAction(payload: OneAIGeneratePayload, fallback: string) {
+  const input = isRecord(payload.input) ? payload.input : {};
+  const availableActions = Array.isArray(input.availableActions) ? input.availableActions : [];
+  const match = availableActions.find((item) => {
+    if (!isRecord(item)) return false;
+    const action = textValue(item.action);
+    const liveMode = textValue(item.liveMode);
+    const maturity = textValue(item.maturity);
+    return action && liveMode !== 'disabled' && maturity !== 'stub';
+  });
+
+  return isRecord(match) ? textValue(match.action) || fallback : fallback;
+}
+
+function inferChatDomain(message: string) {
+  if (/github|repo|repository|ci|workflow|仓库|代码库/i.test(message)) return 'github';
+  if (/tweet|twitter|\bx\b|推文|发帖|回复/i.test(message)) return 'x';
+  if (/desktop|computer|chrome|电脑|本地|截图|hotkey|输入/i.test(message)) return 'desktop';
+  if (/file|folder|文件|目录|read|write|list|浏览文件/i.test(message)) return 'files';
+  if (/api|webhook|接口|sync|同步/i.test(message)) return 'api';
+  if (/report|brief|memo|报告|简报/i.test(message)) return 'report';
+  if (/website|web page|browse|网页|网站|浏览|https?:\/\//i.test(message)) return 'web';
+  return 'general';
+}
+
+function extractUrl(input: string) {
+  const match = input.match(/https?:\/\/[^\s)]+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s)]*)?/i);
+  if (!match) return 'https://weareoneconnection.org';
+  const value = match[0];
+  return /^https?:\/\//i.test(value) ? value : `https://${value}`;
+}
+
+function mockTheOneChatWorkflow(payload: OneAIGeneratePayload) {
+  const input = isRecord(payload.input) ? payload.input : {};
+  const message = textValue(input.message) || objectiveFromInput(payload.input);
+  const domain = inferChatDomain(message);
+  const action = domain === 'web'
+    ? firstAvailableAction(payload, 'browser.extract')
+    : domain === 'github'
+      ? firstAvailableAction(payload, 'git.repo.get')
+      : domain === 'x'
+        ? firstAvailableAction(payload, 'x.searchRecentTweets')
+        : domain === 'desktop'
+          ? firstAvailableAction(payload, 'desktop.app.state')
+          : domain === 'files'
+            ? firstAvailableAction(payload, 'file.list')
+            : domain === 'api'
+              ? firstAvailableAction(payload, 'api.request')
+              : '';
+  const hasExternalAction = Boolean(action);
+  const actionInput = action === 'browser.extract'
+    ? { url: extractUrl(message) }
+    : action === 'git.repo.get'
+      ? { repo: message.match(/[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+/)?.[0] || 'weareoneconnection/theone' }
+      : action === 'x.searchRecentTweets'
+        ? { query: message.replace(/^(search|find|搜索|查找)\s*/i, '') || 'AI agents workflow', maxResults: 10 }
+        : action === 'desktop.app.state'
+          ? { app: /chrome/i.test(message) ? 'Google Chrome' : 'Google Chrome' }
+          : action === 'file.list'
+            ? { path: message.match(/(?:\/Users|\/tmp|\/private|~\/|\.\/)[^\s]+/)?.[0] || '/tmp' }
+            : action === 'api.request'
+              ? { url: extractUrl(message), method: 'GET' }
+              : {};
+  const externalStep = hasExternalAction ? {
+    id: 'step_1',
+    title: `Run ${action}`,
+    worker: 'oneclaw',
+    action,
+    input: actionInput,
+    approvalMode: action.startsWith('desktop.') || action === 'social.post' ? 'manual' : 'auto',
+    dependsOn: [],
+  } : null;
+  const steps = [
+    ...(externalStep ? [externalStep] : []),
+    {
+      id: externalStep ? 'step_2' : 'step_1',
+      title: 'Reason over the result',
+      worker: 'oneai',
+      action: 'oneai.generate',
+      input: { objective: message },
+      approvalMode: 'auto',
+      dependsOn: externalStep ? [externalStep.id] : [],
+    },
+  ];
+
+  return {
+    assistantReply: hasExternalAction
+      ? `I prepared a ${domain} workflow and will let TheOne validate policy before any worker runs.`
+      : 'I prepared a reasoning workflow. No external worker is needed yet.',
+    intent: {
+      objective: message,
+      domain,
+      risk: action.startsWith('desktop.') ? 'high' : hasExternalAction ? 'medium' : 'low',
+      requiresApproval: action.startsWith('desktop.') || action === 'social.post',
+    },
+    workflow: {
+      id: `mock_theone_chat_workflow_${Date.now()}`,
+      summary: `Mock OneAI chat workflow for ${domain}.`,
+      steps,
+    },
+    requiredWorkers: Array.from(new Set(steps.map((step) => step.worker))),
+    oneclawTask: externalStep ? {
+      taskName: `mock_chat_${domain}`,
+      approvalMode: externalStep.approvalMode,
+      steps: [{
+        id: externalStep.id,
+        action: externalStep.action,
+        input: externalStep.input,
+        dependsOn: [],
+      }],
+      metadata: {
+        source: 'mock.oneai.theone_chat_workflow',
+      },
+    } : null,
+    safety: {
+      requiresApproval: action.startsWith('desktop.') || action === 'social.post',
+      reason: hasExternalAction ? 'TheOne must validate manifest, inputs, and approval policy.' : 'No external action was produced.',
+    },
+  };
+}
+
 function adaptOneAIPayload(payload: OneAIGeneratePayload): OneAIGeneratePayload {
   switch (payload.type) {
     case 'objective_analysis':
@@ -211,6 +332,21 @@ function adaptOneAIPayload(payload: OneAIGeneratePayload): OneAIGeneratePayload 
 }
 
 function createMockResult<T = unknown>(payload: OneAIGeneratePayload): OneAIGenerateResult<T> {
+  if (payload.type === 'theone_chat_workflow') {
+    return {
+      success: true,
+      attempts: 1,
+      usage: null,
+      usageTotal: null,
+      mock: true,
+      data: mockTheOneChatWorkflow(payload) as T,
+      raw: {
+        provider: 'oneai',
+        payload,
+      },
+    };
+  }
+
   const oneclawTask = payload.type.includes('oneclaw') ? mockOneClawTask(payload) : null;
 
   return {

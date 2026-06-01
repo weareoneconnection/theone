@@ -1,21 +1,70 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
-import { ProductEmpty, ProductPage, ProductStatusStrip, friendlyStatus } from '@/components/theone/ProductNav';
+import { useEffect, useRef, useState } from 'react';
+import { ProductPage, ProductStatusStrip, friendlyStatus } from '@/components/theone/ProductNav';
 
-const modes = ['manual', 'assist', 'auto'];
+const modes = ['manual', 'assist', 'auto'] as const;
 
-const quickPrompts = [
-  'Analyze website weareoneconnection.org and summarize useful findings',
-  'Prepare a high-signal X post: TheOne is becoming an AI operating system for real-world work.',
-  'Check GitHub repo weareoneconnection/theone and explain what needs attention',
-  'Use the local desktop bridge to inspect Chrome',
-  'List files in /tmp',
-  'Create a report from research and proof',
+type Mode = typeof modes[number];
+
+type ConversationMessage = {
+  id: string;
+  role: 'assistant' | 'user' | 'system';
+  content: string;
+  createdAt: string;
+  result?: any;
+};
+
+const workerPrompts = [
+  {
+    label: 'Web research',
+    prompt: 'Analyze website weareoneconnection.org and summarize useful findings',
+  },
+  {
+    label: 'X growth',
+    prompt: 'Prepare a high-signal X post: TheOne is becoming an AI operating system for real-world work.',
+  },
+  {
+    label: 'GitHub',
+    prompt: 'Check GitHub repo weareoneconnection/theone and explain what needs attention',
+  },
+  {
+    label: 'Desktop',
+    prompt: 'Use the local desktop bridge to inspect Chrome',
+  },
+  {
+    label: 'Files',
+    prompt: 'List files in /tmp',
+  },
+  {
+    label: 'Report',
+    prompt: 'Create a report from research and proof',
+  },
+  {
+    label: 'OneAI Bot',
+    prompt: 'Check the OneAI Bot bridge status and explain how it connects to TheOne',
+  },
+  {
+    label: 'API',
+    prompt: 'Call the OneClaw health API and summarize the result',
+  },
 ];
 
+const starterMessage: ConversationMessage = {
+  id: 'assistant_starter',
+  role: 'assistant',
+  createdAt: new Date().toISOString(),
+  content: 'Tell me the outcome you want. I will ask OneAI to build the workflow, route the right workers, check policy, call OneClaw when needed, and keep the proof trail readable.',
+};
+
+function createId(prefix: string) {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
 function plainResult(result: any) {
+  const assistant = result?.chat?.assistant?.content;
+  if (assistant) return assistant;
   const error = String(result?.error || '');
   if (error) return error.replace(/Invalid `prisma[^`]+` invocation:[\s\S]*/i, 'TheOne switched to safe mode because the memory database is temporarily unavailable.');
   if (result?.appResult?.summary) return result.appResult.summary;
@@ -23,7 +72,6 @@ function plainResult(result: any) {
   if (result?.summary) return result.summary;
   const oneClaw = [...(result?.executions || [])].reverse().find((execution: any) => execution.provider === 'oneclaw');
   if (oneClaw?.summary) return oneClaw.summary;
-  if (result?.objective) return `TheOne prepared a route for: ${result.objective}`;
   return 'TheOne is ready to plan, check policy, execute, and record proof.';
 }
 
@@ -35,152 +83,265 @@ function runStats(result: any) {
   };
 }
 
+function activeStatus(result: any, loading: boolean) {
+  if (loading) return 'running';
+  if (!result) return 'ready';
+  if (result.ok === false) return 'blocked';
+  return result?.os?.workflow?.status || result?.status || 'completed';
+}
+
+function workerTone(status?: string) {
+  if (!status) return 'ready';
+  if (/approval|gated|pending|prepared/i.test(status)) return 'assist';
+  if (/attention|failed|blocked|error/i.test(status)) return 'blocked';
+  return 'ready';
+}
+
 export default function RunPage() {
-  const [input, setInput] = useState('Browse a website and summarize the useful findings');
-  const [mode, setMode] = useState('assist');
+  const [input, setInput] = useState('');
+  const [mode, setMode] = useState<Mode>('assist');
   const [loading, setLoading] = useState(false);
+  const [messages, setMessages] = useState<ConversationMessage[]>([starterMessage]);
   const [result, setResult] = useState<any>(null);
+  const threadRef = useRef<HTMLDivElement | null>(null);
 
-  const status = loading ? 'running' : result?.os?.workflow?.status || result?.status || (result ? 'completed' : 'ready');
+  const status = activeStatus(result, loading);
   const stats = runStats(result);
+  const workflow = result?.chat?.oneAiWorkflow;
+  const coordination = result?.chat?.workerCoordination;
+  const nextActions = result?.chat?.nextActions || [];
 
-  async function runTheOne() {
-    if (!input.trim()) return;
+  useEffect(() => {
+    threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' });
+  }, [messages, loading]);
+
+  async function sendMessage(text?: string) {
+    const content = (text ?? input).trim();
+    if (!content || loading) return;
+
+    const userMessage: ConversationMessage = {
+      id: createId('user'),
+      role: 'user',
+      content,
+      createdAt: new Date().toISOString(),
+    };
+
+    const nextMessages = [...messages, userMessage];
+    setMessages(nextMessages);
+    setInput('');
     setLoading(true);
-    setResult(null);
+
     try {
-      const res = await fetch('/api/theone/run', {
+      const res = await fetch('/api/theone/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          input,
+          input: content,
           mode,
           language: 'en',
+          messages: nextMessages.map((message) => ({ role: message.role, content: message.content })),
         }),
       });
-      setResult(await res.json());
+      const data = await res.json();
+      setResult(data);
+      setMessages((current) => ([
+        ...current,
+        {
+          id: createId('assistant'),
+          role: 'assistant',
+          content: plainResult(data),
+          createdAt: new Date().toISOString(),
+          result: data,
+        },
+      ]));
     } catch (error) {
-      setResult({ ok: false, error: error instanceof Error ? error.message : 'TheOne could not start this run.' });
+      const failure = { ok: false, error: error instanceof Error ? error.message : 'TheOne could not start this run.' };
+      setResult(failure);
+      setMessages((current) => ([
+        ...current,
+        {
+          id: createId('assistant_error'),
+          role: 'assistant',
+          content: plainResult(failure),
+          createdAt: new Date().toISOString(),
+          result: failure,
+        },
+      ]));
     } finally {
       setLoading(false);
+    }
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      sendMessage();
     }
   }
 
   return (
     <ProductPage
       eyebrow="Run TheOne"
-      title="Tell TheOne what to finish."
-      subtitle="Describe the outcome. TheOne selects the right app, checks policy, calls OneAI for reasoning, sends executable work to OneClaw, and records proof."
+      title="Work with TheOne like an AI OS."
+      subtitle="Chat with TheOne. OneAI builds the workflow, TheOne coordinates workers and policy, and OneClaw or the local bridge performs approved real-world actions."
       compact
       aside={(
         <ProductStatusStrip
           items={[
             { label: 'State', value: friendlyStatus(status), tone: status },
             { label: 'Mode', value: mode, tone: mode },
-            { label: 'Route', value: 'auto', tone: 'assist' },
+            { label: 'Workers', value: coordination?.workers?.length || 'ready', tone: 'assist' },
           ]}
         />
       )}
     >
-      <section className="run-command-workspace">
-        <div className="product-command-card run-command-card">
-          <div className="product-mode-selector mode-selector" aria-label="Execution mode">
-            {modes.map((item) => (
-              <button key={item} type="button" className={mode === item ? 'active' : ''} onClick={() => setMode(item)}>
-                {item}
+      <section className="run-chat-workspace">
+        <div className="run-chat-panel">
+          <div className="run-chat-head">
+            <div>
+              <span className="product-card-kicker">Intelligent Command</span>
+              <h2>TheOne conversation</h2>
+              <p>Use plain language. The worker details stay visible, but the main surface behaves like a real operating conversation.</p>
+            </div>
+            <div className="product-mode-selector mode-selector" aria-label="Execution mode">
+              {modes.map((item) => (
+                <button key={item} type="button" className={mode === item ? 'active' : ''} onClick={() => setMode(item)}>
+                  {item}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="run-thread" ref={threadRef} aria-live="polite">
+            {messages.map((message) => (
+              <article key={message.id} className={`run-message run-message-${message.role}`}>
+                <div className="run-message-meta">
+                  <span>{message.role === 'user' ? 'You' : message.role === 'assistant' ? 'TheOne' : 'System'}</span>
+                  <small>{new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small>
+                </div>
+                <p>{message.content}</p>
+                {message.result?.appRoute ? (
+                  <div className="run-message-route">
+                    <span>{message.result.appRoute.title}</span>
+                    <strong>{message.result.appRoute.action}</strong>
+                  </div>
+                ) : null}
+              </article>
+            ))}
+            {loading ? (
+              <article className="run-message run-message-assistant">
+                <div className="run-message-meta">
+                  <span>TheOne</span>
+                  <small>working</small>
+                </div>
+                <p>OneAI is building the workflow. TheOne is checking policy and preparing the worker route.</p>
+              </article>
+            ) : null}
+          </div>
+
+          <div className="run-worker-prompts" aria-label="Worker quick starts">
+            {workerPrompts.map((item) => (
+              <button key={item.label} type="button" onClick={() => sendMessage(item.prompt)} disabled={loading}>
+                <span>{item.label}</span>
+                <strong>{item.prompt}</strong>
               </button>
             ))}
           </div>
 
-          <label className="run-command-box">
-            <span>Outcome</span>
+          <div className="run-composer">
             <textarea
               value={input}
               onChange={(event) => setInput(event.target.value)}
-              placeholder="Describe what you want TheOne to finish..."
+              onKeyDown={handleKeyDown}
+              placeholder="Ask TheOne to finish a job, call a worker, inspect a site, prepare an X post, check GitHub, use desktop bridge..."
             />
-          </label>
-
-          <div className="product-action-row">
-            <button className="run-button" type="button" onClick={runTheOne} disabled={loading || !input.trim()}>
-              {loading ? 'Running...' : 'Run TheOne'}
-            </button>
-            <span>{friendlyStatus(status)}</span>
-          </div>
-
-          <div className="quick-prompt-grid" aria-label="Quick starts">
-            {quickPrompts.map((prompt) => (
-              <button key={prompt} type="button" onClick={() => setInput(prompt)}>
-                {prompt}
+            <div className="run-composer-actions">
+              <span>Cmd/Ctrl + Enter to run</span>
+              <button className="run-button" type="button" onClick={() => sendMessage()} disabled={loading || !input.trim()}>
+                {loading ? 'Coordinating...' : 'Send to TheOne'}
               </button>
-            ))}
+            </div>
           </div>
         </div>
 
-        <aside className="product-result-card run-result-card">
+        <aside className="run-orchestrator-panel">
           <div className="panel-head">
             <div>
-              <h2 className="panel-title">Result</h2>
-              <p className="panel-subtitle">Readable plan, approval state, execution, and proof.</p>
+              <h2 className="panel-title">Orchestration</h2>
+              <p className="panel-subtitle">OneAI workflow, worker calls, approvals, and proof.</p>
             </div>
             <span className={`status-pill status-${status}`}>{friendlyStatus(status)}</span>
           </div>
 
-          {!result ? (
-            <ProductEmpty title="Ready" detail="Run TheOne to see the route and result here." />
-          ) : (
-            <>
-              {result.appRoute ? (
-                <div className="run-route-card">
-                  <span>{result.appRoute.title}</span>
-                  <strong>{result.appRoute.action}</strong>
-                  <p>{result.appRoute.approvalMode === 'manual' ? 'Approval gated' : 'Auto runnable'} · routed by TheOne App Router</p>
+          <div className="run-orchestrator-card">
+            <span className="product-card-kicker">OneAI Workflow</span>
+            <strong>{workflow?.summary || 'Waiting for a goal.'}</strong>
+            <div className="run-workflow-list">
+              {(workflow?.steps || [
+                { id: 'ready', title: 'Describe an outcome', owner: 'oneai', status: 'ready' },
+              ]).map((step: any, index: number) => (
+                <div key={step.id || index} className="run-workflow-step">
+                  <span>{String(index + 1).padStart(2, '0')}</span>
+                  <div>
+                    <strong>{step.title}</strong>
+                    <small>{step.owner || 'theone'} · {friendlyStatus(step.status)}</small>
+                  </div>
                 </div>
-              ) : null}
-              <div className="app-readable-result">
-                <strong>{plainResult(result)}</strong>
-                <div className="app-next-list">
-                  <span>{result.appRoute ? `TheOne routed this to the ${result.appRoute.app} App workflow and recorded proof.` : 'TheOne selected capabilities and policy for this request.'}</span>
-                  {result.appResult?.status ? <span>App status: {friendlyStatus(result.appResult.status)}</span> : null}
-                  {result.appMemoryPack ? <span>Memory saved: {result.appMemoryPack.title}</span> : null}
-                  <span>Use Apps for focused workspaces, or Advanced for the full trace.</span>
-                </div>
-              </div>
-              <div className="run-result-stats">
-                <div>
-                  <span>Approvals</span>
-                  <strong>{stats.approvals}</strong>
-                </div>
-                <div>
-                  <span>Executions</span>
-                  <strong>{stats.executions}</strong>
-                </div>
-                <div>
-                  <span>Proof</span>
-                  <strong>{stats.proof}</strong>
-                </div>
-              </div>
-            </>
-          )}
-        </aside>
-      </section>
+              ))}
+            </div>
+          </div>
 
-      <section className="run-support-grid">
-        <Link href="/apps" className="product-mini-card">
-          <span className="product-card-kicker">Apps</span>
-          <h2>Choose a focused workspace</h2>
-          <p>Use Apps when you already know the surface: Web, X, GitHub, Desktop, Reports, and more.</p>
-        </Link>
-        <Link href="/runs" className="product-mini-card">
-          <span className="product-card-kicker">Runs</span>
-          <h2>Continue recent work</h2>
-          <p>Review outcomes, approvals, proof counts, and past requests TheOne has handled.</p>
-        </Link>
-        <Link href="/theone" className="product-mini-card">
-          <span className="product-card-kicker">Advanced</span>
-          <h2>Inspect the full OS trace</h2>
-          <p>Open kernel, worker, policy, proof, memory, and raw execution details when needed.</p>
-        </Link>
+          <div className="run-orchestrator-card">
+            <span className="product-card-kicker">Worker Coordination</span>
+            <div className="run-worker-list">
+              {(coordination?.workers || [
+                { key: 'oneai', title: 'OneAI', role: 'Workflow builder', status: 'ready' },
+                { key: 'theone', title: 'TheOne Kernel', role: 'Coordinator', status: 'ready' },
+                { key: 'oneclaw', title: 'OneClaw', role: 'Execution driver', status: 'ready' },
+              ]).map((worker: any) => (
+                <div key={worker.key || worker.title} className="run-worker-row">
+                  <div>
+                    <strong>{worker.title}</strong>
+                    <span>{worker.role}</span>
+                  </div>
+                  <small className={`status-pill status-${workerTone(worker.status)}`}>{friendlyStatus(worker.status)}</small>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="run-result-stats">
+            <div>
+              <span>Approvals</span>
+              <strong>{stats.approvals}</strong>
+            </div>
+            <div>
+              <span>Executions</span>
+              <strong>{stats.executions}</strong>
+            </div>
+            <div>
+              <span>Proof</span>
+              <strong>{stats.proof}</strong>
+            </div>
+          </div>
+
+          <div className="run-orchestrator-card">
+            <span className="product-card-kicker">Next</span>
+            <div className="app-next-list">
+              {(nextActions.length > 0 ? nextActions : [
+                'Start with a normal request. TheOne will choose the app or worker.',
+                'Use Advanced only when you need raw traces.',
+              ]).map((item: string) => <span key={item}>{item}</span>)}
+            </div>
+          </div>
+
+          <div className="run-control-links">
+            <Link href="/apps">Apps</Link>
+            <Link href="/workers">Workers</Link>
+            <Link href="/runs">Runs</Link>
+            <Link href="/theone">Advanced trace</Link>
+          </div>
+        </aside>
       </section>
     </ProductPage>
   );

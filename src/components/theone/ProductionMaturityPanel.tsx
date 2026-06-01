@@ -41,9 +41,9 @@ export function ProductionMaturityPanel() {
       <div className="panel-head">
         <div>
           <h2 className="panel-title">Production Maturity</h2>
-          <p className="panel-subtitle">L19 multi-app automation, L20 agent runtime, L21 installable OS, L22 self-evolution, plus production hardening.</p>
+          <p className="panel-subtitle">L19-L34 operating system ladder: Apps, agents, packages, workspaces, recovery, identity, simulation, bridge mesh, memory graph, and self-evolution.</p>
         </div>
-        <span className="panel-count">{report?.level || 'L22'}</span>
+        <span className="panel-count">{report?.level || 'L34'}</span>
       </div>
 
       <div className="scheduler-actions">

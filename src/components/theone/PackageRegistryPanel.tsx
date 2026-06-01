@@ -8,6 +8,7 @@ export function PackageRegistryPanel() {
   const [message, setMessage] = useState('');
   const packages = registry?.packages || [];
   const byKind = useMemo(() => registry?.byKind || {}, [registry]);
+  const runtime = registry?.runtime || {};
   const sandboxed = packages.filter((item: any) => item.manifest?.os?.sandboxProfile).length;
   const approvalGated = packages.filter((item: any) => item.manifest?.os?.sandboxProfile?.isolation === 'approval_gated').length;
 
@@ -69,6 +70,8 @@ export function PackageRegistryPanel() {
         <PackageKpi label="Kinds" value={String(Object.keys(byKind).length)} />
         <PackageKpi label="Sandboxed" value={String(sandboxed)} />
         <PackageKpi label="Gated" value={String(approvalGated)} />
+        <PackageKpi label="Installable" value={String(runtime.installable ?? 0)} />
+        <PackageKpi label="Version Locked" value={String(runtime.versionLocked ?? 0)} />
       </div>
 
       <div className="policy-chip-row">
@@ -120,6 +123,12 @@ function SandboxSummary({ manifest }: { manifest: any }) {
         <span>Sandbox · {sandbox.isolation || 'standard'} · egress {sandbox.egress || 'none'}</span>
         <span>OS {os.level || 'L21'} · OneClaw {compatibility.oneclaw || 'optional'}</span>
       </div>
+      {os.installContract ? (
+        <div className="ledger-meta-row">
+          <span>Install · {os.installContract.rollout || 'controlled'} · rollback {os.installContract.rollbackPlan || 'disable'}</span>
+          <span>{os.signature?.status || 'unsigned'} · version lock {os.versionLock ? 'on' : 'off'}</span>
+        </div>
+      ) : null}
       <div className="policy-chip-row">
         {(scopes.length ? scopes : ['read_context']).slice(0, 6).map((scope: string) => (
           <span key={scope} className="capability-chip">{scope}</span>

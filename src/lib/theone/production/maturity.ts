@@ -20,7 +20,7 @@ export type ProductionMaturityCapability = {
 
 export type ProductionMaturityReport = {
   ok: true;
-  level: 'L25';
+  level: 'L34';
   label: string;
   score: number;
   readiness: 'prototype' | 'alpha' | 'production_candidate';
@@ -29,7 +29,7 @@ export type ProductionMaturityReport = {
   evidence: {
     workers: { total: number; live: number; guarded: number; prepared: number; missing: number };
     automation: { total: number; active: number; paused: number; circuitOpen: number };
-    packages: { total: number; installed: number; enabled: number; byKind: Record<string, number> };
+    packages: { total: number; installed: number; enabled: number; byKind: Record<string, number>; runtime?: Record<string, unknown> };
     policyRules: number;
     learning: { total: number; suggested: number; applied: number; dismissed: number };
     events: { total: number; failures: number; traces: number };
@@ -67,6 +67,16 @@ export async function getProductionMaturityReport(): Promise<ProductionMaturityR
     installed: 0,
     enabled: 0,
     byKind: {},
+    runtime: {
+      level: 'L26',
+      sandboxed: 0,
+      approvalGated: 0,
+      versionLocked: 0,
+      scoped: 0,
+      composableKinds: [],
+      installable: 0,
+      unsigned: 0,
+    },
     packages: [],
   } as Awaited<ReturnType<typeof packageRegistrySummary>>);
   const rules = fallback(rulesResult, [] as Awaited<ReturnType<typeof listAutomationPolicyRules>>);
@@ -103,6 +113,114 @@ export async function getProductionMaturityReport(): Promise<ProductionMaturityR
   const liveOrGuardedWorkers = workerStats.live + workerStats.guarded;
 
   const osLevels: ProductionMaturityCapability[] = [
+    {
+      key: 'l34_universal_ai_operating_system',
+      title: 'L34 Universal AI Operating System',
+      level: 'L34',
+      status: 'partial',
+      score: Math.min(72, 38 + pct(packages.enabled, Math.max(1, packages.total)) / 5 + Math.min(18, workerStats.total)),
+      current: 'TheOne has the product surface for a universal AI OS: unified Run, Apps, Workspaces, Workers, Proof, Settings, package runtime, OneAI planning, OneClaw execution, memory, policy, and autonomous workspaces.',
+      target: 'A normal user states an outcome once; TheOne selects Apps, agents, workers, connectors, packages, policies, memory, proof, and recovery paths automatically until the real-world task is complete.',
+      controls: ['unified command', 'app routing', 'worker routing', 'policy gates', 'memory graph', 'proof ledger', 'package runtime', 'workspace mission control'],
+      gaps: ['not every worker has a polished App yet', 'full real-world autonomy still requires operator approval for high-risk actions'],
+      nextActions: ['connect every proven worker to an App', 'add outcome-level mission templates', 'ship production-grade recovery'],
+    },
+    {
+      key: 'l33_self_evolving_os',
+      title: 'L33 Self-Evolving OS',
+      level: 'L33',
+      status: learningStats.total > 0 ? 'partial' : 'planned',
+      score: Math.min(68, 34 + learningStats.suggested * 5 + learningStats.applied * 10 + (eventStats.traces ? 8 : 0)),
+      current: 'The learning engine can inspect runs, events, approvals, packages, and failures, then store improvement insights for operator review.',
+      target: 'TheOne proposes upgrades, generates patches, simulates impact, requests approval, deploys, monitors, and rolls back without breaking the OS.',
+      controls: ['learning insights', 'evidence', 'apply/dismiss', 'package state', 'event ledger', 'production maturity report'],
+      gaps: ['insights do not yet generate code patches automatically', 'simulation and rollback are metadata-level'],
+      nextActions: ['add upgrade proposal bundles', 'add dry-run simulation reports', 'attach rollback recipes to every applied upgrade'],
+    },
+    {
+      key: 'l32_memory_graph_knowledge_os',
+      title: 'L32 Memory Graph / Knowledge OS',
+      level: 'L32',
+      status: 'partial',
+      score: 64,
+      current: 'TheOne stores proof, run memory, App Memory Packs, and workspace-linked memory that can be recalled by Apps and Mission Control.',
+      target: 'People, projects, files, decisions, tasks, receipts, preferences, packages, and workers become a queryable relationship graph.',
+      controls: ['memory ledger', 'app memory packs', 'proof links', 'workspace memory', 'query memory endpoint'],
+      gaps: ['memory is record-oriented rather than graph-native', 'no entity resolution layer yet'],
+      nextActions: ['add entity graph schema', 'link memory to people/projects/packages', 'add graph visual search'],
+    },
+    {
+      key: 'l31_cross_device_bridge_mesh',
+      title: 'L31 Cross-Device / Local Bridge Mesh',
+      level: 'L31',
+      status: workerStats.live + workerStats.guarded > 0 ? 'partial' : 'planned',
+      score: Math.min(66, 36 + liveOrGuardedWorkers * 4),
+      current: 'The local desktop bridge, browser operations, cloud OneClaw, and worker catalog can be surfaced through TheOne.',
+      target: 'Mac, browser, server, cloud workers, phones, and remote operator machines form a secure execution mesh with device-specific permissions.',
+      controls: ['local bridge', 'desktop actions', 'browser actions', 'worker catalog', 'connector allowlists'],
+      gaps: ['no multi-device enrollment registry', 'desktop control requires local OneClaw running'],
+      nextActions: ['add device registry', 'add bridge heartbeat', 'add per-device worker scopes'],
+    },
+    {
+      key: 'l30_agent_evaluation_simulation_os',
+      title: 'L30 Agent Evaluation / Simulation OS',
+      level: 'L30',
+      status: 'partial',
+      score: 65,
+      current: 'The multi-agent runtime produces consensus, quality gate, recovery mode, sandbox signal, and proof; production maturity records gaps and next actions.',
+      target: 'Every autonomous plan is simulated, scored, compared with golden tasks, and blocked or routed for approval before impact.',
+      controls: ['quality gate', 'critic agent', 'policy agent', 'recovery mode', 'proof ledger', 'maturity scoring'],
+      gaps: ['no golden eval set', 'no plan simulator UI yet'],
+      nextActions: ['add eval datasets', 'add simulation endpoint', 'block low-score autonomous runs'],
+    },
+    {
+      key: 'l29_signed_package_marketplace',
+      title: 'L29 Signed Package Marketplace',
+      level: 'L29',
+      status: packages.total > 0 ? 'partial' : 'planned',
+      score: Math.min(67, 36 + Object.keys(packageKinds).length * 4 + pct(packages.enabled, Math.max(1, packages.total)) / 5),
+      current: 'Apps, workers, connectors, policy packs, memory packs, UI schemas, and agent runtimes are registered as packages with manifests, install contracts, sandbox profiles, version locks, and composition metadata.',
+      target: 'Packages can be signed, published, verified, installed, upgraded, disabled, rolled back, and composed from a marketplace.',
+      controls: ['package registry', 'install contract', 'version lock', 'sandbox profile', 'permission scopes', 'composition metadata'],
+      gaps: ['signature is development metadata', 'no marketplace publishing flow'],
+      nextActions: ['add signature verification', 'add package publish endpoint', 'add compatibility solver'],
+    },
+    {
+      key: 'l28_tenant_identity_role_os',
+      title: 'L28 Tenant / Identity / Role OS',
+      level: 'L28',
+      status: 'planned',
+      score: 42,
+      current: 'TheOne has permission decisions, approval gates, identity connector concepts, and guarded action modes, but persisted records are still global.',
+      target: 'Every run, package, worker, connector, memory, proof, approval, credential, workspace, and device is scoped to tenant, user, role, and consent.',
+      controls: ['permission model', 'approval gates', 'identity connector', 'connector scopes', 'redacted credentials'],
+      gaps: ['no tenantId on ledgers', 'no role assignment store', 'no per-tenant secret scope'],
+      nextActions: ['add tenant context middleware', 'add role registry', 'bind installs and credentials to tenant'],
+    },
+    {
+      key: 'l27_durable_runtime_recovery_os',
+      title: 'L27 Durable Runtime / Recovery OS',
+      level: 'L27',
+      status: jobs.length > 0 ? 'partial' : 'planned',
+      score: Math.min(70, 40 + automationStats.active * 5 + jobs.length * 2 - automationStats.circuitOpen * 4),
+      current: 'Automation jobs, workspace runs, cooldowns, daily limits, failure streaks, circuit breakers, replay/resume endpoints, and Mission Control diagnostics are present.',
+      target: 'A durable queue with leases, retry policy, dead-letter handling, recovery plans, cross-App handoff, and long-running task restoration.',
+      controls: ['automation jobs', 'workspace timeline', 'circuit breaker', 'run replay', 'run resume', 'failure diagnostics'],
+      gaps: ['no dead-letter table', 'queue is database/scheduler-level rather than distributed runtime'],
+      nextActions: ['add dead-letter queue', 'add retry schedules', 'add cross-App handoff DAG'],
+    },
+    {
+      key: 'l26_mission_control_runtime',
+      title: 'L26 Workspace Mission Control Runtime',
+      level: 'L26',
+      status: automationStats.total > 0 && packages.total > 0 ? 'guarded' : 'partial',
+      score: Math.min(86, 60 + automationStats.active * 4 + Object.keys(packageKinds).length * 3),
+      current: 'Autonomous workspaces now have Mission Control detail surfaces with timeline, policy, proof, memory, package runtime, and failure diagnostics.',
+      target: 'Every workspace becomes a durable mission control room with queue leases, package-level sandbox enforcement, recovery actions, and cross-App handoffs.',
+      controls: ['workspace detail', 'timeline', 'policy card', 'proof', 'memory', 'package runtime', 'failure diagnostics'],
+      gaps: ['workspace recovery is diagnostic, not one-click reset yet', 'package signature is development metadata, not cryptographic verification'],
+      nextActions: ['add reset circuit action', 'add signed package manifests', 'add workspace DAG handoffs'],
+    },
     {
       key: 'l25_autonomous_workspace_os',
       title: 'L25 Autonomous Workspace OS',
@@ -155,13 +273,13 @@ export async function getProductionMaturityReport(): Promise<ProductionMaturityR
       key: 'l20_parallel_agent_runtime',
       title: 'L20 Parallel Agent Runtime',
       level: 'L20',
-      status: 'partial',
-      score: 62,
-      current: 'TheOne has Planner, Policy, Critic, Operator, and Memory role concepts with proof and replay hooks.',
+      status: 'guarded',
+      score: 72,
+      current: 'TheOne has Planner, Policy, Critic, Operator, and Memory roles with leases, quality gate, recovery mode, sandbox signal, proof, and replay hooks.',
       target: 'Planner, Executor, Reviewer, Memory, and Policy agents run in parallel with leases, cancellation, merge rules, and shared trace IDs.',
-      controls: ['multi-agent quorum', 'policy verdict', 'critic verdict', 'run replay', 'proof ledger'],
-      gaps: ['no durable per-agent lease table', 'parallel worker merge is not yet exposed in product UI', 'no per-agent quality score'],
-      nextActions: ['add agent run table', 'add parallel execution board', 'score and merge agent outputs'],
+      controls: ['multi-agent quorum', 'policy verdict', 'critic verdict', 'lease release', 'quality gate', 'recovery signal', 'proof ledger'],
+      gaps: ['no durable per-agent lease table', 'parallel worker merge is not yet exposed in product UI'],
+      nextActions: ['add agent run table', 'add parallel execution board', 'add per-agent historical evals'],
     },
     {
       key: 'l21_installable_os',
@@ -169,11 +287,11 @@ export async function getProductionMaturityReport(): Promise<ProductionMaturityR
       level: 'L21',
       status: packages.total > 0 ? 'guarded' : 'partial',
       score: Math.min(84, 46 + pct(packages.enabled, packages.total) / 2 + Object.keys(packageKinds).length * 5),
-      current: `${packages.total} package(s) are registered across apps, workers, connectors, and policy packs.`,
+      current: `${packages.total} package(s) are registered across apps, workers, connectors, policy packs, memory packs, UI schemas, and agent runtimes with install contracts and sandbox profiles.`,
       target: 'Apps, workers, connectors, policy packs, memory packs, and UI schemas are installable, versioned, scoped, and composable.',
-      controls: ['package registry', 'manifest', 'dependencies', 'enabled flag', 'install endpoint'],
-      gaps: ['no signature verification', 'no compatibility solver', 'limited tenant-scoped installs'],
-      nextActions: ['add signed package manifests', 'add compatibility constraints', 'add package-level sandbox profiles'],
+      controls: ['package registry', 'manifest', 'dependencies', 'enabled flag', 'install endpoint', 'install contract', 'version lock', 'sandbox profile'],
+      gaps: ['signature is development metadata, not cryptographic verification', 'limited tenant-scoped installs'],
+      nextActions: ['add signed package manifests', 'add compatibility solver', 'add tenant install scope'],
     },
     {
       key: 'l22_self_evolving_os',
@@ -293,11 +411,11 @@ export async function getProductionMaturityReport(): Promise<ProductionMaturityR
 
   return {
     ok: true,
-    level: 'L25',
-    label: 'Autonomous Workspace OS Layer',
+    level: 'L34',
+    label: 'Universal AI Operating System Roadmap',
     score,
     readiness: readiness(score),
-    summary: 'TheOne now has the L19-L25 foundation: multi-app automation, parallel agent runtime concepts, installable OS packages, self-evolution loop, App Memory Packs, and autonomous workspaces with cadence, limits, proof, and circuit breakers.',
+    summary: 'TheOne now carries the L19-L34 OS blueprint in-system: durable runtime, identity boundary, package marketplace, simulation, bridge mesh, memory graph, self-evolution, and universal AI OS target layered over the existing L26 Mission Control foundation.',
     capabilities,
     evidence: {
       workers: workerStats,
@@ -307,6 +425,7 @@ export async function getProductionMaturityReport(): Promise<ProductionMaturityR
         installed: packages.installed,
         enabled: packages.enabled,
         byKind: packageKinds,
+        runtime: packages.runtime,
       },
       policyRules: rules.length,
       learning: learningStats,

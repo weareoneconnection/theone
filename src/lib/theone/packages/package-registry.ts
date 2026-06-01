@@ -72,16 +72,42 @@ function permissionScopes(kind: TheOnePackageKind, dependencies: string[]) {
   return Array.from(scopes);
 }
 
+function installContract(kind: TheOnePackageKind, name: string, dependencies: string[]) {
+  const scopes = permissionScopes(kind, dependencies);
+  const highImpact = scopes.some((scope) => ['send_message', 'write_file', 'transact', 'submit_external'].includes(scope));
+  return {
+    id: `${kind}.${name}.install.v1`,
+    versionPolicy: 'locked',
+    compatibilityCheck: 'required',
+    dependencyMode: dependencies.length ? 'declared' : 'standalone',
+    rollbackPlan: highImpact ? 'disable_package_and_pause_jobs' : 'disable_package',
+    rollout: highImpact ? 'manual_first_run' : 'immediate_when_enabled',
+    audit: ['manifest', 'dependencies', 'permissions', 'sandbox', 'receipts'],
+  };
+}
+
 function osManifest(kind: TheOnePackageKind, name: string, dependencies: string[], manifest: Record<string, unknown>) {
+  const scopes = permissionScopes(kind, dependencies);
+  const sandbox = sandboxProfile(kind, name, dependencies);
   return {
     ...manifest,
     os: {
       level: kind === 'agent_runtime' ? 'L20' : kind === 'memory_pack' ? 'L22' : 'L21',
-      sandboxProfile: sandboxProfile(kind, name, dependencies),
-      permissionScopes: permissionScopes(kind, dependencies),
+      sandboxProfile: sandbox,
+      permissionScopes: scopes,
+      installContract: installContract(kind, name, dependencies),
+      composition: {
+        provides: [kind, name],
+        consumes: dependencies,
+        canComposeWith: ['app', 'worker', 'connector', 'policy_pack', 'memory_pack'].filter((item) => item !== kind),
+      },
       compatibility: {
         theone: '>=1.0.0',
         oneclaw: dependencies.some((item) => /oneclaw|social|git|desktop|file|browser|api|email|calendar/i.test(item)) ? '>=5.0.0' : 'optional',
+      },
+      signature: {
+        status: 'development_unsigned',
+        digest: `${kind}:${name}:${dependencies.length}:${scopes.length}`,
       },
       versionLock: true,
     },
@@ -313,6 +339,11 @@ export async function setPackageInstalled(input: { id: string; enabled?: boolean
 
 export async function packageRegistrySummary() {
   const packages = await listTheOnePackages();
+  const osFor = (item: TheOnePackage) => (item.manifest?.os || {}) as Record<string, any>;
+  const sandboxed = packages.filter((item) => osFor(item).sandboxProfile).length;
+  const gated = packages.filter((item) => osFor(item).sandboxProfile?.isolation === 'approval_gated').length;
+  const versionLocked = packages.filter((item) => osFor(item).versionLock === true).length;
+  const scoped = packages.filter((item) => Array.isArray(osFor(item).permissionScopes)).length;
   return {
     total: packages.length,
     installed: packages.filter((item) => item.status === 'installed').length,
@@ -321,6 +352,16 @@ export async function packageRegistrySummary() {
       summary[item.kind] = (summary[item.kind] || 0) + 1;
       return summary;
     }, {}),
+    runtime: {
+      level: 'L26',
+      sandboxed,
+      approvalGated: gated,
+      versionLocked,
+      scoped,
+      composableKinds: Array.from(new Set(packages.map((item) => item.kind))),
+      installable: packages.filter((item) => osFor(item).installContract).length,
+      unsigned: packages.filter((item) => osFor(item).signature?.status === 'development_unsigned').length,
+    },
     packages,
   };
 }

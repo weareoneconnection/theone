@@ -67,13 +67,61 @@ function isStrictXReply(task: OneClawTask, stepId: string) {
     /^[0-9]{1,19}$/.test(input.replyToTweetId);
 }
 
+function isReadOnlyAutoAction(action: string, input: Record<string, unknown> = {}) {
+  const method = String(input.method || 'GET').toUpperCase();
+
+  if (action === 'api.request') return method === 'GET';
+  if ([
+    'browser.open',
+    'browser.extract',
+    'browser.scrape',
+    'browser.screenshot',
+    'git.repo.get',
+    'git.actions.runs',
+    'git.checks.list',
+    'git.ci.status',
+    'git.repo.search',
+    'x.getTweet',
+    'x.getTweets',
+    'x.getUserByUsername',
+    'x.getUserTweets',
+    'x.getUserTweetsByUsername',
+    'x.searchRecentTweets',
+    'file.read',
+    'file.list',
+    'file.exists',
+    'database.query',
+    'database.schema.inspect',
+    'knowledge.query',
+    'vector.query',
+    'storage.get',
+    'storage.signUrl',
+    'web3.balance',
+    'web3.tx',
+    'web3.contract.read',
+    'chain.query',
+    'secret.check',
+  ].includes(action)) return true;
+
+  return (
+    action.endsWith('.get') ||
+    action.endsWith('.list') ||
+    action.endsWith('.search') ||
+    action.endsWith('.query') ||
+    action.includes('.read') ||
+    action.includes('.inspect')
+  );
+}
+
 function approvalRequired(action: string, explicit: boolean | undefined, mode: TheOneMode) {
   const risk = getActionRisk(action);
+  const readOnlyAuto = isReadOnlyAutoAction(action);
 
   if (mode === 'manual') {
-    return action !== 'oneai.generate' && action !== 'proof.write' && action !== 'memory.store';
+    return !readOnlyAuto && action !== 'oneai.generate' && action !== 'proof.write' && action !== 'memory.store';
   }
 
+  if (readOnlyAuto && !explicit) return false;
   if (explicit || risk === 'high') return true;
 
   return false;
@@ -107,10 +155,13 @@ export function evaluateOneClawTaskPolicy(
 
   return task.steps.map((step) => {
     const strictXReply = isStrictXReply(task, step.id);
+    const readOnlyAuto = isReadOnlyAutoAction(step.action, step.input || {});
     const risk = strictXReply ? 'medium' : getActionRisk(step.action);
     const required = strictXReply
       ? mode === 'manual' || task.approvalMode === 'manual'
-      : approvalRequired(step.action, task.approvalMode === 'manual', mode);
+      : readOnlyAuto
+        ? false
+        : approvalRequired(step.action, task.approvalMode === 'manual', mode);
 
     return {
       id: `approval_${task.taskName}_${step.id}`,

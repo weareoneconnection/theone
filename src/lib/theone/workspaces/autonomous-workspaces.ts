@@ -1,4 +1,6 @@
 import { executeAutomationJob, listAutomationJobs, listAutomationRuns, upsertAutomationJob, type AutomationJob } from '../automation/scheduler';
+import { packageRegistrySummary } from '../packages/package-registry';
+import { listMemory, listProof } from '../state/run-store';
 
 export type AutonomousWorkspaceTemplate = {
   key: string;
@@ -108,12 +110,67 @@ export async function listAutonomousWorkspaces() {
   const runs = jobIds.length ? await listAutomationRuns({ jobIds, limit: 40 }) : [];
   return {
     ok: true,
-    level: 'L25',
+    level: 'L26',
     workspaces,
     runs,
     active: workspaces.filter((item) => item.status === 'active').length,
     available: workspaces.length,
     circuitOpen: workspaces.filter((item) => item.circuitOpen).length,
+  };
+}
+
+export async function getAutonomousWorkspaceDetail(input: { key: string }) {
+  const template = workspaceTemplates.find((item) => item.key === input.key);
+  if (!template) throw new Error('Unknown workspace template.');
+
+  const jobs = await listAutomationJobs();
+  const job = jobForTemplate(jobs, template);
+  const runs = job ? await listAutomationRuns({ jobIds: [job.id], limit: 30 }) : [];
+  const runIds = new Set(runs.map((run) => run.runId).filter(Boolean));
+  const [proof, memory, packages] = await Promise.all([
+    listProof(120),
+    listMemory(120),
+    packageRegistrySummary(),
+  ]);
+  const relatedProof = proof.filter((item: any) => item.runId && runIds.has(item.runId)).slice(0, 20);
+  const relatedMemory = memory.filter((item: any) => {
+    if (item.runId && runIds.has(item.runId)) return true;
+    return String(item.kind || '').includes(`app.${template.app}`);
+  }).slice(0, 20);
+  const appPackages = packages.packages.filter((item: any) => (
+    item.name === template.app
+    || item.id.includes(`.${template.app}`)
+    || (item.dependencies || []).some((dependency: string) => dependency.includes(template.app))
+  ));
+  const failures = runs.filter((run) => run.status === 'failed');
+
+  return {
+    ok: true,
+    level: 'L26',
+    workspace: toWorkspace(template, job),
+    job,
+    runs,
+    proof: relatedProof,
+    memory: relatedMemory,
+    packages: appPackages,
+    policy: {
+      mode: template.mode,
+      risk: template.risk,
+      cadenceMinutes: template.cadenceMinutes,
+      maxRunsPerDay: template.maxRunsPerDay,
+      controls: template.controls,
+      circuitBreaker: 'open after 2 consecutive failures',
+    },
+    diagnostics: {
+      status: job?.circuitOpen ? 'blocked' : failures.length ? 'watch' : 'ready',
+      failureCount: failures.length,
+      latestFailure: failures[0]?.summary || null,
+      nextAction: job?.circuitOpen
+        ? 'Review failures and pause or reset the workspace before running again.'
+        : job
+          ? 'Workspace is installed. Use Run now or keep the schedule active.'
+          : 'Activate this workspace to create its durable automation job.',
+    },
   };
 }
 

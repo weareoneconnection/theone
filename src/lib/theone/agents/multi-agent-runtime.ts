@@ -59,6 +59,19 @@ export type MultiAgentRuntimeResult = {
     warningAgents: MultiAgentRole[];
     selectedRecommendationCount: number;
   };
+  stability: {
+    leaseStatus: 'released' | 'attention_required';
+    releasedLeases: number;
+    totalLeases: number;
+    qualityGate: 'pass' | 'review' | 'block';
+    recovery: 'replay_ready' | 'approval_required' | 'blocked';
+    sandbox: 'policy_sandbox' | 'approval_sandbox';
+    longRunning: {
+      resumable: boolean;
+      cancellation: 'lease_expiry';
+      mergeRule: 'weighted_consensus';
+    };
+  };
   executions: ExecutionRecord[];
   proof: ProofRecord[];
 };
@@ -266,6 +279,20 @@ export async function runMultiAgentRuntime(input: MultiAgentInput): Promise<Mult
     warningAgents: agents.filter((agent) => agent.status === 'warn').map((agent) => agent.role),
     selectedRecommendationCount: finalConsensus.recommendations.length,
   };
+  const releasedLeases = leases.length;
+  const stability: MultiAgentRuntimeResult['stability'] = {
+    leaseStatus: releasedLeases === leases.length ? 'released' : 'attention_required',
+    releasedLeases,
+    totalLeases: leases.length,
+    qualityGate: finalConsensus.status === 'block' ? 'block' : score >= 70 ? 'pass' : 'review',
+    recovery: finalConsensus.status === 'block' ? 'blocked' : finalConsensus.status === 'warn' ? 'approval_required' : 'replay_ready',
+    sandbox: finalConsensus.status === 'pass' ? 'policy_sandbox' : 'approval_sandbox',
+    longRunning: {
+      resumable: true,
+      cancellation: 'lease_expiry',
+      mergeRule: 'weighted_consensus',
+    },
+  };
 
   const executions = agents.map((agent) => createExecutionRecord({
     provider: 'theone',
@@ -287,6 +314,7 @@ export async function runMultiAgentRuntime(input: MultiAgentInput): Promise<Mult
     agents,
     consensus: finalConsensus,
     merge,
+    stability,
     executions,
     proof: [{
       type: 'system',
@@ -299,6 +327,7 @@ export async function runMultiAgentRuntime(input: MultiAgentInput): Promise<Mult
         qualityScore: score,
         leases,
         merge,
+        stability,
         agents,
         recommendations: finalConsensus.recommendations,
       },

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { ProductEmpty, ProductPage, ProductStatusStrip, friendlyStatus } from '@/components/theone/ProductNav';
 
 type Workspace = {
@@ -102,7 +103,7 @@ export default function WorkspacesPage() {
       title="Work that can keep going."
       subtitle="Turn an App workflow into a governed ongoing workspace with cadence, proof, memory, limits, and circuit breakers."
       compact
-      aside={<ProductStatusStrip items={[{ label: 'Level', value: 'L25', tone: 'assist' }, { label: 'Active', value: active, tone: 'online' }, { label: 'Circuits', value: circuits, tone: circuits ? 'blocked' : 'online' }]} />}
+      aside={<ProductStatusStrip items={[{ label: 'Level', value: 'L26', tone: 'assist' }, { label: 'Active', value: active, tone: 'online' }, { label: 'Circuits', value: circuits, tone: circuits ? 'blocked' : 'online' }]} />}
     >
       <section className="app-workflow-band">
         <div><span>1</span><strong>Choose workspace</strong><p>Select the ongoing job TheOne should maintain.</p></div>
@@ -136,6 +137,7 @@ export default function WorkspacesPage() {
             </div>
             <div className="approval-actions">
               <button className="mini-action primary" type="button" disabled={loading || item.circuitOpen} onClick={() => runWorkspaceNow(item.key)}>Run now</button>
+              <Link className="mini-action" href={`/workspaces/${item.key}`}>Mission Control</Link>
               <button className="mini-action primary" type="button" disabled={loading} onClick={() => setWorkspace(item.key, 'active')}>Activate</button>
               <button className="mini-action" type="button" disabled={loading} onClick={() => setWorkspace(item.key, 'paused')}>Pause</button>
               <span className="proof-meta">{item.nextRunAt ? new Date(item.nextRunAt).toLocaleString() : 'not scheduled'}</span>

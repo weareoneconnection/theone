@@ -341,3 +341,38 @@ export async function tickAutomationScheduler({ limit = 3, force = false } = {})
     results,
   };
 }
+
+export async function resetAutomationCircuits(input: { jobId?: string } = {}) {
+  await ensureTheOneDatabase();
+  await seedDefaultsIfEmpty();
+
+  if (input.jobId) {
+    await prisma.$executeRawUnsafe(
+      `update "TheOneAutomationJob" set failureStreak = 0, circuitOpen = false, nextRunAt = now(), updatedAt = now() where id = $1`,
+      input.jobId
+    );
+    await recordTheOneEvent({
+      type: 'automation.circuit_reset',
+      provider: 'theone',
+      status: 'completed',
+      summary: `Reset automation circuit for ${input.jobId}.`,
+      payload: { jobId: input.jobId },
+    });
+  } else {
+    await prisma.$executeRawUnsafe(
+      `update "TheOneAutomationJob" set failureStreak = 0, circuitOpen = false, nextRunAt = now(), updatedAt = now() where circuitOpen = true or failureStreak > 0`
+    );
+    await recordTheOneEvent({
+      type: 'automation.circuit_reset',
+      provider: 'theone',
+      status: 'completed',
+      summary: 'Reset all automation circuits.',
+      payload: { scope: 'all' },
+    });
+  }
+
+  return {
+    ok: true,
+    jobs: await listAutomationJobs(),
+  };
+}
