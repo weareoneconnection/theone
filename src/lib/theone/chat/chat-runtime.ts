@@ -408,7 +408,26 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
   });
 
   if (!brain.executionDecision.shouldPlan || brain.reasoning.missingInformation.length > 0) {
-    const summary = buildBrainOnlyReply({ brain, appPackages });
+    let brainOnlyOneAi: Awaited<ReturnType<typeof buildOneAIChatWorkflow>> | null = null;
+    let summary = buildBrainOnlyReply({ brain, appPackages });
+
+    try {
+      brainOnlyOneAi = await buildOneAIChatWorkflow({
+        raw,
+        mode,
+        messages,
+        capabilities: oneClawManifest.capabilities,
+        workerCatalog,
+        appPackages,
+        brain,
+      });
+      if (brainOnlyOneAi.workflow.assistantReply.trim()) {
+        summary = brainOnlyOneAi.workflow.assistantReply.trim();
+      }
+    } catch {
+      brainOnlyOneAi = null;
+    }
+
     const intent = buildIntent({
       raw: brain.objective,
       domain: brain.conversationKind,
@@ -452,6 +471,13 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       }),
     ];
     const executions = [
+      ...(brainOnlyOneAi ? [createExecutionRecord({
+        provider: 'oneai' as const,
+        status: brainOnlyOneAi.oneAiResult.mock ? 'mock' : brainOnlyOneAi.oneAiResult.success ? 'success' : 'failed',
+        summary: 'OneAI generated the natural brain-layer chat reply.',
+        taskName: 'oneai.chat.brain_reply',
+        raw: brainOnlyOneAi.oneAiResult,
+      })] : []),
       createExecutionRecord({
         provider: 'theone',
         status: 'success',
@@ -496,8 +522,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       },
       chat: {
         runtime: 'theone.chat_runtime.v2',
-        brain,
-        modelRoute: primaryModel,
+          brain,
+          oneAiBrainReply: brainOnlyOneAi?.workflow || null,
+          modelRoute: primaryModel,
         appPackages: brain.selectedApps.length ? brain.selectedApps : appPackages.slice(0, 4),
         workerCatalog: workerCatalog.summary,
         assistant: {
@@ -508,19 +535,21 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         oneAiWorkflow: {
           id: `brain_only_${runId}`,
           summary: brain.reasoning.strategy,
-          source: 'theone.brain',
-          owner: 'TheOne',
+          source: brainOnlyOneAi ? 'oneai' : 'theone.brain',
+          owner: brainOnlyOneAi ? 'OneAI' : 'TheOne',
           status: 'validated',
-          steps: [{
+          steps: (brainOnlyOneAi?.workflow.workflow.steps || [{
             id: 'brain_understanding',
             title: 'Understand and answer',
-            worker: 'theone',
-            action: 'theone.brain',
+            worker: 'oneai',
+            action: 'oneai.generate',
             input: { objective: brain.objective },
-            owner: 'theone',
-            status: 'completed',
             dependsOn: [],
-          }],
+          }]).map((step) => ({
+            ...step,
+            owner: step.worker || 'oneai',
+            status: 'completed',
+          })),
         },
         workerCoordination: {
           mode,
