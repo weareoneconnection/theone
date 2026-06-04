@@ -227,31 +227,100 @@ function capabilityReply(input: {
   apps: AppRuntimePackage[];
   workerCapabilityMap: TheOneBrainFrame['workerCapabilityMap'];
 }) {
-  const live = input.workerCapabilityMap.filter((item) => item.status === 'live' || item.status === 'guarded');
-  const prepared = input.workerCapabilityMap.filter((item) => item.status === 'prepared');
-  const blocked = input.workerCapabilityMap.filter((item) => item.status === 'blocked');
   const totalActions = input.workerCapabilityMap.reduce((sum, item) => sum + item.actions.length, 0);
-  const format = (items: TheOneBrainFrame['workerCapabilityMap']) => items
-    .map((item) => `${item.title}: ${item.description} (${item.actions.length} actions, ${item.status})`)
-    .join('\n');
-  const appList = input.apps.map((pkg) => `${pkg.title}: ${pkg.purpose}`).join('\n');
+  const byDomain = new Map(input.workerCapabilityMap.map((item) => [item.domain, item]));
+  const statusRank = (domains: string[]) => {
+    const items = domains.map((domain) => byDomain.get(domain)).filter(Boolean) as TheOneBrainFrame['workerCapabilityMap'];
+    if (items.some((item) => item.status === 'live' || item.status === 'guarded')) return 'available';
+    if (items.some((item) => item.status === 'prepared')) return 'prepared';
+    if (items.some((item) => item.status === 'blocked')) return 'blocked';
+    return 'planned';
+  };
+  const actionCount = (domains: string[]) => domains.reduce((sum, domain) => sum + (byDomain.get(domain)?.actions.length || 0), 0);
+  const capabilityGroups = [
+    {
+      title: 'Research and web work',
+      domains: ['browser', 'search', 'api'],
+      summary: 'Analyze websites, search or inspect public information, call APIs, and turn findings into useful answers.',
+    },
+    {
+      title: 'Content, X, messaging, and approvals',
+      domains: ['content', 'result', 'x', 'social', 'telegram', 'message', 'notification', 'human'],
+      summary: 'Prepare posts, replies, messages, notifications, approval requests, and final content. Public sends stay approval-gated.',
+    },
+    {
+      title: 'Code, files, documents, and reports',
+      domains: ['git', 'file', 'filesystem', 'document', 'spreadsheet', 'storage'],
+      summary: 'Inspect GitHub repos and CI, read/write files, parse or generate documents, work with spreadsheets, and store artifacts.',
+    },
+    {
+      title: 'Local computer and browser control',
+      domains: ['desktop'],
+      summary: 'Use the local OneClaw bridge to inspect apps, capture screenshots, click, type, and send hotkeys when approved.',
+    },
+    {
+      title: 'Data, identity, memory, and policy',
+      domains: ['database', 'knowledge', 'vector', 'identity', 'permission', 'secret'],
+      summary: 'Query databases, prepare knowledge/vector retrieval, resolve identity, check permissions, and verify secrets without exposing them.',
+    },
+    {
+      title: 'Business operations',
+      domains: ['email', 'calendar', 'crm', 'commerce', 'payment', 'finance'],
+      summary: 'Prepare email, calendar, CRM, commerce, payment, invoice, reconciliation, and budget workflows. Most writes require approval or connector setup.',
+    },
+    {
+      title: 'Media, voice, and spatial intelligence',
+      domains: ['audio', 'voice', 'image', 'video', 'camera', 'geo'],
+      summary: 'Prepare transcription, voice intent parsing, image/OCR, video analysis, camera inspection, geocoding, routes, and site maps.',
+    },
+    {
+      title: 'Field systems and real-world operations',
+      domains: ['construction', 'device', 'iot', 'robot', 'legal', 'simulation', 'digitalTwin'],
+      summary: 'Prepare construction, device, IoT, robot, legal, simulation, and digital-twin workflows for staged connection to real systems.',
+    },
+    {
+      title: 'Finance, Web3, and guarded transactions',
+      domains: ['web3', 'chain', 'wallet'],
+      summary: 'Read chain, wallet, balance, transaction, and contract state. Transactional writes remain disabled or approval-gated until safely connected.',
+    },
+    {
+      title: 'Extensible worker platform',
+      domains: ['shell', 'example'],
+      summary: 'Expose guarded shell and plugin extension points for future installable workers and policy packs.',
+    },
+  ].map((group) => ({
+    ...group,
+    status: statusRank(group.domains),
+    actions: actionCount(group.domains),
+  })).filter((group) => group.actions > 0);
+  const formatGroup = (group: typeof capabilityGroups[number]) =>
+    `${group.title}: ${group.summary} (${group.actions} actions, ${group.status})`;
+  const appList = input.apps
+    .map((pkg) => `${pkg.title}`)
+    .join(', ');
+  const available = capabilityGroups.filter((group) => group.status === 'available');
+  const prepared = capabilityGroups.filter((group) => group.status === 'prepared' || group.status === 'planned');
+  const blocked = capabilityGroups.filter((group) => group.status === 'blocked');
 
   return [
-    `I can work as TheOne AI OS: understand your goal, choose the right app or worker, build a workflow with OneAI, check policy, call OneClaw, and return proof. I can currently see ${input.workerCapabilityMap.length} OneClaw capability domains and ${totalActions} worker actions.`,
+    'I am TheOne AI OS: you give me an outcome, and I decide how to finish it. I can talk through the goal, choose the right app or worker, ask OneAI to reason or build a workflow, check policy, call OneClaw for real execution, and return proof you can inspect.',
     '',
-    'Connected or guarded capabilities:',
-    format(live),
+    `Right now I can see ${input.workerCapabilityMap.length} OneClaw capability domains and ${totalActions} worker actions. I do not need you to name them; I use them behind the scenes.`,
     '',
-    prepared.length ? 'Prepared / not fully connected yet:' : '',
-    prepared.length ? format(prepared) : '',
+    'What I can help with:',
+    available.map(formatGroup).join('\n'),
     '',
-    blocked.length ? 'Blocked or disabled until connected safely:' : '',
-    blocked.length ? format(blocked) : '',
+    prepared.length ? 'Prepared or being connected:' : '',
+    prepared.length ? prepared.map(formatGroup).join('\n') : '',
     '',
-    'User-facing app packages:',
-    appList,
+    blocked.length ? 'Not live yet:' : '',
+    blocked.length ? blocked.map(formatGroup).join('\n') : '',
     '',
-    'Give me an outcome, not a worker name. If a worker is not connected yet, I will say that clearly and can prepare the connection plan instead of pretending it is live.',
+    `Current user-facing apps include: ${appList}. The full worker map is still available to the OS for routing and diagnostics.`,
+    '',
+    'Try asking me to: analyze a website and write next steps; prepare an X post and wait for approval; inspect a GitHub repo; read files and generate a report; call an API and summarize the result; use the local desktop bridge; or plan how to connect a prepared worker such as CRM, payments, IoT, legal, or digital twin.',
+    '',
+    'If something is not connected yet, I will say so and can create the connection plan instead of pretending it is already live.',
   ].filter(Boolean).join('\n');
 }
 
@@ -334,6 +403,9 @@ export function buildTheOneBrainFrame(input: {
           'Prepare a high-signal X post and wait for approval.',
           'Check a GitHub repo and explain what needs attention.',
           'Use the local desktop bridge to inspect Chrome.',
+          'Read files and turn them into a report.',
+          'Call an API and summarize the response.',
+          'Plan a CRM, payment, IoT, legal, or digital-twin connector setup.',
         ]
       : [
           'Build the workflow.',
