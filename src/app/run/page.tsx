@@ -102,16 +102,6 @@ function workerTone(status?: string) {
   return 'ready';
 }
 
-function firstStep(result: any) {
-  const task = result?.chat?.workerCoordination?.oneclawTask || result?.pendingOneClawTask;
-  return task?.steps?.[0] || null;
-}
-
-function taskDraft(result: any) {
-  const input = firstStep(result)?.input || {};
-  return input.content || input.text || input.body || '';
-}
-
 function approvalReason(result: any) {
   const approvals = result?.approvals || [];
   return approvals.find((approval: any) => approval?.required && approval?.status === 'pending')?.reason ||
@@ -208,56 +198,6 @@ function ToolTrace({ result }: { result: any }) {
         ) : null}
       </div>
     </details>
-  );
-}
-
-function RunMessageExplanation({ result }: { result: any }) {
-  if (!result?.chat) return null;
-
-  const step = firstStep(result);
-  const action = step?.action || '';
-  const draft = taskDraft(result);
-  const evidence = evidenceText(result);
-  const reason = approvalReason(result);
-  const finalSummary = result?.chat?.workerCoordination?.finalSummary;
-  const approvalSummary = result?.chat?.workerCoordination?.approvalSummary;
-  const oneclawRun = result?.chat?.workerCoordination?.oneclawRun;
-
-  if (!draft && !evidence && !reason && !oneclawRun && !approvalSummary && !finalSummary) return null;
-
-  return (
-    <div className="run-explain">
-      {draft ? (
-        <div className="run-explain-block">
-          <span>Draft</span>
-          <p>{draft}</p>
-        </div>
-      ) : null}
-      {reason ? (
-        <div className="run-explain-block">
-          <span>Policy</span>
-          <p>{reason}</p>
-        </div>
-      ) : null}
-      {evidence ? (
-        <details className="run-explain-details">
-          <summary>Evidence from worker</summary>
-          <p>{evidence.slice(0, 1400)}{evidence.length > 1400 ? ' ...' : ''}</p>
-        </details>
-      ) : null}
-      {oneclawRun ? (
-        <div className="run-explain-grid">
-          <div>
-            <span>Worker</span>
-            <strong>{action || oneclawRun.taskName || 'OneClaw task'}</strong>
-          </div>
-          <div>
-            <span>Status</span>
-            <strong>{friendlyStatus(oneclawRun.status || 'called')}</strong>
-          </div>
-        </div>
-      ) : null}
-    </div>
   );
 }
 
@@ -398,24 +338,7 @@ export default function RunPage() {
                 {message.role === 'assistant' && message.result ? <ToolTrace result={message.result} /> : null}
               </article>
             ))}
-            {loading ? (
-              <article className="run-message run-message-assistant">
-                <div className="run-message-meta">
-                  <span>TheOne</span>
-                  <small>working</small>
-                </div>
-                <p>OneAI is building the workflow. TheOne is checking policy and preparing the worker route.</p>
-              </article>
-            ) : null}
-          </div>
-
-          <div className="run-codex-prompts" aria-label="Worker quick starts">
-            {workerPrompts.map((item) => (
-              <button key={item.label} type="button" onClick={() => sendMessage(item.prompt)} disabled={loading}>
-                <span>{item.label}</span>
-                <strong>{item.prompt}</strong>
-              </button>
-            ))}
+            {loading ? <div className="run-thinking-line" aria-live="polite">TheOne is thinking...</div> : null}
           </div>
 
           <div className="run-composer">
@@ -428,7 +351,7 @@ export default function RunPage() {
             <div className="run-composer-actions">
               <span>Cmd/Ctrl + Enter to run</span>
               <button className="run-button" type="button" onClick={() => sendMessage()} disabled={loading || !input.trim()}>
-                {loading ? 'Coordinating...' : 'Send to TheOne'}
+                {loading ? 'Thinking...' : 'Send to TheOne'}
               </button>
             </div>
           </div>
@@ -496,6 +419,21 @@ export default function RunPage() {
               <strong>{stats.proof}</strong>
             </div>
           </div>
+
+          <details className="run-side-details">
+            <summary>
+              <span>Examples</span>
+              <strong>{workerPrompts.length}</strong>
+            </summary>
+            <div className="run-side-examples">
+              {workerPrompts.map((item) => (
+                <button key={item.label} type="button" onClick={() => sendMessage(item.prompt)} disabled={loading}>
+                  <span>{item.label}</span>
+                  <strong>{item.prompt}</strong>
+                </button>
+              ))}
+            </div>
+          </details>
 
           <details className="run-side-details">
             <summary>
