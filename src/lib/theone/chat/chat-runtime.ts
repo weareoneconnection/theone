@@ -404,6 +404,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     appPackages,
     selectedAppPackages,
     workerCatalogSummary: workerCatalog.summary,
+    workerCatalogActions: workerCatalog.actions,
   });
 
   if (!brain.executionDecision.shouldPlan || brain.reasoning.missingInformation.length > 0) {

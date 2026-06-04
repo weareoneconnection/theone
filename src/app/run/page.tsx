@@ -190,6 +190,7 @@ export default function RunPage() {
   const modelRoute = result?.chat?.modelRoute;
   const appPackages = result?.chat?.appPackages || [];
   const workerCatalog = result?.chat?.workerCatalog;
+  const workerCapabilityMap = brain?.workerCapabilityMap || [];
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' });
@@ -370,6 +371,15 @@ export default function RunPage() {
             {brain?.capabilityRoute?.length ? (
               <div className="app-next-list">
                 {brain.capabilityRoute.slice(0, 8).map((item: string) => <span key={item}>{item}</span>)}
+              </div>
+            ) : null}
+            {workerCapabilityMap.length ? (
+              <div className="app-next-list">
+                {workerCapabilityMap.slice(0, 18).map((item: any) => (
+                  <span key={item.domain}>
+                    {item.title} · {item.actions?.length || 0} · {friendlyStatus(item.status)}
+                  </span>
+                ))}
               </div>
             ) : null}
             {brain?.reasoning?.strategy ? (
