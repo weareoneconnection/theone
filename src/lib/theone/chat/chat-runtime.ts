@@ -6,11 +6,16 @@ import { createExecutionRecord, createWorkflowTrace, markApprovalBlockedSteps } 
 import { getTheOneKernelStatus } from '../kernel/status';
 import { extractOneAIData, runOneAI } from '../providers/oneai';
 import { getOneClawBridgeStatus, getOneClawCapabilityManifest, runOneClawTask } from '../providers/oneclaw';
+import { listAppRuntimePackages, selectAppRuntimePackages } from '../apps/runtime-packages';
+import { resolveTheOneModel } from '../models/model-router';
+import { buildUniversalWorkerCatalog } from '../workers/action-catalog';
+import { buildBrainOnlyReply, buildTheOneBrainFrame } from './brain-layer';
 import { buildOneAIChatWorkflow, type TheOneChatMessage } from './oneai-workflow-builder';
 import type {
   ApprovalGate,
   ClassifiedIntent,
   ExecutionPlan,
+  OneClawTask,
   OneClawTaskRun,
   PlanStep,
   ProofRecord,
@@ -127,6 +132,117 @@ function extractWorkerResultText(run: OneClawTaskRun | null) {
   return Array.from(new Set(fragments)).join('\n\n').slice(0, 9000);
 }
 
+function firstTaskStepInput(task: { steps?: Array<{ input?: Record<string, unknown>; action?: string }> } | null | undefined) {
+  return task?.steps?.[0]?.input || {};
+}
+
+function firstTaskAction(task: { steps?: Array<{ action?: string }> } | null | undefined) {
+  return task?.steps?.[0]?.action || '';
+}
+
+function textField(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
+}
+
+function capabilityAvailable(actions: Array<{ action: string }>, action: string) {
+  return actions.some((capability) => capability.action === action);
+}
+
+function extractGitHubRepo(raw: string) {
+  if (!/(github|repo|repository|仓库|代码库)/i.test(raw)) return null;
+  const match = raw.match(/(?:github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/i);
+  if (!match) return null;
+  const owner = match[1];
+  const repo = match[2].replace(/\.git$/i, '');
+  if (!owner || !repo) return null;
+  return `${owner}/${repo}`;
+}
+
+function synthesizeGitHubRepoTask(input: {
+  raw: string;
+  actions: Array<{ action: string }>;
+}): OneClawTask | null {
+  const repo = extractGitHubRepo(input.raw);
+  if (!repo || !capabilityAvailable(input.actions, 'git.repo.get')) return null;
+
+  const steps: OneClawTask['steps'] = [
+    {
+      id: 'step_1',
+      action: 'git.repo.get',
+      input: { repo },
+      dependsOn: [],
+    },
+  ];
+
+  if (capabilityAvailable(input.actions, 'git.actions.runs')) {
+    steps.push({
+      id: 'step_2',
+      action: 'git.actions.runs',
+      input: { repo },
+      dependsOn: [],
+    });
+  }
+
+  if (capabilityAvailable(input.actions, 'git.checks.list')) {
+    steps.push({
+      id: 'step_3',
+      action: 'git.checks.list',
+      input: { repo },
+      dependsOn: [],
+    });
+  }
+
+  return {
+    taskName: `chat_github_repo_review_${repo.replace(/[^A-Za-z0-9]+/g, '_')}`,
+    approvalMode: 'auto',
+    steps,
+    metadata: {
+      source: 'theone.chat_runtime.github_fallback',
+      repo,
+      reason: 'TheOne detected a complete GitHub owner/repo shorthand in the user message.',
+    },
+  };
+}
+
+function pendingTaskSummary(input: {
+  baseReply: string;
+  oneclawTask: { approvalMode?: string; steps?: Array<{ action?: string; input?: Record<string, unknown> }> } | null;
+  approvals: ApprovalGate[];
+  automationReason?: string;
+}) {
+  const action = firstTaskAction(input.oneclawTask);
+  const stepInput = firstTaskStepInput(input.oneclawTask);
+  const approvalReason = input.approvals.find((approval) => approval.required && approval.status === 'pending')?.reason ||
+    input.automationReason ||
+    'TheOne policy requires approval before this worker can act.';
+
+  if (action === 'social.post') {
+    const draft = textField(stepInput.content) || textField(stepInput.text) || textField(stepInput.body);
+    const target = textField(stepInput.channel) || 'x';
+    return [
+      'I prepared the X post workflow and paused before publishing.',
+      '',
+      draft ? `Draft post:\n${draft}` : 'Draft post: The publishing worker did not return a readable draft yet.',
+      '',
+      `Why approval is required: posting to ${target.toUpperCase()} is a public external write action.`,
+      `Approval note: ${approvalReason}`,
+      '',
+      'Approve it when the draft is ready, or ask me to revise the angle, tone, or length first.',
+    ].join('\n');
+  }
+
+  if (input.oneclawTask?.steps?.length) {
+    return [
+      input.baseReply,
+      '',
+      `Prepared worker task: ${input.oneclawTask.steps.map((step) => step.action).filter(Boolean).join(', ')}`,
+      `Why approval is required: ${approvalReason}`,
+    ].join('\n');
+  }
+
+  return input.baseReply;
+}
+
 async function summarizeWorkerResult(input: {
   rawRequest: string;
   workflowSummary: string;
@@ -145,11 +261,15 @@ async function summarizeWorkerResult(input: {
 
   const finalMessage = [
     'You are finalizing a TheOne chat workflow after OneClaw executed a worker task.',
-    'Return a concise user-facing answer. Use the worker evidence directly. Do not ask for approval or another URL if evidence is present.',
+    'Return a polished user-facing answer. Use the worker evidence directly. Do not ask for approval or another URL if evidence is present.',
+    'For website analysis, use these sections when possible: Key findings, Positioning, Useful opportunities, Risks or gaps, Recommended next move.',
+    'For API, file, GitHub, desktop, or browser work, explain what happened, what evidence supports it, and what the user can do next.',
+    'Do not expose raw JSON unless it is the only useful evidence.',
     `Original user request: ${input.rawRequest}`,
     `Workflow summary: ${input.workflowSummary}`,
     `Worker evidence:\n${evidence}`,
   ].join('\n\n');
+  const modelRoute = resolveTheOneModel('theone.chat.finalize');
 
   try {
     const finalOneAiResult = await runOneAI<unknown>({
@@ -158,6 +278,11 @@ async function summarizeWorkerResult(input: {
         message: finalMessage,
         mode: 'assist',
         availableActions: [],
+        modelRoute,
+      },
+      options: {
+        model: modelRoute.model,
+        modelRoute,
       },
     });
     const data = extractOneAIData<Record<string, unknown>>(finalOneAiResult);
@@ -265,34 +390,221 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     getOneClawBridgeStatus(),
   ]);
   const kernel = getTheOneKernelStatus(mode, oneClawManifest, oneClawBridge);
+  const workerCatalog = buildUniversalWorkerCatalog({
+    capabilities: oneClawManifest.capabilities,
+    connectors: oneClawManifest.connectors || [],
+  });
+  const appPackages = listAppRuntimePackages();
+  const selectedAppPackages = selectAppRuntimePackages(raw).slice(0, 3);
+  const primaryModel = resolveTheOneModel('theone.chat.primary');
+  const brain = buildTheOneBrainFrame({
+    raw,
+    mode,
+    messages,
+    appPackages,
+    selectedAppPackages,
+    workerCatalogSummary: workerCatalog.summary,
+  });
+
+  if (!brain.executionDecision.shouldPlan || brain.reasoning.missingInformation.length > 0) {
+    const summary = buildBrainOnlyReply({ brain, appPackages });
+    const intent = buildIntent({
+      raw: brain.objective,
+      domain: brain.conversationKind,
+      risk: brain.safety.risk,
+      requiresApproval: brain.executionDecision.approvalExpected,
+    });
+    const preflight = preflightOneClawTask({
+      task: null,
+      intent,
+      mode,
+      capabilities: oneClawManifest.capabilities,
+    });
+    const plan = buildPlan({
+      planId,
+      intent,
+      summary: brain.reasoning.strategy,
+      oneAiSteps: [{
+        id: 'brain_understanding',
+        title: 'TheOne Brain understands the conversation',
+        action: 'theone.brain',
+        worker: 'theone',
+        dependsOn: [],
+      }],
+      hasOneClawTask: false,
+      oneClawStatus: 'skipped',
+      risk: brain.safety.risk,
+    });
+    const workflow = createWorkflowTrace({ runId, mode, plan, approvals: [] });
+    const proofRecords = [
+      proof({
+        title: 'TheOne Brain handled conversation',
+        value: summary,
+        metadata: {
+          source: 'theone.brain_layer',
+          brain,
+          modelRoute: primaryModel,
+          selectedAppPackages,
+          workerCatalogSummary: workerCatalog.summary,
+          preflight,
+        },
+      }),
+    ];
+    const executions = [
+      createExecutionRecord({
+        provider: 'theone',
+        status: 'success',
+        summary: 'TheOne Brain answered without external worker execution.',
+        taskName: 'theone.brain.respond',
+        raw: { brain, preflight },
+      }),
+    ];
+
+    return {
+      ok: true,
+      runId,
+      summary,
+      intent,
+      plan,
+      execution: {
+        completedSteps: plan.steps.filter((step) => step.status === 'completed').length,
+        failedSteps: plan.steps.filter((step) => step.status === 'failed').length,
+        agentResults: [],
+      },
+      proof: proofRecords,
+      approvals: [],
+      executions,
+      pendingOneClawTask: null,
+      preflight,
+      os: {
+        ...kernel,
+        workflow,
+        approvals: [],
+        executions,
+        oneClawManifest,
+        oneClawBridge,
+        preflight,
+      },
+      networkSignals: {
+        routedBy: 'theone.brain_layer',
+        modelRoute: primaryModel,
+        selectedAppPackages: selectedAppPackages.map((pkg) => pkg.key),
+        workerCatalogSummary: workerCatalog.summary,
+        brainMode: brain.mode,
+        conversationKind: brain.conversationKind,
+      },
+      chat: {
+        runtime: 'theone.chat_runtime.v2',
+        brain,
+        modelRoute: primaryModel,
+        appPackages: brain.selectedApps.length ? brain.selectedApps : appPackages.slice(0, 4),
+        workerCatalog: workerCatalog.summary,
+        assistant: {
+          role: 'assistant',
+          content: summary,
+          createdAt: new Date().toISOString(),
+        },
+        oneAiWorkflow: {
+          id: `brain_only_${runId}`,
+          summary: brain.reasoning.strategy,
+          source: 'theone.brain',
+          owner: 'TheOne',
+          status: 'validated',
+          steps: [{
+            id: 'brain_understanding',
+            title: 'Understand and answer',
+            worker: 'theone',
+            action: 'theone.brain',
+            input: { objective: brain.objective },
+            owner: 'theone',
+            status: 'completed',
+            dependsOn: [],
+          }],
+        },
+        workerCoordination: {
+          mode,
+          requiredWorkers: ['theone'],
+          workers: [
+            {
+              key: 'theone',
+              title: 'TheOne Brain',
+              role: 'Understands the conversation, chooses strategy, and decides whether workers are needed.',
+              status: 'ready',
+            },
+          ],
+          oneclawTask: null,
+          oneclawRun: null,
+          workerResultText: '',
+          finalSummary: summary,
+          approvalSummary: null,
+          automationPolicy: null,
+          preflight,
+        },
+        nextActions: brain.nextMoves,
+      },
+    };
+  }
+
   const oneAi = await buildOneAIChatWorkflow({
     raw,
     mode,
     messages,
     capabilities: oneClawManifest.capabilities,
+    workerCatalog,
+    appPackages,
+    brain,
   });
+  const fallbackOneClawTask = oneAi.oneclawTask ? null : synthesizeGitHubRepoTask({
+    raw,
+    actions: oneClawManifest.capabilities,
+  });
+  const plannedOneClawTask = oneAi.oneclawTask || fallbackOneClawTask;
+  const plannedWorkflowSteps = fallbackOneClawTask
+    ? [
+        ...oneAi.workflow.workflow.steps,
+        ...fallbackOneClawTask.steps.map((step, index) => ({
+          id: step.id || `github_step_${index + 1}`,
+          title: step.action === 'git.repo.get'
+            ? 'Read GitHub repository metadata'
+            : step.action === 'git.actions.runs'
+              ? 'Read recent GitHub Actions runs'
+              : step.action === 'git.checks.list'
+                ? 'Read GitHub check status'
+                : step.action,
+          worker: 'github_worker',
+          action: step.action,
+          input: step.input,
+          approvalMode: 'auto' as const,
+          dependsOn: step.dependsOn || [],
+        })),
+      ]
+    : oneAi.workflow.workflow.steps;
+  const workflowSummary = fallbackOneClawTask
+    ? `Check GitHub repository ${fallbackOneClawTask.metadata?.repo || ''} and summarize attention points.`
+    : oneAi.workflow.workflow.summary;
+  const workflowDomain = fallbackOneClawTask ? 'github' : oneAi.workflow.intent.domain;
 
   const intent = buildIntent({
     raw: oneAi.workflow.intent.objective || raw,
-    domain: oneAi.workflow.intent.domain,
+    domain: workflowDomain,
     risk: oneAi.workflow.intent.risk,
     requiresApproval: oneAi.workflow.intent.requiresApproval || oneAi.workflow.safety.requiresApproval,
   });
   const preflight = preflightOneClawTask({
-    task: oneAi.oneclawTask,
+    task: plannedOneClawTask,
     intent,
     mode,
     capabilities: oneClawManifest.capabilities,
   });
   const automationPolicy = await evaluateAutomationPolicy({
-    task: oneAi.oneclawTask,
+    task: plannedOneClawTask,
     mode,
     preflight,
     capabilities: oneClawManifest.capabilities,
     connectors: oneClawManifest.connectors,
     canSubmitExternalTasks: true,
   });
-  const oneclawTask = attachAutomationPolicyToTask(oneAi.oneclawTask, automationPolicy);
+  const oneclawTask = attachAutomationPolicyToTask(plannedOneClawTask, automationPolicy);
   const approvals = mapApprovalsForAutomation({
     approvals: evaluateOneClawTaskPolicy(oneclawTask, mode),
     automationBlocked: automationPolicy.blocked,
@@ -313,7 +625,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       oneclawRun = await runOneClawTask<OneClawTaskRun>(oneclawTask);
       const finalized = await summarizeWorkerResult({
         rawRequest: raw,
-        workflowSummary: oneAi.workflow.workflow.summary,
+        workflowSummary,
         oneclawRun,
       });
       finalOneAiResult = finalized.finalOneAiResult;
@@ -340,8 +652,8 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
   const plan = markApprovalBlockedSteps(buildPlan({
     planId,
     intent,
-    summary: oneAi.workflow.workflow.summary,
-    oneAiSteps: oneAi.workflow.workflow.steps,
+    summary: workflowSummary,
+    oneAiSteps: plannedWorkflowSteps,
     hasOneClawTask: Boolean(oneclawTask),
     oneClawStatus: dispatchStatus,
     risk: automationPolicy.risk || oneAi.workflow.intent.risk,
@@ -382,15 +694,29 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       raw: finalOneAiResult,
     })] : []),
   ];
+  const approvalSummary = approvalGated
+    ? pendingTaskSummary({
+        baseReply: oneAi.workflow.assistantReply,
+        oneclawTask,
+        approvals,
+        automationReason: automationPolicy.reasons?.join(' '),
+      })
+    : null;
+  const summary = finalSummary || approvalSummary || oneAi.workflow.assistantReply;
   const proofRecords = [
     proof({
       title: 'TheOne Chat Runtime handled conversation',
-      value: finalSummary || oneAi.workflow.assistantReply,
+      value: summary,
       metadata: {
         source: 'theone.chat_runtime',
+        brain,
+        modelRoute: primaryModel,
+        selectedAppPackages,
+        workerCatalogSummary: workerCatalog.summary,
         oneAiWorkflow: oneAi.workflow,
         finalOneAiResult,
         finalSummary,
+        approvalSummary,
         workerResultText,
         preflight,
         automationPolicy,
@@ -401,7 +727,6 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
   ];
 
   const ok = oneAi.oneAiResult.success && !automationPolicy.blocked && !oneclawError;
-  const summary = finalSummary || oneAi.workflow.assistantReply;
   const theoneWorkerStatus = blocked
     ? 'blocked'
     : approvalGated
@@ -420,10 +745,12 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
           : 'prepared';
   const nextActions = automationPolicy.blocked || preflight.status === 'blocked'
     ? ['Fix the blocked workflow action or input, then ask TheOne to rebuild the workflow.']
-    : oneclawError
+      : oneclawError
       ? [`Check OneClaw execution error: ${oneclawError}`]
       : approvalGated
-        ? ['Review the pending approval before OneClaw executes this worker task.']
+        ? firstTaskAction(oneclawTask) === 'social.post'
+          ? ['Review the draft, revise it if needed, then approve the pending X publish task.']
+          : ['Review the pending approval before OneClaw executes this worker task.']
         : oneclawTask && !oneclawRun && automationPolicy.canAutoRun
           ? ['The read-only worker task is auto-cleared; wait for OneClaw execution receipt or refresh the run.']
           : finalSummary
@@ -459,12 +786,22 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     },
     networkSignals: {
       routedBy: 'theone.chat_runtime',
+      brainMode: brain.mode,
+      conversationKind: brain.conversationKind,
+      modelRoute: primaryModel,
+      selectedAppPackages: selectedAppPackages.map((pkg) => pkg.key),
+      workerCatalogSummary: workerCatalog.summary,
       oneAiWorkflowId: oneAi.workflow.workflow.id,
+      fallbackRoute: fallbackOneClawTask ? 'github_repo_shorthand' : null,
       oneClawTaskName: oneclawTask?.taskName || null,
       oneClawRunId: oneclawRun?.id || null,
     },
     chat: {
-      runtime: 'theone.chat_runtime.v1',
+      runtime: 'theone.chat_runtime.v2',
+      brain,
+      modelRoute: primaryModel,
+      appPackages: selectedAppPackages.length ? selectedAppPackages : appPackages.slice(0, 4),
+      workerCatalog: workerCatalog.summary,
       assistant: {
         role: 'assistant',
         content: summary,
@@ -472,10 +809,11 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       },
       oneAiWorkflow: {
         ...oneAi.workflow.workflow,
+        summary: workflowSummary,
         source: 'oneai',
         owner: 'OneAI',
         status: ok ? 'validated' : blocked ? 'blocked' : 'needs_approval',
-        steps: oneAi.workflow.workflow.steps.map((step) => ({
+        steps: plannedWorkflowSteps.map((step) => ({
           ...step,
           owner: step.worker,
           status: step.worker === 'oneai' || finalSummary ? 'completed' : oneclawRun ? 'running' : blocked ? 'blocked' : 'pending',
@@ -506,8 +844,10 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         ],
         oneclawTask,
         oneclawRun,
+        fallbackRoute: fallbackOneClawTask ? 'github_repo_shorthand' : null,
         workerResultText,
         finalSummary,
+        approvalSummary,
         automationPolicy,
         preflight,
       },

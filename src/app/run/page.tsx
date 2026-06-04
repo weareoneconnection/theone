@@ -102,6 +102,77 @@ function workerTone(status?: string) {
   return 'ready';
 }
 
+function firstStep(result: any) {
+  const task = result?.chat?.workerCoordination?.oneclawTask || result?.pendingOneClawTask;
+  return task?.steps?.[0] || null;
+}
+
+function taskDraft(result: any) {
+  const input = firstStep(result)?.input || {};
+  return input.content || input.text || input.body || '';
+}
+
+function approvalReason(result: any) {
+  const approvals = result?.approvals || [];
+  return approvals.find((approval: any) => approval?.required && approval?.status === 'pending')?.reason ||
+    result?.chat?.workerCoordination?.automationPolicy?.reasons?.join(' ') ||
+    '';
+}
+
+function evidenceText(result: any) {
+  return result?.chat?.workerCoordination?.workerResultText || '';
+}
+
+function RunMessageExplanation({ result }: { result: any }) {
+  if (!result?.chat) return null;
+
+  const step = firstStep(result);
+  const action = step?.action || '';
+  const draft = taskDraft(result);
+  const evidence = evidenceText(result);
+  const reason = approvalReason(result);
+  const finalSummary = result?.chat?.workerCoordination?.finalSummary;
+  const approvalSummary = result?.chat?.workerCoordination?.approvalSummary;
+  const oneclawRun = result?.chat?.workerCoordination?.oneclawRun;
+
+  if (!draft && !evidence && !reason && !oneclawRun && !approvalSummary && !finalSummary) return null;
+
+  return (
+    <div className="run-explain">
+      {draft ? (
+        <div className="run-explain-block">
+          <span>Draft</span>
+          <p>{draft}</p>
+        </div>
+      ) : null}
+      {reason ? (
+        <div className="run-explain-block">
+          <span>Policy</span>
+          <p>{reason}</p>
+        </div>
+      ) : null}
+      {evidence ? (
+        <details className="run-explain-details">
+          <summary>Evidence from worker</summary>
+          <p>{evidence.slice(0, 1400)}{evidence.length > 1400 ? ' ...' : ''}</p>
+        </details>
+      ) : null}
+      {oneclawRun ? (
+        <div className="run-explain-grid">
+          <div>
+            <span>Worker</span>
+            <strong>{action || oneclawRun.taskName || 'OneClaw task'}</strong>
+          </div>
+          <div>
+            <span>Status</span>
+            <strong>{friendlyStatus(oneclawRun.status || 'called')}</strong>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function RunPage() {
   const [input, setInput] = useState('');
   const [mode, setMode] = useState<Mode>('assist');
@@ -114,7 +185,11 @@ export default function RunPage() {
   const stats = runStats(result);
   const workflow = result?.chat?.oneAiWorkflow;
   const coordination = result?.chat?.workerCoordination;
+  const brain = result?.chat?.brain;
   const nextActions = result?.chat?.nextActions || [];
+  const modelRoute = result?.chat?.modelRoute;
+  const appPackages = result?.chat?.appPackages || [];
+  const workerCatalog = result?.chat?.workerCatalog;
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' });
@@ -231,6 +306,7 @@ export default function RunPage() {
                     <strong>{message.result.appRoute.action}</strong>
                   </div>
                 ) : null}
+                {message.role === 'assistant' && message.result ? <RunMessageExplanation result={message.result} /> : null}
               </article>
             ))}
             {loading ? (
@@ -279,6 +355,29 @@ export default function RunPage() {
           </div>
 
           <div className="run-orchestrator-card">
+            <span className="product-card-kicker">TheOne Brain</span>
+            <strong>{brain?.objective || 'Understand the user outcome before routing workers.'}</strong>
+            <div className="run-explain-grid">
+              <div>
+                <span>Mode</span>
+                <strong>{brain?.mode || mode}</strong>
+              </div>
+              <div>
+                <span>Intent</span>
+                <strong>{brain?.conversationKind || 'ready'}</strong>
+              </div>
+            </div>
+            {brain?.capabilityRoute?.length ? (
+              <div className="app-next-list">
+                {brain.capabilityRoute.slice(0, 8).map((item: string) => <span key={item}>{item}</span>)}
+              </div>
+            ) : null}
+            {brain?.reasoning?.strategy ? (
+              <p className="panel-subtitle">{brain.reasoning.strategy}</p>
+            ) : null}
+          </div>
+
+          <div className="run-orchestrator-card">
             <span className="product-card-kicker">OneAI Workflow</span>
             <strong>{workflow?.summary || 'Waiting for a goal.'}</strong>
             <div className="run-workflow-list">
@@ -294,6 +393,25 @@ export default function RunPage() {
                 </div>
               ))}
             </div>
+          </div>
+
+          <div className="run-orchestrator-card">
+            <span className="product-card-kicker">OS Runtime</span>
+            <div className="run-explain-grid">
+              <div>
+                <span>Model</span>
+                <strong>{modelRoute?.model || 'frontier alias'}</strong>
+              </div>
+              <div>
+                <span>Workers</span>
+                <strong>{workerCatalog?.workers || coordination?.workers?.length || 'ready'}</strong>
+              </div>
+            </div>
+            {appPackages.length ? (
+              <div className="app-next-list">
+                {appPackages.slice(0, 4).map((pkg: any) => <span key={pkg.key}>{pkg.title}</span>)}
+              </div>
+            ) : null}
           </div>
 
           <div className="run-orchestrator-card">

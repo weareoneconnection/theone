@@ -2628,6 +2628,67 @@ button, input, textarea { font: inherit; }
   text-transform: uppercase;
 }
 
+.run-explain {
+  border-top: 1px solid rgba(255,255,255,0.08);
+  display: grid;
+  gap: 10px;
+  padding-top: 10px;
+}
+
+.run-explain-block,
+.run-explain-details {
+  background: rgba(0,0,0,0.18);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+}
+
+.run-explain-block span,
+.run-explain-grid span,
+.run-explain-details summary {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.run-explain-block p,
+.run-explain-details p {
+  color: rgba(255,255,255,0.76);
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.run-explain-details summary {
+  cursor: pointer;
+}
+
+.run-explain-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.run-explain-grid div {
+  background: rgba(0,0,0,0.18);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+}
+
+.run-explain-grid strong {
+  color: rgba(255,255,255,0.9);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
 .run-worker-prompts {
   display: grid;
   gap: 10px;

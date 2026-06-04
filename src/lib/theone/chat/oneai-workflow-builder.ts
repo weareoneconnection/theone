@@ -1,5 +1,7 @@
 import { extractOneAIData, extractOneAIPlannedOneClawTask, runOneAI } from '../providers/oneai';
+import { resolveTheOneModel } from '../models/model-router';
 import type { OneAIGenerateResult, OneClawCapabilityDefinition, OneClawTask, TheOneMode } from '../types';
+import type { TheOneBrainFrame } from './brain-layer';
 
 export type TheOneChatMessage = {
   role: 'user' | 'assistant' | 'system';
@@ -169,6 +171,9 @@ export async function buildOneAIChatWorkflow(input: {
   mode: TheOneMode;
   messages: TheOneChatMessage[];
   capabilities: OneClawCapabilityDefinition[];
+  workerCatalog?: unknown;
+  appPackages?: unknown;
+  brain?: TheOneBrainFrame;
 }): Promise<{
   workflow: OneAIWorkflowContract;
   oneAiResult: OneAIGenerateResult<unknown>;
@@ -182,6 +187,7 @@ export async function buildOneAIChatWorkflow(input: {
     liveMode: capability.liveMode,
     maturity: capability.maturity,
   }));
+  const modelRoute = resolveTheOneModel('theone.chat.primary');
 
   const oneAiResult = await runOneAI<unknown>({
     type: 'theone_chat_workflow',
@@ -191,6 +197,10 @@ export async function buildOneAIChatWorkflow(input: {
       mode: input.mode,
       conversation: input.messages.slice(-12),
       availableActions,
+      modelRoute,
+      workerCatalog: input.workerCatalog || null,
+      appPackages: input.appPackages || null,
+      brain: input.brain || null,
       responseContract: {
         assistantReply: 'string',
         intent: {
@@ -222,6 +232,17 @@ export async function buildOneAIChatWorkflow(input: {
         },
       },
       instruction: [
+        input.brain?.systemPrompt || '',
+        input.brain ? `Brain objective: ${input.brain.objective}` : '',
+        input.brain ? `Brain mode: ${input.brain.mode}` : '',
+        input.brain ? `Brain selected apps: ${input.brain.selectedApps.map((app) => app.key).join(', ')}` : '',
+        input.brain ? `Brain execution decision: ${JSON.stringify(input.brain.executionDecision)}` : '',
+        `Use model route ${modelRoute.useCase} with preferred model alias ${modelRoute.model}.`,
+        'Act like a Codex-grade super-agent conversation planner for TheOne AI OS.',
+        'The user should not need to know which App or Worker to call; infer the best App package and Worker actions from context.',
+        'Use appPackages to choose the user-facing capability package and workerCatalog to choose executable actions.',
+        'If brain.conversationKind is capability, do not create an external worker task; answer capability-level guidance.',
+        'If brain.reasoning.missingInformation is not empty, ask only for the missing detail and do not invent inputs.',
         'Return structured JSON only.',
         'Do not invent worker actions that are absent from availableActions.',
         'Use oneai.generate for reasoning-only steps.',
@@ -233,6 +254,8 @@ export async function buildOneAIChatWorkflow(input: {
     options: {
       responseFormat: 'json',
       chain: 'theone_chat_workflow',
+      model: modelRoute.model,
+      modelRoute,
     },
   });
 
