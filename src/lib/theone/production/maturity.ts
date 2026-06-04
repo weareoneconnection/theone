@@ -73,10 +73,21 @@ export async function getProductionMaturityReport(): Promise<ProductionMaturityR
       approvalGated: 0,
       versionLocked: 0,
       scoped: 0,
+      healthy: 0,
       composableKinds: [],
       installable: 0,
       unsigned: 0,
+      packageRuntime: {
+        schemaVersion: 'theone.package_runtime.v1',
+        supportsInstall: true,
+        supportsDisable: true,
+        supportsVersionLock: true,
+        supportsPermissionScopes: true,
+        supportsSandboxProfiles: true,
+        supportsComposition: true,
+      },
     },
+    runtimeContracts: [],
     packages: [],
   } as Awaited<ReturnType<typeof packageRegistrySummary>>);
   const rules = fallback(rulesResult, [] as Awaited<ReturnType<typeof listAutomationPolicyRules>>);

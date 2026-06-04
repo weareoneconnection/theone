@@ -1,7 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { ProductPage, ProductStatusStrip, friendlyStatus } from '@/components/theone/ProductNav';
 
 const modes = ['manual', 'assist', 'auto'] as const;
@@ -121,12 +122,54 @@ function workflowSteps(result: any) {
   return result?.chat?.oneAiWorkflow?.steps || [];
 }
 
+function pendingApprovals(result: any) {
+  const approvals = result?.approvals || [];
+  return Array.isArray(approvals)
+    ? approvals.filter((approval: any) => approval?.required && approval?.status === 'pending')
+    : [];
+}
+
 function coordinationWorkers(result: any) {
   return result?.chat?.workerCoordination?.workers || [
     { key: 'oneai', title: 'OneAI', role: 'Builds the workflow', status: result ? 'ready' : 'waiting' },
     { key: 'theone', title: 'TheOne Kernel', role: 'Checks policy and proof', status: result ? 'ready' : 'waiting' },
     { key: 'oneclaw', title: 'OneClaw', role: 'Runs approved workers', status: result ? 'ready' : 'waiting' },
   ];
+}
+
+function ApprovalCard({
+  result,
+  busy,
+  onDecision,
+}: {
+  result: any;
+  busy: boolean;
+  onDecision: (decision: 'approve' | 'reject', approvalId?: string) => void;
+}) {
+  const approvals = pendingApprovals(result);
+  if (!approvals.length) return null;
+  const task = result?.pendingOneClawTask || result?.chat?.workerCoordination?.oneclawTask;
+  const first = approvals[0];
+
+  return (
+    <div className="run-approval-card">
+      <div>
+        <span className="product-card-kicker">Approval gate</span>
+        <strong>{task?.taskName || first.action || 'Worker task waiting'}</strong>
+        <p>{first.reason || 'TheOne policy needs your decision before OneClaw executes this worker.'}</p>
+      </div>
+      <div className="approval-actions">
+        <button className="mini-action primary" type="button" disabled={busy} onClick={() => onDecision('approve', first.id)}>Approve</button>
+        <button className="mini-action" type="button" disabled={busy} onClick={() => onDecision('reject', first.id)}>Reject</button>
+        {approvals.length > 1 ? (
+          <>
+            <button className="mini-action primary" type="button" disabled={busy} onClick={() => onDecision('approve')}>Approve all</button>
+            <button className="mini-action" type="button" disabled={busy} onClick={() => onDecision('reject')}>Reject all</button>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
 function ToolTrace({ result }: { result: any }) {
@@ -201,7 +244,8 @@ function ToolTrace({ result }: { result: any }) {
   );
 }
 
-export default function RunPage() {
+function RunPageContent() {
+  const searchParams = useSearchParams();
   const [input, setInput] = useState('');
   const [mode, setMode] = useState<Mode>('assist');
   const [loading, setLoading] = useState(false);
@@ -227,6 +271,28 @@ export default function RunPage() {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages, loading]);
 
+  useEffect(() => {
+    const continueRunId = searchParams.get('continue');
+    if (!continueRunId || result) return;
+    fetch(`/api/theone/runs/${continueRunId}`, { cache: 'no-store' })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data?.runId) return;
+        setResult(data);
+        setMessages((current) => ([
+          ...current,
+          {
+            id: createId('assistant_resume'),
+            role: 'assistant',
+            content: `I loaded mission ${data.runId}. Tell me what to change, retry, summarize, or continue.`,
+            createdAt: new Date().toISOString(),
+            result: data,
+          },
+        ]));
+      })
+      .catch(() => undefined);
+  }, [searchParams, result]);
+
   async function sendMessage(text?: string) {
     const content = (text ?? input).trim();
     if (!content || loading) return;
@@ -251,6 +317,11 @@ export default function RunPage() {
           input: content,
           mode,
           language: 'en',
+          context: latestResult?.chat ? {
+            runId: latestResult.runId,
+            mission: latestResult.chat.mission,
+            workerRuntime: latestResult.chat.workerRuntime,
+          } : undefined,
           messages: nextMessages.map((message) => ({ role: message.role, content: message.content })),
         }),
       });
@@ -273,6 +344,52 @@ export default function RunPage() {
         ...current,
         {
           id: createId('assistant_error'),
+          role: 'assistant',
+          content: plainResult(failure),
+          createdAt: new Date().toISOString(),
+          result: failure,
+        },
+      ]));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function decideApproval(decision: 'approve' | 'reject', approvalId?: string) {
+    const runId = latestResult?.runId || result?.runId;
+    if (!runId || loading) return;
+    setLoading(true);
+    try {
+      const endpoint = decision === 'approve' ? '/api/theone/approvals/approve' : '/api/theone/approvals/reject';
+      const payload = decision === 'approve'
+        ? { runId, approvalId, approveAll: !approvalId }
+        : { runId, approvalId, rejectAll: !approvalId };
+      const data = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).then((res) => res.json());
+      if (data.ok === false) throw new Error(data.error || 'Approval decision failed.');
+      setResult(data);
+      setMessages((current) => ([
+        ...current,
+        {
+          id: createId(`assistant_${decision}`),
+          role: 'assistant',
+          content: decision === 'approve'
+            ? 'Approved. I refreshed the mission so you can see whether OneClaw executed or still needs follow-up.'
+            : 'Rejected. I kept the external worker from running.',
+          createdAt: new Date().toISOString(),
+          result: data,
+        },
+      ]));
+    } catch (error) {
+      const failure = { ok: false, error: error instanceof Error ? error.message : 'Approval decision failed.' };
+      setResult(failure);
+      setMessages((current) => ([
+        ...current,
+        {
+          id: createId('assistant_approval_error'),
           role: 'assistant',
           content: plainResult(failure),
           createdAt: new Date().toISOString(),
@@ -338,6 +455,9 @@ export default function RunPage() {
                   </div>
                 ) : null}
                 {message.role === 'assistant' && message.result ? <ToolTrace result={message.result} /> : null}
+                {message.role === 'assistant' && message.result ? (
+                  <ApprovalCard result={message.result} busy={loading} onDecision={decideApproval} />
+                ) : null}
               </article>
             ))}
             {loading ? <div className="run-thinking-line" aria-live="polite">TheOne is thinking...</div> : null}
@@ -536,5 +656,13 @@ export default function RunPage() {
         </aside>
       </section>
     </ProductPage>
+  );
+}
+
+export default function RunPage() {
+  return (
+    <Suspense fallback={null}>
+      <RunPageContent />
+    </Suspense>
   );
 }

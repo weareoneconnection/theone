@@ -54,6 +54,7 @@ export default function WorkspaceMissionControlPage() {
   const runs = detail?.runs || [];
   const proof = detail?.proof || [];
   const memory = detail?.memory || [];
+  const memoryGraph = detail?.memoryGraph || {};
   const packages = detail?.packages || [];
 
   return (
@@ -136,6 +137,37 @@ export default function WorkspaceMissionControlPage() {
             ))}
           </div>
         </article>
+      </section>
+
+      <section className="product-card">
+        <div className="panel-head">
+          <div>
+            <h2 className="panel-title">Memory Graph</h2>
+            <p className="panel-subtitle">Workspace memory TheOne can reuse when it runs this mission again.</p>
+          </div>
+          <span className="status-pill status-assist">{memoryGraph.linkedMemory || 0} linked</span>
+        </div>
+        <div className="run-result-stats">
+          <div><span>Runs</span><strong>{memoryGraph.linkedRuns || runs.length}</strong></div>
+          <div><span>Proof</span><strong>{memoryGraph.linkedProof || proof.length}</strong></div>
+          <div><span>Memory</span><strong>{memoryGraph.linkedMemory || memory.length}</strong></div>
+        </div>
+        <div className="workspace-memory-graph">
+          <div>
+            <span className="product-card-kicker">Recall policy</span>
+            <p>{memoryGraph.recallPolicy || 'TheOne will use prior mission memory as context while keeping execution policy active.'}</p>
+          </div>
+          <div>
+            <span className="product-card-kicker">Latest memory</span>
+            <strong>{memoryGraph.latestMemory?.title || 'No linked memory yet'}</strong>
+            <p>{memoryGraph.latestMemory?.summary || 'Run this workspace to create durable memory for future missions.'}</p>
+          </div>
+          <div className="policy-chip-row">
+            {(memoryGraph.queryTerms || [workspace?.key, workspace?.app].filter(Boolean)).map((term: string) => (
+              <span key={term} className="capability-chip">{term}</span>
+            ))}
+          </div>
+        </div>
       </section>
 
       <section className="mission-timeline-grid">

@@ -344,6 +344,30 @@ export async function packageRegistrySummary() {
   const gated = packages.filter((item) => osFor(item).sandboxProfile?.isolation === 'approval_gated').length;
   const versionLocked = packages.filter((item) => osFor(item).versionLock === true).length;
   const scoped = packages.filter((item) => Array.isArray(osFor(item).permissionScopes)).length;
+  const healthy = packages.filter((item) => {
+    const os = osFor(item);
+    return item.enabled && item.status === 'installed' && os.versionLock === true && os.installContract && os.sandboxProfile;
+  }).length;
+  const runtimeContracts = packages.map((item) => {
+    const os = osFor(item);
+    return {
+      id: item.id,
+      kind: item.kind,
+      title: item.title,
+      version: item.version,
+      status: item.status,
+      enabled: item.enabled,
+      permissions: os.permissionScopes || [],
+      sandbox: os.sandboxProfile || null,
+      install: os.installContract || null,
+      composition: os.composition || null,
+      health: item.enabled && item.status === 'installed' && os.versionLock === true && os.installContract && os.sandboxProfile
+        ? 'ready'
+        : item.status === 'disabled'
+          ? 'disabled'
+          : 'available',
+    };
+  });
   return {
     total: packages.length,
     installed: packages.filter((item) => item.status === 'installed').length,
@@ -353,15 +377,26 @@ export async function packageRegistrySummary() {
       return summary;
     }, {}),
     runtime: {
-      level: 'L26',
+      level: 'L28',
       sandboxed,
       approvalGated: gated,
       versionLocked,
       scoped,
+      healthy,
       composableKinds: Array.from(new Set(packages.map((item) => item.kind))),
       installable: packages.filter((item) => osFor(item).installContract).length,
       unsigned: packages.filter((item) => osFor(item).signature?.status === 'development_unsigned').length,
+      packageRuntime: {
+        schemaVersion: 'theone.package_runtime.v1',
+        supportsInstall: true,
+        supportsDisable: true,
+        supportsVersionLock: true,
+        supportsPermissionScopes: true,
+        supportsSandboxProfiles: true,
+        supportsComposition: true,
+      },
     },
+    runtimeContracts,
     packages,
   };
 }

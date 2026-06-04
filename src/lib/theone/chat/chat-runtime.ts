@@ -6,9 +6,10 @@ import { createExecutionRecord, createWorkflowTrace, markApprovalBlockedSteps } 
 import { getTheOneKernelStatus } from '../kernel/status';
 import { extractOneAIData, runOneAI } from '../providers/oneai';
 import { getOneClawBridgeStatus, getOneClawCapabilityManifest, runOneClawTask } from '../providers/oneclaw';
-import { listAppRuntimePackages, selectAppRuntimePackages } from '../apps/runtime-packages';
+import { listEnabledAppRuntimePackages, selectAppRuntimePackagesFromCatalog } from '../apps/runtime-packages';
 import { resolveTheOneModel } from '../models/model-router';
 import { buildUniversalWorkerCatalog } from '../workers/action-catalog';
+import { queryMemoryGraph } from '../state/run-store';
 import { buildBrainOnlyReply, buildTheOneBrainFrame } from './brain-layer';
 import { buildOneAIChatWorkflow, type TheOneChatMessage } from './oneai-workflow-builder';
 import type {
@@ -258,7 +259,7 @@ function createMissionFrame(input: {
   raw: string;
   mode: TheOneMode;
   brain: ReturnType<typeof buildTheOneBrainFrame>;
-  selectedAppPackages: ReturnType<typeof selectAppRuntimePackages>;
+  selectedAppPackages: Array<{ key: string; title: string; route: string }>;
 }) {
   const primaryApp = input.selectedAppPackages[0] || input.brain.selectedApps[0] || null;
   const missionKey = `chat_${slugify(primaryApp?.key || input.brain.conversationKind)}_${slugify(input.raw)}`;
@@ -292,6 +293,34 @@ function createMissionFrame(input: {
   };
 }
 
+function buildMemoryContextMessage(memories: any[]): TheOneChatMessage | null {
+  if (!memories.length) return null;
+  const lines = memories.slice(0, 6).map((item, index) => {
+    const title = item.title || item.summary || item.kind || 'memory';
+    const summary = item.summary || item.content?.summary || item.content?.mission?.objective || item.content?.mission?.title || '';
+    return `${index + 1}. ${title}${summary ? `: ${String(summary).slice(0, 360)}` : ''}`;
+  });
+  return {
+    role: 'system',
+    content: [
+      'Relevant TheOne memory from previous runs. Use this as background context only; do not invent facts beyond it.',
+      ...lines,
+    ].join('\n'),
+  };
+}
+
+function memorySummary(memories: any[]) {
+  return {
+    count: memories.length,
+    latest: memories[0] ? {
+      id: memories[0].id,
+      kind: memories[0].kind,
+      title: memories[0].title || memories[0].summary || memories[0].content?.mission?.title || 'Memory',
+      createdAt: memories[0].createdAt,
+    } : null,
+  };
+}
+
 function describeWorkerRuntime(input: {
   oneclawTask: OneClawTask | null;
   oneclawRun: OneClawTaskRun | null;
@@ -305,6 +334,12 @@ function describeWorkerRuntime(input: {
   finalSummary: string | null;
   workerResultText: string;
 }) {
+  const failureText = [
+    input.oneclawError,
+    ...(input.automationPolicy.reasons || []),
+    input.approvals.find((item) => item.required && item.status === 'pending')?.reason,
+  ].filter(Boolean).join(' ');
+  const failureDiagnosis = classifyFailure(failureText);
   const phases = [
     {
       key: 'planned',
@@ -383,8 +418,62 @@ function describeWorkerRuntime(input: {
                 : 'No external worker was needed for this response.',
       retryable: Boolean(input.oneclawError) || input.blocked,
       approvalRequired: input.approvalGated,
+      category: failureDiagnosis.category,
+      severity: failureDiagnosis.severity,
+      nextFixes: failureDiagnosis.nextFixes,
     },
     preflight: input.preflight,
+  };
+}
+
+function classifyFailure(text: string) {
+  const value = text.toLowerCase();
+  if (!value.trim()) {
+    return {
+      category: 'none',
+      severity: 'low',
+      nextFixes: ['Continue the conversation or ask TheOne to turn the result into a report.'],
+    };
+  }
+  if (/credential|token|api key|secret|unauthorized|forbidden|401|403/.test(value)) {
+    return {
+      category: 'credentials_or_permission',
+      severity: 'high',
+      nextFixes: ['Check connector credentials and permission scope.', 'Reconnect the provider, then retry the mission.'],
+    };
+  }
+  if (/approval|manual|gate|requires human/.test(value)) {
+    return {
+      category: 'approval_required',
+      severity: 'medium',
+      nextFixes: ['Review the approval reason.', 'Approve, reject, or ask TheOne to revise the worker task.'],
+    };
+  }
+  if (/policy|blocked|allowlist|not allowed|risk/.test(value)) {
+    return {
+      category: 'policy_blocked',
+      severity: 'high',
+      nextFixes: ['Adjust the request or policy allowlist.', 'Ask TheOne to rebuild the workflow with a safer action.'],
+    };
+  }
+  if (/timeout|fetch failed|network|unreachable|econn|host|dns/.test(value)) {
+    return {
+      category: 'connector_or_network',
+      severity: 'medium',
+      nextFixes: ['Check whether the connector endpoint is reachable.', 'Retry after the provider or local bridge is online.'],
+    };
+  }
+  if (/missing|required|invalid|schema|input|url|repo/.test(value)) {
+    return {
+      category: 'invalid_or_missing_input',
+      severity: 'medium',
+      nextFixes: ['Provide the missing input.', 'Ask TheOne to restate the exact field it needs.'],
+    };
+  }
+  return {
+    category: 'worker_failed',
+    severity: 'medium',
+    nextFixes: ['Open the mission detail and inspect the worker receipt.', 'Retry the worker or ask TheOne for an alternate route.'],
   };
 }
 
@@ -539,8 +628,8 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     capabilities: oneClawManifest.capabilities,
     connectors: oneClawManifest.connectors || [],
   });
-  const appPackages = listAppRuntimePackages();
-  const selectedAppPackages = selectAppRuntimePackages(raw).slice(0, 3);
+  const appPackages = await listEnabledAppRuntimePackages();
+  const selectedAppPackages = selectAppRuntimePackagesFromCatalog(raw, appPackages).slice(0, 3);
   const primaryModel = resolveTheOneModel('theone.chat.primary');
   const brain = buildTheOneBrainFrame({
     raw,
@@ -558,6 +647,14 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     brain,
     selectedAppPackages,
   });
+  const memoryContext = await queryMemoryGraph({
+    query: raw,
+    intentType: brain.conversationKind,
+    capabilities: brain.capabilityRoute,
+    limit: 6,
+  }).catch(() => []);
+  const memoryContextMessage = buildMemoryContextMessage(memoryContext);
+  const contextualMessages = memoryContextMessage ? [memoryContextMessage, ...messages] : messages;
 
   if (!brain.executionDecision.shouldPlan || brain.reasoning.missingInformation.length > 0) {
     let brainOnlyOneAi: Awaited<ReturnType<typeof buildOneAIChatWorkflow>> | null = null;
@@ -567,7 +664,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       brainOnlyOneAi = await buildOneAIChatWorkflow({
         raw,
         mode,
-        messages,
+        messages: contextualMessages,
         capabilities: oneClawManifest.capabilities,
         workerCatalog,
         appPackages,
@@ -632,6 +729,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
           workerRuntime,
           modelRoute: primaryModel,
           selectedAppPackages,
+          memoryContext: memorySummary(memoryContext),
           workerCatalogSummary: workerCatalog.summary,
           preflight,
         },
@@ -685,6 +783,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         workerRuntime,
         modelRoute: primaryModel,
         selectedAppPackages: selectedAppPackages.map((pkg) => pkg.key),
+        memoryContext: memorySummary(memoryContext),
         workerCatalogSummary: workerCatalog.summary,
         brainMode: brain.mode,
         conversationKind: brain.conversationKind,
@@ -696,6 +795,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
           workerRuntime,
           oneAiBrainReply: brainOnlyOneAi?.workflow || null,
           modelRoute: primaryModel,
+          memoryContext: memorySummary(memoryContext),
         appPackages: brain.selectedApps.length ? brain.selectedApps : appPackages.slice(0, 4),
         workerCatalog: workerCatalog.summary,
         assistant: {
@@ -750,7 +850,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
   const oneAi = await buildOneAIChatWorkflow({
     raw,
     mode,
-    messages,
+    messages: contextualMessages,
     capabilities: oneClawManifest.capabilities,
     workerCatalog,
     appPackages,
@@ -929,6 +1029,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         workerRuntime,
         modelRoute: primaryModel,
         selectedAppPackages,
+        memoryContext: memorySummary(memoryContext),
         workerCatalogSummary: workerCatalog.summary,
         oneAiWorkflow: oneAi.workflow,
         finalOneAiResult,
@@ -1009,6 +1110,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       conversationKind: brain.conversationKind,
       modelRoute: primaryModel,
       selectedAppPackages: selectedAppPackages.map((pkg) => pkg.key),
+      memoryContext: memorySummary(memoryContext),
       workerCatalogSummary: workerCatalog.summary,
       oneAiWorkflowId: oneAi.workflow.workflow.id,
       fallbackRoute: fallbackOneClawTask ? 'github_repo_shorthand' : null,
@@ -1021,6 +1123,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       brain,
       workerRuntime,
       modelRoute: primaryModel,
+      memoryContext: memorySummary(memoryContext),
       appPackages: selectedAppPackages.length ? selectedAppPackages : appPackages.slice(0, 4),
       workerCatalog: workerCatalog.summary,
       assistant: {

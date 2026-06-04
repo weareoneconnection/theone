@@ -2268,6 +2268,31 @@ button, input, textarea { font: inherit; }
   padding: 14px;
 }
 
+.workspace-memory-graph {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.workspace-memory-graph > div:not(.policy-chip-row) {
+  background: rgba(255,255,255,0.035);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+}
+
+.workspace-memory-graph strong {
+  color: rgba(255,255,255,0.9);
+}
+
+.workspace-memory-graph p {
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
 .workspace-run-list {
   border-top: 1px solid rgba(255,255,255,0.08);
   display: grid;
@@ -2325,6 +2350,10 @@ button, input, textarea { font: inherit; }
   grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
   margin: 20px auto 0;
   max-width: 1480px;
+}
+
+.mission-control-wide {
+  grid-column: 1 / -1;
 }
 
 .mission-primary,
@@ -2860,6 +2889,29 @@ button, input, textarea { font: inherit; }
   color: var(--muted);
   font-size: 12px;
   font-style: normal;
+}
+
+.run-approval-card {
+  background: rgba(98,215,196,0.08);
+  border: 1px solid rgba(98,215,196,0.32);
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.run-approval-card strong {
+  color: rgba(255,255,255,0.92);
+  display: block;
+  line-height: 1.4;
+  margin-top: 4px;
+}
+
+.run-approval-card p {
+  color: rgba(255,255,255,0.74);
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 6px 0 0;
 }
 
 .run-worker-prompts {

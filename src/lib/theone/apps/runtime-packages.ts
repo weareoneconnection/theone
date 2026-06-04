@@ -1,4 +1,5 @@
 import { listAppBundles } from './registry';
+import { packageRegistrySummary } from '../packages/package-registry';
 import type { CapabilityPrimitive } from '../types';
 
 export type AppRuntimePackage = {
@@ -147,3 +148,34 @@ export function selectAppRuntimePackages(message: string) {
     .map((item) => item.pkg);
 }
 
+export async function listEnabledAppRuntimePackages() {
+  try {
+    const registry = await packageRegistrySummary();
+    const packageByName = new Map(
+      (registry.packages || [])
+        .filter((item: any) => item.kind === 'app')
+        .map((item: any) => [item.name, item])
+    );
+
+    return listAppRuntimePackages().filter((item) => {
+      const registered = packageByName.get(item.key) as any;
+      if (!registered) return true;
+      return registered.enabled !== false && registered.status !== 'disabled';
+    });
+  } catch {
+    return listAppRuntimePackages();
+  }
+}
+
+export function selectAppRuntimePackagesFromCatalog(message: string, catalog: Array<AppRuntimePackage & { bundleBacked?: boolean }>) {
+  const lower = message.toLowerCase();
+  return catalog
+    .map((pkg) => ({
+      pkg,
+      score: pkg.intents.filter((intent) => lower.includes(intent.toLowerCase())).length +
+        pkg.workerActions.filter((action) => lower.includes(action.toLowerCase())).length,
+    }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map((item) => item.pkg);
+}

@@ -25,11 +25,43 @@ function normalizeMode(value: unknown): TheOneMode {
   return value === 'manual' || value === 'auto' || value === 'assist' ? value : 'assist';
 }
 
+function normalizeContextMessage(value: unknown) {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const mission = record.mission && typeof record.mission === 'object' ? record.mission as Record<string, unknown> : null;
+  const workerRuntime = record.workerRuntime && typeof record.workerRuntime === 'object' ? record.workerRuntime as Record<string, unknown> : null;
+  if (!mission && !workerRuntime) return null;
+
+  return {
+    role: 'system' as const,
+    content: [
+      'Previous TheOne mission context is available. Treat follow-up requests such as continue, retry, revise, approve, summarize, or make it shorter as referring to this mission unless the user clearly starts a new task.',
+      mission ? `Mission: ${JSON.stringify({
+        id: mission.id,
+        runId: mission.runId,
+        title: mission.title,
+        objective: mission.objective,
+        mode: mission.mode,
+        conversationKind: mission.conversationKind,
+        primaryApp: mission.primaryApp,
+        workspace: mission.workspace,
+      })}` : '',
+      workerRuntime ? `Worker runtime: ${JSON.stringify({
+        status: workerRuntime.status,
+        current: workerRuntime.current,
+        diagnostics: workerRuntime.diagnostics,
+      })}` : '',
+    ].filter(Boolean).join('\n'),
+  };
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
+    const contextMessage = normalizeContextMessage(body.context);
+    const messages = normalizeMessages(body.messages);
     const result = await runTheOneChatRuntime({
-      messages: normalizeMessages(body.messages),
+      messages: contextMessage ? [contextMessage, ...messages] : messages,
       input: typeof body.input === 'string' ? body.input : undefined,
       mode: normalizeMode(body.mode),
       userId: typeof body.userId === 'string' ? body.userId : undefined,

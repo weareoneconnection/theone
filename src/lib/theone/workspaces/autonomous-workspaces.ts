@@ -135,7 +135,15 @@ export async function getAutonomousWorkspaceDetail(input: { key: string }) {
   const relatedProof = proof.filter((item: any) => item.runId && runIds.has(item.runId)).slice(0, 20);
   const relatedMemory = memory.filter((item: any) => {
     if (item.runId && runIds.has(item.runId)) return true;
-    return String(item.kind || '').includes(`app.${template.app}`);
+    const content = (item.content || {}) as any;
+    const mission = content.mission || {};
+    return String(item.kind || '').includes(`app.${template.app}`)
+      || String(item.kind || '').includes(template.app)
+      || String(item.kind || '').includes(template.key)
+      || mission.primaryApp?.key === template.app
+      || String(mission.workspace?.key || '').includes(template.app)
+      || String(mission.workspace?.key || '').includes(template.key)
+      || String(content.summary || item.summary || item.title || '').toLowerCase().includes(template.app);
   }).slice(0, 20);
   const appPackages = packages.packages.filter((item: any) => (
     item.name === template.app
@@ -143,6 +151,7 @@ export async function getAutonomousWorkspaceDetail(input: { key: string }) {
     || (item.dependencies || []).some((dependency: string) => dependency.includes(template.app))
   ));
   const failures = runs.filter((run) => run.status === 'failed');
+  const latestMemory = relatedMemory[0] as any;
 
   return {
     ok: true,
@@ -152,6 +161,22 @@ export async function getAutonomousWorkspaceDetail(input: { key: string }) {
     runs,
     proof: relatedProof,
     memory: relatedMemory,
+    memoryGraph: {
+      schemaVersion: 'theone.workspace_memory_graph.v1',
+      totalMemory: memory.length,
+      linkedMemory: relatedMemory.length,
+      linkedProof: relatedProof.length,
+      linkedRuns: runs.length,
+      queryTerms: [template.key, template.app, template.title],
+      latestMemory: latestMemory ? {
+        id: latestMemory.id,
+        kind: latestMemory.kind,
+        title: latestMemory.title || latestMemory.summary || latestMemory.content?.mission?.title || 'Memory',
+        summary: latestMemory.summary || latestMemory.content?.summary || latestMemory.content?.mission?.objective || '',
+        createdAt: latestMemory.createdAt,
+      } : null,
+      recallPolicy: 'Use linked workspace memory as context for future runs, but keep external actions governed by policy.',
+    },
     packages: appPackages,
     policy: {
       mode: template.mode,

@@ -2,6 +2,7 @@ import { ensureTheOneDatabase, prisma } from '../db/prisma';
 import { recordTheOneEvent } from '../events/event-ledger';
 import { computeExecutionStats } from '../metrics';
 import { canSubmitExternalTasks } from '../policy/approval-policy';
+import { extractOneAIData, runOneAI } from '../providers/oneai';
 import { getOneClawTask, runOneClawTask } from '../providers/oneclaw';
 import { receiptForTheOne, receiptFromOneClawRun } from '../providers/receipts';
 import { createExecutionRecord, createWorkflowTrace, markApprovalBlockedSteps } from '../runtime/workflow-runtime';
@@ -225,6 +226,70 @@ function oneClawFailureDetail(latest: Record<string, unknown>) {
     lastErrorLog ||
     ''
   ).trim();
+}
+
+function collectReadableText(value: unknown, fragments: string[] = [], depth = 0) {
+  if (depth > 5 || fragments.join('\n').length > 9000) return fragments;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.length > 40) fragments.push(trimmed);
+    return fragments;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectReadableText(item, fragments, depth + 1));
+    return fragments;
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    for (const key of ['summary', 'text', 'content', 'body', 'markdown', 'title', 'description', 'output', 'response', 'data', 'result']) {
+      collectReadableText(record[key], fragments, depth + 1);
+    }
+  }
+  return fragments;
+}
+
+function readableWorkerEvidence(value: unknown) {
+  return Array.from(new Set(collectReadableText(value).map((item) => item.replace(/\s+/g, ' ').trim()).filter(Boolean)))
+    .join('\n\n')
+    .slice(0, 9000);
+}
+
+async function summarizeApprovedWorkerResult(input: {
+  objective: string;
+  taskName?: string | null;
+  oneclawRun: OneClawTaskRun;
+}) {
+  const evidence = readableWorkerEvidence(input.oneclawRun.raw || input.oneclawRun);
+  if (!evidence) return null;
+
+  try {
+    const oneAiResult = await runOneAI<unknown>({
+      type: 'theone_chat_workflow',
+      input: {
+        message: [
+          'A OneClaw worker finished after TheOne approval.',
+          'Write a concise user-facing result. Explain what happened, what evidence supports it, and the next useful action.',
+          'Do not expose raw JSON unless it is the only useful output.',
+          `Original objective: ${input.objective}`,
+          `Worker task: ${input.taskName || 'oneclaw task'}`,
+          `Worker evidence:\n${evidence}`,
+        ].join('\n\n'),
+        mode: 'assist',
+        availableActions: [],
+      },
+    });
+    const data = extractOneAIData<Record<string, unknown>>(oneAiResult);
+    const summary = typeof data?.assistantReply === 'string' && data.assistantReply.trim()
+      ? data.assistantReply.trim()
+      : evidence.slice(0, 1800);
+    return { summary, oneAiResult, evidence };
+  } catch (error) {
+    return {
+      summary: evidence.slice(0, 1800),
+      oneAiResult: { success: false, error: error instanceof Error ? error.message : 'OneAI worker summary failed.' },
+      evidence,
+    };
+  }
 }
 
 function updatePlanForApprovals(plan: ExecutionPlan, approvals: ApprovalGate[]) {
@@ -499,6 +564,25 @@ export async function saveRunResult(result: TheOneRunResult) {
       content: saved.appMemoryPack,
     });
   }
+  const chat = (saved as TheOneRunResult & { chat?: Record<string, any> }).chat || {};
+  const mission = chat.mission || saved.proof?.find((item) => item.metadata?.mission)?.metadata?.mission;
+  const workerRuntime = chat.workerRuntime || saved.proof?.find((item) => item.metadata?.workerRuntime)?.metadata?.workerRuntime;
+  if (mission) {
+    await createMemory({
+      runId: saved.runId,
+      kind: `workspace.${mission.workspace?.key || 'chat'}.mission`,
+      title: mission.title || `Mission ${saved.runId}`,
+      summary: saved.summary || saved.intent.objective,
+      content: {
+        mission,
+        workerRuntime,
+        approvals: saved.approvals,
+        executions: saved.executions,
+        proofCount: saved.proof?.length || 0,
+        nextActions: chat.nextActions || [],
+      },
+    });
+  }
   try {
     await recordTheOneEvent({
       runId: saved.runId,
@@ -592,12 +676,43 @@ export async function approveRun(input: { runId: string; approvalId?: string; ap
         },
       });
 
+      const workerSummary = await summarizeApprovedWorkerResult({
+        objective: stored.result.intent.objective,
+        taskName: stored.oneclawTask.taskName,
+        oneclawRun,
+      });
+
+      if (workerSummary) {
+        stored.result.summary = workerSummary.summary;
+        stored.result.executions = [
+          ...(stored.result.executions || []),
+          createExecutionRecord({
+            provider: 'oneai',
+            status: workerSummary.oneAiResult && typeof workerSummary.oneAiResult === 'object' && (workerSummary.oneAiResult as any).success === false ? 'failed' : 'success',
+            summary: 'OneAI summarized the approved worker result.',
+            taskName: 'oneai.approval.finalize',
+            raw: workerSummary.oneAiResult,
+          }),
+        ];
+        appendProof(stored.result, {
+          type: 'system',
+          title: 'Approved worker result summarized',
+          value: workerSummary.summary,
+          timestamp: now(),
+          metadata: {
+            provider: 'oneai',
+            taskName: stored.oneclawTask.taskName,
+            evidence: workerSummary.evidence.slice(0, 1200),
+          },
+        });
+      }
+
       await createMemory({
         runId: stored.result.runId,
         kind: 'execution.submitted',
         title: 'OneClaw task submitted',
-        summary: `${stored.oneclawTask.taskName} submitted after approval.`,
-        content: { oneclawRun, oneclawTask: stored.oneclawTask, receipt },
+        summary: workerSummary?.summary || `${stored.oneclawTask.taskName} submitted after approval.`,
+        content: { oneclawRun, oneclawTask: stored.oneclawTask, receipt, workerSummary },
       });
       await recordTheOneEvent({
         runId: stored.result.runId,
@@ -814,6 +929,67 @@ export async function listRuns(limit = 20) {
       createdAt: stored.result.proof?.[0]?.timestamp || now(),
       updatedAt: now(),
     }));
+  }
+}
+
+export async function listApprovalInbox(limit = 50) {
+  try {
+    await ensureTheOneDatabase();
+    const rows = await prisma.theOneApproval.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: Math.max(1, Math.min(limit, 100)),
+      include: {
+        run: {
+          select: {
+            id: true,
+            intentType: true,
+            objective: true,
+            mode: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        },
+      },
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      runId: row.runId,
+      stepId: row.stepId,
+      action: row.action,
+      risk: row.risk,
+      required: row.required,
+      status: row.status,
+      mode: row.mode,
+      reason: row.reason,
+      gate: safeParse<ApprovalGate | null>(row.gateJson, null),
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+      run: {
+        ...row.run,
+        createdAt: row.run.createdAt.toISOString(),
+        updatedAt: row.run.updatedAt.toISOString(),
+      },
+    }));
+  } catch (error) {
+    console.warn('[theone] listing approval inbox from offline ledger:', databaseWarning(error));
+    return Array.from(offlineRuns.values())
+      .flatMap((stored) => (stored.result.approvals || []).map((approval) => ({
+        ...approval,
+        runId: stored.result.runId,
+        gate: approval,
+        createdAt: stored.result.proof?.[0]?.timestamp || now(),
+        updatedAt: now(),
+        run: {
+          id: stored.result.runId,
+          intentType: stored.result.intent.type,
+          objective: stored.result.intent.objective,
+          mode: stored.result.os?.mode || 'assist',
+          createdAt: stored.result.proof?.[0]?.timestamp || now(),
+          updatedAt: now(),
+        },
+      })))
+      .slice(0, Math.max(1, Math.min(limit, 100)));
   }
 }
 

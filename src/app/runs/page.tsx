@@ -63,7 +63,7 @@ export default function RunsPage() {
                 <span className={`status-pill status-${run.workflowStatus}`}>{friendlyStatus(run.workflowStatus)}</span>
                 <span>{run.pendingApprovals || 0} approval</span>
                 <span>{run.proofCount || 0} proof</span>
-                <Link className="mini-action" href="/theone">Open console</Link>
+                <Link className="mini-action" href={`/runs/${run.runId}`}>Open mission</Link>
               </div>
             </article>
           ))}
