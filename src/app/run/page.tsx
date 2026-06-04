@@ -220,6 +220,8 @@ export default function RunPage() {
   const workerCatalog = result?.chat?.workerCatalog;
   const workerCapabilityMap = brain?.workerCapabilityMap || [];
   const latestResult = latestAssistantResult(messages) || result;
+  const mission = latestResult?.chat?.mission || result?.chat?.mission;
+  const workerRuntime = latestResult?.chat?.workerRuntime || result?.chat?.workerRuntime;
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' });
@@ -368,21 +370,34 @@ export default function RunPage() {
 
           <div className="run-mission-card">
             <span className="product-card-kicker">Current goal</span>
-            <strong>{brain?.objective || 'Understand the user outcome before routing workers.'}</strong>
+            <strong>{mission?.title || brain?.objective || 'Understand the user outcome before routing workers.'}</strong>
             <div className="run-explain-grid">
               <div>
                 <span>Mode</span>
-                <strong>{brain?.mode || mode}</strong>
+                <strong>{mission?.mode || brain?.mode || mode}</strong>
               </div>
               <div>
                 <span>Intent</span>
-                <strong>{brain?.conversationKind || 'ready'}</strong>
+                <strong>{mission?.conversationKind || brain?.conversationKind || 'ready'}</strong>
               </div>
             </div>
+            {mission?.workspace ? (
+              <p className="panel-subtitle">
+                Workspace: {mission.workspace.title}. Resume from {mission.recovery?.replayRoute || '/runs'}.
+              </p>
+            ) : null}
             {brain?.reasoning?.strategy ? (
               <p className="panel-subtitle">{brain.reasoning.strategy}</p>
             ) : null}
           </div>
+
+          {workerRuntime ? (
+            <div className="run-mission-card">
+              <span className="product-card-kicker">Now</span>
+              <strong>{workerRuntime.current?.title || friendlyStatus(workerRuntime.status)}</strong>
+              <p className="panel-subtitle">{workerRuntime.current?.detail || workerRuntime.diagnostics?.userReadable}</p>
+            </div>
+          ) : null}
 
           <details className="run-side-details" open>
             <summary>
@@ -403,6 +418,17 @@ export default function RunPage() {
                 </div>
               ))}
             </div>
+            {workerRuntime?.phases?.length ? (
+              <div className="run-tool-steps">
+                {workerRuntime.phases.map((phase: any) => (
+                  <div key={phase.key}>
+                    <small>{friendlyStatus(phase.status)}</small>
+                    <p>{phase.title}</p>
+                    <em>{phase.detail}</em>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </details>
 
           <div className="run-result-stats">

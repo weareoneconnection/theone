@@ -243,6 +243,151 @@ function pendingTaskSummary(input: {
   return input.baseReply;
 }
 
+function slugify(value: string, fallback = 'mission') {
+  const slug = value
+    .toLowerCase()
+    .replace(/https?:\/\//g, '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 48);
+  return slug || fallback;
+}
+
+function createMissionFrame(input: {
+  runId: string;
+  raw: string;
+  mode: TheOneMode;
+  brain: ReturnType<typeof buildTheOneBrainFrame>;
+  selectedAppPackages: ReturnType<typeof selectAppRuntimePackages>;
+}) {
+  const primaryApp = input.selectedAppPackages[0] || input.brain.selectedApps[0] || null;
+  const missionKey = `chat_${slugify(primaryApp?.key || input.brain.conversationKind)}_${slugify(input.raw)}`;
+  const objective = input.brain.objective || input.raw;
+
+  return {
+    schemaVersion: 'theone.mission_frame.v1',
+    id: `mission_${input.runId}`,
+    key: missionKey,
+    runId: input.runId,
+    title: objective.length > 96 ? `${objective.slice(0, 93)}...` : objective,
+    objective,
+    mode: input.mode,
+    conversationKind: input.brain.conversationKind,
+    primaryApp: primaryApp ? {
+      key: primaryApp.key,
+      title: primaryApp.title,
+      route: primaryApp.route,
+    } : null,
+    workspace: {
+      key: primaryApp?.key ? `workspace_${primaryApp.key}` : 'workspace_chat',
+      title: primaryApp?.title || 'TheOne Chat Workspace',
+      route: primaryApp?.route || '/run',
+    },
+    recovery: {
+      canResume: true,
+      resumeWith: `Continue mission ${input.runId}`,
+      replayRoute: `/runs/${input.runId}`,
+    },
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function describeWorkerRuntime(input: {
+  oneclawTask: OneClawTask | null;
+  oneclawRun: OneClawTaskRun | null;
+  oneclawError: string | null;
+  blocked: boolean;
+  approvalGated: boolean;
+  canSubmit: boolean;
+  preflight: unknown;
+  automationPolicy: { blocked?: boolean; canAutoRun?: boolean; requiresHumanApproval?: boolean; reasons?: string[] };
+  approvals: ApprovalGate[];
+  finalSummary: string | null;
+  workerResultText: string;
+}) {
+  const phases = [
+    {
+      key: 'planned',
+      title: 'Workflow planned',
+      status: 'completed',
+      detail: 'OneAI produced a structured workflow for TheOne to validate.',
+    },
+    {
+      key: 'policy_checked',
+      title: 'Policy checked',
+      status: input.blocked ? 'blocked' : input.approvalGated ? 'approval_gated' : 'completed',
+      detail: input.automationPolicy.reasons?.join(' ') || 'TheOne evaluated preflight, risk, and approval rules.',
+    },
+    ...(input.oneclawTask ? [{
+      key: 'worker_dispatch',
+      title: 'Worker dispatch',
+      status: input.oneclawRun
+        ? 'completed'
+        : input.oneclawError
+          ? 'failed'
+          : input.blocked
+            ? 'blocked'
+            : input.approvalGated
+              ? 'awaiting_approval'
+              : input.canSubmit
+                ? 'running'
+                : 'prepared',
+      detail: input.oneclawRun
+        ? 'OneClaw returned a worker receipt.'
+        : input.oneclawError
+          ? input.oneclawError
+          : input.approvalGated
+            ? 'The worker task is prepared and waiting for approval.'
+            : 'The worker task is prepared for execution.',
+    }] : []),
+    {
+      key: 'answer_ready',
+      title: 'Answer ready',
+      status: input.finalSummary || input.workerResultText || !input.oneclawTask ? 'completed' : 'pending',
+      detail: input.finalSummary
+        ? 'TheOne returned a polished answer from worker evidence.'
+        : input.oneclawTask
+          ? 'TheOne is waiting for worker output or approval before finalizing.'
+          : 'TheOne answered directly without an external worker.',
+    },
+  ];
+  const current = [...phases].reverse().find((phase) => phase.status !== 'completed') || phases[phases.length - 1];
+  const approval = input.approvals.find((item) => item.required && item.status === 'pending');
+
+  return {
+    schemaVersion: 'theone.worker_runtime.v1',
+    status: input.oneclawError
+      ? 'failed'
+      : input.blocked
+        ? 'blocked'
+        : input.approvalGated
+          ? 'awaiting_approval'
+          : input.oneclawRun || input.finalSummary
+            ? 'completed'
+            : input.oneclawTask
+              ? 'prepared'
+              : 'answered',
+    current,
+    phases,
+    diagnostics: {
+      userReadable: input.oneclawError
+        ? `OneClaw execution failed: ${input.oneclawError}`
+        : approval
+          ? approval.reason
+          : input.blocked
+            ? input.automationPolicy.reasons?.join(' ') || 'TheOne blocked this workflow during policy validation.'
+            : input.oneclawRun
+              ? 'Worker execution completed and returned a receipt.'
+              : input.oneclawTask
+                ? 'Worker task is prepared and safe to track.'
+                : 'No external worker was needed for this response.',
+      retryable: Boolean(input.oneclawError) || input.blocked,
+      approvalRequired: input.approvalGated,
+    },
+    preflight: input.preflight,
+  };
+}
+
 async function summarizeWorkerResult(input: {
   rawRequest: string;
   workflowSummary: string;
@@ -406,6 +551,13 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     workerCatalogSummary: workerCatalog.summary,
     workerCatalogActions: workerCatalog.actions,
   });
+  const mission = createMissionFrame({
+    runId,
+    raw,
+    mode,
+    brain,
+    selectedAppPackages,
+  });
 
   if (!brain.executionDecision.shouldPlan || brain.reasoning.missingInformation.length > 0) {
     let brainOnlyOneAi: Awaited<ReturnType<typeof buildOneAIChatWorkflow>> | null = null;
@@ -456,13 +608,28 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       risk: brain.safety.risk,
     });
     const workflow = createWorkflowTrace({ runId, mode, plan, approvals: [] });
+    const workerRuntime = describeWorkerRuntime({
+      oneclawTask: null,
+      oneclawRun: null,
+      oneclawError: null,
+      blocked: false,
+      approvalGated: false,
+      canSubmit: false,
+      preflight,
+      automationPolicy: { blocked: false, canAutoRun: false, requiresHumanApproval: false, reasons: [] },
+      approvals: [],
+      finalSummary: summary,
+      workerResultText: '',
+    });
     const proofRecords = [
       proof({
         title: 'TheOne Brain handled conversation',
         value: summary,
         metadata: {
           source: 'theone.brain_layer',
+          mission,
           brain,
+          workerRuntime,
           modelRoute: primaryModel,
           selectedAppPackages,
           workerCatalogSummary: workerCatalog.summary,
@@ -514,6 +681,8 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       },
       networkSignals: {
         routedBy: 'theone.brain_layer',
+        mission,
+        workerRuntime,
         modelRoute: primaryModel,
         selectedAppPackages: selectedAppPackages.map((pkg) => pkg.key),
         workerCatalogSummary: workerCatalog.summary,
@@ -522,7 +691,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       },
       chat: {
         runtime: 'theone.chat_runtime.v2',
+          mission,
           brain,
+          workerRuntime,
           oneAiBrainReply: brainOnlyOneAi?.workflow || null,
           modelRoute: primaryModel,
         appPackages: brain.selectedApps.length ? brain.selectedApps : appPackages.slice(0, 4),
@@ -569,6 +740,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
           approvalSummary: null,
           automationPolicy: null,
           preflight,
+          workerRuntime,
         },
         nextActions: brain.nextMoves,
       },
@@ -733,13 +905,28 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       })
     : null;
   const summary = finalSummary || approvalSummary || oneAi.workflow.assistantReply;
+  const workerRuntime = describeWorkerRuntime({
+    oneclawTask,
+    oneclawRun,
+    oneclawError,
+    blocked,
+    approvalGated,
+    canSubmit,
+    preflight,
+    automationPolicy,
+    approvals,
+    finalSummary,
+    workerResultText,
+  });
   const proofRecords = [
     proof({
       title: 'TheOne Chat Runtime handled conversation',
       value: summary,
       metadata: {
         source: 'theone.chat_runtime',
+        mission,
         brain,
+        workerRuntime,
         modelRoute: primaryModel,
         selectedAppPackages,
         workerCatalogSummary: workerCatalog.summary,
@@ -816,6 +1003,8 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     },
     networkSignals: {
       routedBy: 'theone.chat_runtime',
+      mission,
+      workerRuntime,
       brainMode: brain.mode,
       conversationKind: brain.conversationKind,
       modelRoute: primaryModel,
@@ -828,7 +1017,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     },
     chat: {
       runtime: 'theone.chat_runtime.v2',
+      mission,
       brain,
+      workerRuntime,
       modelRoute: primaryModel,
       appPackages: selectedAppPackages.length ? selectedAppPackages : appPackages.slice(0, 4),
       workerCatalog: workerCatalog.summary,
@@ -880,6 +1071,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         approvalSummary,
         automationPolicy,
         preflight,
+        workerRuntime,
       },
       nextActions,
     },
