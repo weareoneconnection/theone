@@ -123,6 +123,94 @@ function evidenceText(result: any) {
   return result?.chat?.workerCoordination?.workerResultText || '';
 }
 
+function latestAssistantResult(messages: ConversationMessage[]) {
+  return [...messages].reverse().find((message) => message.role === 'assistant' && message.result)?.result || null;
+}
+
+function workflowSteps(result: any) {
+  return result?.chat?.oneAiWorkflow?.steps || [];
+}
+
+function coordinationWorkers(result: any) {
+  return result?.chat?.workerCoordination?.workers || [
+    { key: 'oneai', title: 'OneAI', role: 'Builds the workflow', status: result ? 'ready' : 'waiting' },
+    { key: 'theone', title: 'TheOne Kernel', role: 'Checks policy and proof', status: result ? 'ready' : 'waiting' },
+    { key: 'oneclaw', title: 'OneClaw', role: 'Runs approved workers', status: result ? 'ready' : 'waiting' },
+  ];
+}
+
+function ToolTrace({ result }: { result: any }) {
+  if (!result?.chat) return null;
+
+  const workflow = result.chat.oneAiWorkflow;
+  const coordination = result.chat.workerCoordination;
+  const workers = coordinationWorkers(result);
+  const steps = workflowSteps(result);
+  const oneclawRun = coordination?.oneclawRun;
+  const evidence = evidenceText(result);
+  const reason = approvalReason(result);
+
+  return (
+    <details className="run-tool-trace">
+      <summary>
+        <span>Tool calls</span>
+        <strong>{steps.length || workers.length || 1} step(s)</strong>
+      </summary>
+      <div className="run-tool-body">
+        <div className="run-tool-section">
+          <span>OneAI plan</span>
+          <strong>{workflow?.summary || 'TheOne asked OneAI to decide the workflow.'}</strong>
+          {steps.length ? (
+            <div className="run-tool-steps">
+              {steps.map((step: any, index: number) => (
+                <div key={step.id || index}>
+                  <small>{String(index + 1).padStart(2, '0')}</small>
+                  <p>{step.title || step.action || 'Workflow step'}</p>
+                  <em>{step.worker || step.owner || 'theone'} · {friendlyStatus(step.status || step.approvalMode || 'ready')}</em>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="run-tool-section">
+          <span>Worker route</span>
+          <div className="run-tool-workers">
+            {workers.map((worker: any) => (
+              <div key={worker.key || worker.title}>
+                <strong>{worker.title}</strong>
+                <small className={`status-pill status-${workerTone(worker.status)}`}>{friendlyStatus(worker.status)}</small>
+                <p>{worker.role}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {reason ? (
+          <div className="run-tool-section">
+            <span>Policy</span>
+            <strong>{reason}</strong>
+          </div>
+        ) : null}
+
+        {oneclawRun ? (
+          <div className="run-tool-section">
+            <span>OneClaw receipt</span>
+            <strong>{oneclawRun.taskName || 'Worker task'} · {friendlyStatus(oneclawRun.status || 'called')}</strong>
+          </div>
+        ) : null}
+
+        {evidence ? (
+          <div className="run-tool-section">
+            <span>Evidence</span>
+            <p>{evidence.slice(0, 900)}{evidence.length > 900 ? ' ...' : ''}</p>
+          </div>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
 function RunMessageExplanation({ result }: { result: any }) {
   if (!result?.chat) return null;
 
@@ -191,6 +279,7 @@ export default function RunPage() {
   const appPackages = result?.chat?.appPackages || [];
   const workerCatalog = result?.chat?.workerCatalog;
   const workerCapabilityMap = brain?.workerCapabilityMap || [];
+  const latestResult = latestAssistantResult(messages) || result;
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' });
@@ -263,8 +352,8 @@ export default function RunPage() {
   return (
     <ProductPage
       eyebrow="Run TheOne"
-      title="Work with TheOne like an AI OS."
-      subtitle="Chat with TheOne. OneAI builds the workflow, TheOne coordinates workers and policy, and OneClaw or the local bridge performs approved real-world actions."
+      title="A super-agent chat for real-world work."
+      subtitle="Tell TheOne the outcome. It can answer directly, build a workflow with OneAI, call OneClaw workers, and return receipts without turning the main screen into a control panel."
       compact
       aside={(
         <ProductStatusStrip
@@ -276,13 +365,12 @@ export default function RunPage() {
         />
       )}
     >
-      <section className="run-chat-workspace">
-        <div className="run-chat-panel">
-          <div className="run-chat-head">
+      <section className="run-codex-workspace">
+        <div className="run-codex-main">
+          <div className="run-codex-toolbar">
             <div>
-              <span className="product-card-kicker">Intelligent Command</span>
-              <h2>TheOne conversation</h2>
-              <p>Use plain language. The worker details stay visible, but the main surface behaves like a real operating conversation.</p>
+              <span className="product-card-kicker">TheOne Chat Runtime</span>
+              <strong>Chat first. Tools when needed.</strong>
             </div>
             <div className="product-mode-selector mode-selector" aria-label="Execution mode">
               {modes.map((item) => (
@@ -307,7 +395,7 @@ export default function RunPage() {
                     <strong>{message.result.appRoute.action}</strong>
                   </div>
                 ) : null}
-                {message.role === 'assistant' && message.result ? <RunMessageExplanation result={message.result} /> : null}
+                {message.role === 'assistant' && message.result ? <ToolTrace result={message.result} /> : null}
               </article>
             ))}
             {loading ? (
@@ -321,7 +409,7 @@ export default function RunPage() {
             ) : null}
           </div>
 
-          <div className="run-worker-prompts" aria-label="Worker quick starts">
+          <div className="run-codex-prompts" aria-label="Worker quick starts">
             {workerPrompts.map((item) => (
               <button key={item.label} type="button" onClick={() => sendMessage(item.prompt)} disabled={loading}>
                 <span>{item.label}</span>
@@ -346,17 +434,17 @@ export default function RunPage() {
           </div>
         </div>
 
-        <aside className="run-orchestrator-panel">
+        <aside className="run-codex-side">
           <div className="panel-head">
             <div>
-              <h2 className="panel-title">Orchestration</h2>
-              <p className="panel-subtitle">OneAI workflow, worker calls, approvals, and proof.</p>
+              <h2 className="panel-title">Mission</h2>
+              <p className="panel-subtitle">A small live view of the current run.</p>
             </div>
             <span className={`status-pill status-${status}`}>{friendlyStatus(status)}</span>
           </div>
 
-          <div className="run-orchestrator-card">
-            <span className="product-card-kicker">TheOne Brain</span>
+          <div className="run-mission-card">
+            <span className="product-card-kicker">Current goal</span>
             <strong>{brain?.objective || 'Understand the user outcome before routing workers.'}</strong>
             <div className="run-explain-grid">
               <div>
@@ -368,27 +456,16 @@ export default function RunPage() {
                 <strong>{brain?.conversationKind || 'ready'}</strong>
               </div>
             </div>
-            {brain?.capabilityRoute?.length ? (
-              <div className="app-next-list">
-                {brain.capabilityRoute.slice(0, 8).map((item: string) => <span key={item}>{item}</span>)}
-              </div>
-            ) : null}
-            {workerCapabilityMap.length ? (
-              <div className="app-next-list">
-                {workerCapabilityMap.slice(0, 18).map((item: any) => (
-                  <span key={item.domain}>
-                    {item.title} · {item.actions?.length || 0} · {friendlyStatus(item.status)}
-                  </span>
-                ))}
-              </div>
-            ) : null}
             {brain?.reasoning?.strategy ? (
               <p className="panel-subtitle">{brain.reasoning.strategy}</p>
             ) : null}
           </div>
 
-          <div className="run-orchestrator-card">
-            <span className="product-card-kicker">OneAI Workflow</span>
+          <details className="run-side-details" open>
+            <summary>
+              <span>Workflow</span>
+              <strong>{workflowSteps(latestResult).length || 1}</strong>
+            </summary>
             <strong>{workflow?.summary || 'Waiting for a goal.'}</strong>
             <div className="run-workflow-list">
               {(workflow?.steps || [
@@ -403,45 +480,7 @@ export default function RunPage() {
                 </div>
               ))}
             </div>
-          </div>
-
-          <div className="run-orchestrator-card">
-            <span className="product-card-kicker">OS Runtime</span>
-            <div className="run-explain-grid">
-              <div>
-                <span>Model</span>
-                <strong>{modelRoute?.model || 'frontier alias'}</strong>
-              </div>
-              <div>
-                <span>Workers</span>
-                <strong>{workerCatalog?.workers || coordination?.workers?.length || 'ready'}</strong>
-              </div>
-            </div>
-            {appPackages.length ? (
-              <div className="app-next-list">
-                {appPackages.slice(0, 4).map((pkg: any) => <span key={pkg.key}>{pkg.title}</span>)}
-              </div>
-            ) : null}
-          </div>
-
-          <div className="run-orchestrator-card">
-            <span className="product-card-kicker">Worker Coordination</span>
-            <div className="run-worker-list">
-              {(coordination?.workers || [
-                { key: 'oneai', title: 'OneAI', role: 'Workflow builder', status: 'ready' },
-                { key: 'theone', title: 'TheOne Kernel', role: 'Coordinator', status: 'ready' },
-                { key: 'oneclaw', title: 'OneClaw', role: 'Execution driver', status: 'ready' },
-              ]).map((worker: any) => (
-                <div key={worker.key || worker.title} className="run-worker-row">
-                  <div>
-                    <strong>{worker.title}</strong>
-                    <span>{worker.role}</span>
-                  </div>
-                  <small className={`status-pill status-${workerTone(worker.status)}`}>{friendlyStatus(worker.status)}</small>
-                </div>
-              ))}
-            </div>
-          </div>
+          </details>
 
           <div className="run-result-stats">
             <div>
@@ -458,7 +497,47 @@ export default function RunPage() {
             </div>
           </div>
 
-          <div className="run-orchestrator-card">
+          <details className="run-side-details">
+            <summary>
+              <span>Runtime</span>
+              <strong>{modelRoute?.model || 'frontier'}</strong>
+            </summary>
+            <div className="run-explain-grid">
+              <div>
+                <span>Model</span>
+                <strong>{modelRoute?.model || 'frontier alias'}</strong>
+              </div>
+              <div>
+                <span>Workers</span>
+                <strong>{workerCatalog?.workers || coordination?.workers?.length || 'ready'}</strong>
+              </div>
+            </div>
+            {appPackages.length ? (
+              <div className="app-next-list">
+                {appPackages.slice(0, 4).map((pkg: any) => <span key={pkg.key}>{pkg.title}</span>)}
+              </div>
+            ) : null}
+          </details>
+
+          <details className="run-side-details">
+            <summary>
+              <span>Workers</span>
+              <strong>{coordination?.workers?.length || 'ready'}</strong>
+            </summary>
+            <div className="run-worker-list">
+              {coordinationWorkers(latestResult).map((worker: any) => (
+                <div key={worker.key || worker.title} className="run-worker-row">
+                  <div>
+                    <strong>{worker.title}</strong>
+                    <span>{worker.role}</span>
+                  </div>
+                  <small className={`status-pill status-${workerTone(worker.status)}`}>{friendlyStatus(worker.status)}</small>
+                </div>
+              ))}
+            </div>
+          </details>
+
+          <div className="run-mission-card">
             <span className="product-card-kicker">Next</span>
             <div className="app-next-list">
               {(nextActions.length > 0 ? nextActions : [
@@ -467,6 +546,22 @@ export default function RunPage() {
               ]).map((item: string) => <span key={item}>{item}</span>)}
             </div>
           </div>
+
+          {workerCapabilityMap.length ? (
+            <details className="run-side-details">
+              <summary>
+                <span>Capability map</span>
+                <strong>{workerCapabilityMap.length}</strong>
+              </summary>
+              <div className="app-next-list">
+                {workerCapabilityMap.slice(0, 28).map((item: any) => (
+                  <span key={item.domain}>
+                    {item.title} · {item.actions?.length || 0} · {friendlyStatus(item.status)}
+                  </span>
+                ))}
+              </div>
+            </details>
+          ) : null}
 
           <div className="run-control-links">
             <Link href="/apps">Apps</Link>
