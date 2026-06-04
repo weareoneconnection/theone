@@ -4,6 +4,7 @@ import { preflightOneClawTask } from '../execution/preflight';
 import { createRunId, createPlanId } from '../runtime';
 import { createExecutionRecord, createWorkflowTrace, markApprovalBlockedSteps } from '../runtime/workflow-runtime';
 import { getTheOneKernelStatus } from '../kernel/status';
+import { extractOneAIData, runOneAI } from '../providers/oneai';
 import { getOneClawBridgeStatus, getOneClawCapabilityManifest, runOneClawTask } from '../providers/oneclaw';
 import { buildOneAIChatWorkflow, type TheOneChatMessage } from './oneai-workflow-builder';
 import type {
@@ -80,6 +81,101 @@ function proof(input: {
     metadata: input.metadata,
     timestamp: new Date().toISOString(),
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function compactJson(value: unknown, limit = 6000) {
+  try {
+    const text = JSON.stringify(value, null, 2);
+    return text.length > limit ? `${text.slice(0, limit)}\n...truncated` : text;
+  } catch {
+    return String(value || '');
+  }
+}
+
+function collectTextFragments(value: unknown, fragments: string[] = [], depth = 0) {
+  if (depth > 5 || fragments.join('\n').length > 9000) return fragments;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.length > 40) fragments.push(trimmed);
+    return fragments;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectTextFragments(item, fragments, depth + 1));
+    return fragments;
+  }
+  if (isRecord(value)) {
+    for (const key of ['summary', 'text', 'content', 'body', 'markdown', 'title', 'description']) {
+      collectTextFragments(value[key], fragments, depth + 1);
+    }
+    for (const key of ['output', 'response', 'data', 'result', 'artifact', 'artifacts', 'steps']) {
+      collectTextFragments(value[key], fragments, depth + 1);
+    }
+  }
+  return fragments;
+}
+
+function extractWorkerResultText(run: OneClawTaskRun | null) {
+  if (!run) return '';
+  const source = isRecord(run) && run.raw ? run.raw : run;
+  const fragments = collectTextFragments(source)
+    .map((fragment) => fragment.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  return Array.from(new Set(fragments)).join('\n\n').slice(0, 9000);
+}
+
+async function summarizeWorkerResult(input: {
+  rawRequest: string;
+  workflowSummary: string;
+  oneclawRun: OneClawTaskRun;
+}) {
+  const workerResultText = extractWorkerResultText(input.oneclawRun);
+  const evidence = workerResultText || compactJson(input.oneclawRun, 9000);
+
+  if (!evidence.trim()) {
+    return {
+      finalOneAiResult: null as unknown,
+      finalSummary: 'OneClaw finished the worker task, but no readable worker result was returned yet.',
+      workerResultText: '',
+    };
+  }
+
+  const finalMessage = [
+    'You are finalizing a TheOne chat workflow after OneClaw executed a worker task.',
+    'Return a concise user-facing answer. Use the worker evidence directly. Do not ask for approval or another URL if evidence is present.',
+    `Original user request: ${input.rawRequest}`,
+    `Workflow summary: ${input.workflowSummary}`,
+    `Worker evidence:\n${evidence}`,
+  ].join('\n\n');
+
+  try {
+    const finalOneAiResult = await runOneAI<unknown>({
+      type: 'theone_chat_workflow',
+      input: {
+        message: finalMessage,
+        mode: 'assist',
+        availableActions: [],
+      },
+    });
+    const data = extractOneAIData<Record<string, unknown>>(finalOneAiResult);
+    const finalSummary = typeof data?.assistantReply === 'string' && data.assistantReply.trim()
+      ? data.assistantReply.trim()
+      : evidence.slice(0, 1800);
+
+    return { finalOneAiResult, finalSummary, workerResultText };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'OneAI final summary failed.';
+    return {
+      finalOneAiResult: { success: false, error: message },
+      finalSummary: workerResultText
+        ? `OneClaw returned worker data, but the final OneAI summary pass failed: ${message}\n\n${workerResultText.slice(0, 1800)}`
+        : `OneClaw returned a receipt, but the final OneAI summary pass failed: ${message}`,
+      workerResultText,
+    };
+  }
 }
 
 function buildIntent(input: {
@@ -209,9 +305,20 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
 
   let oneclawRun: OneClawTaskRun | null = null;
   let oneclawError: string | null = null;
+  let finalOneAiResult: unknown = null;
+  let finalSummary: string | null = null;
+  let workerResultText = '';
   if (canSubmit && oneclawTask) {
     try {
       oneclawRun = await runOneClawTask<OneClawTaskRun>(oneclawTask);
+      const finalized = await summarizeWorkerResult({
+        rawRequest: raw,
+        workflowSummary: oneAi.workflow.workflow.summary,
+        oneclawRun,
+      });
+      finalOneAiResult = finalized.finalOneAiResult;
+      finalSummary = finalized.finalSummary;
+      workerResultText = finalized.workerResultText;
     } catch (error) {
       oneclawError = error instanceof Error ? error.message : 'OneClaw task submission failed.';
     }
@@ -259,7 +366,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       provider: 'oneclaw' as const,
       status: executionStatus(oneclawRun, blocked),
       summary: oneclawRun
-        ? 'OneClaw worker task submitted by TheOne Chat Runtime.'
+        ? 'OneClaw worker task executed by TheOne Chat Runtime.'
         : blocked
           ? 'OneClaw worker task was blocked before execution.'
           : 'OneClaw worker task is waiting for approval.',
@@ -267,14 +374,24 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       taskName: oneclawTask.taskName,
       raw: { oneclawTask, oneclawRun, oneclawError },
     })] : []),
+    ...(finalOneAiResult ? [createExecutionRecord({
+      provider: 'oneai' as const,
+      status: isRecord(finalOneAiResult) && finalOneAiResult.success === false ? 'failed' : 'success',
+      summary: 'OneAI summarized the worker result for the chat.',
+      taskName: 'oneai.chat.finalize',
+      raw: finalOneAiResult,
+    })] : []),
   ];
   const proofRecords = [
     proof({
       title: 'TheOne Chat Runtime handled conversation',
-      value: oneAi.workflow.assistantReply,
+      value: finalSummary || oneAi.workflow.assistantReply,
       metadata: {
         source: 'theone.chat_runtime',
         oneAiWorkflow: oneAi.workflow,
+        finalOneAiResult,
+        finalSummary,
+        workerResultText,
         preflight,
         automationPolicy,
         oneclawTask,
@@ -284,7 +401,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
   ];
 
   const ok = oneAi.oneAiResult.success && !automationPolicy.blocked && !oneclawError;
-  const summary = oneAi.workflow.assistantReply;
+  const summary = finalSummary || oneAi.workflow.assistantReply;
   const theoneWorkerStatus = blocked
     ? 'blocked'
     : approvalGated
@@ -309,8 +426,10 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         ? ['Review the pending approval before OneClaw executes this worker task.']
         : oneclawTask && !oneclawRun && automationPolicy.canAutoRun
           ? ['The read-only worker task is auto-cleared; wait for OneClaw execution receipt or refresh the run.']
-          : oneclawRun
-            ? ['Review the OneClaw receipt and ask TheOne to summarize the worker result.']
+          : finalSummary
+            ? ['Use this result, ask a follow-up, or turn it into a report.']
+            : oneclawRun
+              ? ['Review the OneClaw receipt and ask TheOne to summarize the worker result.']
             : ['Continue the conversation with the next outcome.'];
 
   return {
@@ -359,7 +478,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         steps: oneAi.workflow.workflow.steps.map((step) => ({
           ...step,
           owner: step.worker,
-          status: step.worker === 'oneai' ? 'completed' : oneclawRun ? 'running' : blocked ? 'blocked' : 'pending',
+          status: step.worker === 'oneai' || finalSummary ? 'completed' : oneclawRun ? 'running' : blocked ? 'blocked' : 'pending',
         })),
       },
       workerCoordination: {
@@ -387,6 +506,8 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         ],
         oneclawTask,
         oneclawRun,
+        workerResultText,
+        finalSummary,
         automationPolicy,
         preflight,
       },

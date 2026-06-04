@@ -76,8 +76,13 @@ function plainResult(result: any) {
 }
 
 function runStats(result: any) {
+  const approvals = result?.pendingApprovals || result?.approvals || [];
+  const pendingApprovals = Array.isArray(approvals)
+    ? approvals.filter((approval: any) => approval?.required === true && approval?.status === 'pending')
+    : [];
+
   return {
-    approvals: result?.approvals?.length || result?.pendingApprovals?.length || 0,
+    approvals: pendingApprovals.length,
     executions: result?.executions?.length || 0,
     proof: result?.proof?.length || result?.proofRecords?.length || 0,
   };
