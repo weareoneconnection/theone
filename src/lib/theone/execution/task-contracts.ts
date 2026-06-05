@@ -84,17 +84,24 @@ export function normalizeOneClawTaskContract(input: {
         intent: input.intent,
       });
 
-      if (!textValue(stepInput.content) && content) {
-        repaired = true;
-        repairs.push(`${step.id}.input.content`);
-        return {
-          ...step,
-          input: {
-            ...stepInput,
-            channel: textValue(stepInput.channel) || 'x',
-            content: trimXContent(content),
-          },
-        };
+      if (content) {
+        const normalizedContent = trimXContent(content);
+        const hasContent = textValue(stepInput.content);
+        const needsRepair = !hasContent || hasContent !== normalizedContent;
+        if (needsRepair) {
+          repaired = true;
+          repairs.push(`${step.id}.input.content`);
+        }
+        if (needsRepair || !textValue(stepInput.channel)) {
+          return {
+            ...step,
+            input: {
+              ...stepInput,
+              channel: textValue(stepInput.channel) || 'x',
+              content: normalizedContent,
+            },
+          };
+        }
       }
     }
 

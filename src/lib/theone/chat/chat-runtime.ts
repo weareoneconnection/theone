@@ -1,5 +1,6 @@
 import { attachAutomationPolicyToTask, evaluateAutomationPolicy } from '../policy/automation-engine';
 import { evaluateOneClawTaskPolicy } from '../policy/approval-policy';
+import { normalizeOneClawTaskContract } from '../execution/task-contracts';
 import { preflightOneClawTask } from '../execution/preflight';
 import { createRunId, createPlanId } from '../runtime';
 import { createExecutionRecord, createWorkflowTrace, markApprovalBlockedSteps } from '../runtime/workflow-runtime';
@@ -1065,7 +1066,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     raw,
     actions: oneClawManifest.capabilities,
   });
-  const plannedOneClawTask = oneAi.oneclawTask || fallbackOneClawTask;
+  const rawPlannedOneClawTask = oneAi.oneclawTask || fallbackOneClawTask;
   const plannedWorkflowSteps = fallbackOneClawTask
     ? [
         ...oneAi.workflow.workflow.steps,
@@ -1096,6 +1097,11 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     domain: workflowDomain,
     risk: oneAi.workflow.intent.risk,
     requiresApproval: oneAi.workflow.intent.requiresApproval || oneAi.workflow.safety.requiresApproval,
+  });
+  const plannedOneClawTask = normalizeOneClawTaskContract({
+    task: rawPlannedOneClawTask,
+    intent,
+    oneAiData: oneAi.workflow as unknown as Record<string, unknown>,
   });
   const preflight = preflightOneClawTask({
     task: plannedOneClawTask,

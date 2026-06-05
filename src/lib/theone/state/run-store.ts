@@ -1,6 +1,7 @@
 import { ensureTheOneDatabase, prisma } from '../db/prisma';
 import { recordTheOneEvent } from '../events/event-ledger';
 import { computeExecutionStats } from '../metrics';
+import { normalizeOneClawTaskContract } from '../execution/task-contracts';
 import { canSubmitExternalTasks } from '../policy/approval-policy';
 import { extractOneAIData, runOneAI } from '../providers/oneai';
 import { getOneClawTask, runOneClawTask } from '../providers/oneclaw';
@@ -645,7 +646,8 @@ export async function approveRun(input: { runId: string; approvalId?: string; ap
       !getPrimaryOneClawExecution(stored.result.executions || [])?.externalId
     ) {
       const startedAt = Date.now();
-      const approvedOneClawTask: OneClawTask = {
+      const approvedOneClawTask: OneClawTask = normalizeOneClawTaskContract({
+        task: {
         ...stored.oneclawTask,
         approvalMode: 'auto',
         metadata: {
@@ -660,7 +662,14 @@ export async function approveRun(input: { runId: string; approvalId?: string; ap
             originalApprovalMode: stored.oneclawTask.approvalMode || 'manual',
           },
         },
-      };
+        },
+        intent: stored.result.intent,
+        oneAiData: {
+          summary: stored.result.summary,
+          objective: stored.result.intent.objective,
+          pendingOneClawTask: stored.oneclawTask,
+        },
+      }) || stored.oneclawTask;
       const oneclawRun = await runOneClawTask<OneClawTaskRun>(approvedOneClawTask);
       const receipt = receiptFromOneClawRun(oneclawRun, 'oneclaw.task.run', startedAt);
       const normalizedReceipt = normalizeWorkerReceipt({
