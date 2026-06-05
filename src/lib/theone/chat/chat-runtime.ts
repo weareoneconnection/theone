@@ -321,6 +321,100 @@ function memorySummary(memories: any[]) {
   };
 }
 
+function buildChatContinuityFrame(input: {
+  raw: string;
+  mission: ReturnType<typeof createMissionFrame>;
+  memoryContext: any[];
+  workerRuntime?: Record<string, any>;
+}) {
+  const lower = input.raw.toLowerCase();
+  const followUpIntent = /继续|接着|approve|批准|同意|resume|continue|sync|同步/.test(lower)
+    ? 'continue_or_approve'
+    : /重试|retry|rebuild|重新|换个|alternate/.test(lower)
+      ? 'retry_or_rebuild'
+      : /改|修改|revise|shorter|longer|tone|语气|更短|更长/.test(lower)
+        ? 'revise'
+        : /总结|summary|summarize|report|报告/.test(lower)
+          ? 'summarize_or_report'
+          : 'new_or_direct';
+
+  return {
+    schemaVersion: 'theone.chat_continuity.v1',
+    activeMissionId: input.mission.id,
+    activeRunId: input.mission.runId,
+    followUpIntent,
+    canContinue: true,
+    canRevise: true,
+    canRetry: Boolean(input.workerRuntime?.missionState?.canRetry || input.workerRuntime?.diagnostics?.retryable),
+    canApprove: input.workerRuntime?.status === 'awaiting_approval',
+    memoryHits: input.memoryContext.length,
+    continuitySources: [
+      input.mission ? 'mission_frame' : null,
+      input.workerRuntime ? 'worker_runtime' : null,
+      input.memoryContext.length ? 'memory_graph' : null,
+    ].filter(Boolean),
+  };
+}
+
+function buildAgentTimeline(input: {
+  mode: TheOneMode;
+  workerRuntime: Record<string, any>;
+  workflowSteps: Array<{ id?: string; title?: string; action?: string; worker?: string; owner?: string; status?: string }>;
+  executions: ExecutionPlan['steps'] | Array<{ provider?: string; status?: string; summary?: string; taskName?: string }>;
+  approvals: ApprovalGate[];
+  oneclawTask: OneClawTask | null;
+  oneclawRun: OneClawTaskRun | null;
+  finalSummary: string | null;
+}) {
+  const pendingApproval = input.approvals.find((approval) => approval.required && approval.status === 'pending');
+  const workerSteps = input.workflowSteps.map((step, index) => ({
+    key: step.id || `workflow_${index + 1}`,
+    actor: step.worker || step.owner || 'theone',
+    title: step.title || step.action || 'Workflow step',
+    status: step.status || 'ready',
+    detail: step.action || 'workflow',
+  }));
+
+  return [
+    {
+      key: 'understand',
+      actor: 'TheOne',
+      title: 'Understand the goal',
+      status: 'completed',
+      detail: `Mode: ${input.mode}`,
+    },
+    {
+      key: 'plan',
+      actor: 'OneAI',
+      title: 'Build or refine the workflow',
+      status: workerSteps.length ? 'completed' : 'ready',
+      detail: `${workerSteps.length || 1} planned step(s)`,
+    },
+    {
+      key: 'policy',
+      actor: 'TheOne',
+      title: 'Check policy and mission state',
+      status: input.workerRuntime?.missionState?.state || input.workerRuntime?.status || 'validated',
+      detail: input.workerRuntime?.diagnostics?.userReadable || 'Policy, preflight, memory, and proof were evaluated.',
+    },
+    ...workerSteps.slice(0, 8),
+    ...(input.oneclawTask ? [{
+      key: 'oneclaw',
+      actor: 'OneClaw',
+      title: input.oneclawRun ? 'Worker returned a receipt' : pendingApproval ? 'Worker waiting for approval' : 'Worker prepared',
+      status: input.oneclawRun?.status || (pendingApproval ? 'awaiting_approval' : 'prepared'),
+      detail: input.oneclawTask.taskName,
+    }] : []),
+    {
+      key: 'answer',
+      actor: 'TheOne',
+      title: input.finalSummary ? 'Answer finalized from worker evidence' : 'Answer returned',
+      status: input.finalSummary || !input.oneclawTask || pendingApproval ? 'completed' : 'pending',
+      detail: pendingApproval ? 'Approval is needed before execution.' : 'Proof and memory were recorded.',
+    },
+  ];
+}
+
 function describeWorkerRuntime(input: {
   oneclawTask: OneClawTask | null;
   oneclawRun: OneClawTaskRun | null;
@@ -388,6 +482,17 @@ function describeWorkerRuntime(input: {
   ];
   const current = [...phases].reverse().find((phase) => phase.status !== 'completed') || phases[phases.length - 1];
   const approval = input.approvals.find((item) => item.required && item.status === 'pending');
+  const missionState = buildMissionState({
+    oneclawTask: input.oneclawTask,
+    oneclawRun: input.oneclawRun,
+    oneclawError: input.oneclawError,
+    blocked: input.blocked,
+    approvalGated: input.approvalGated,
+    canSubmit: input.canSubmit,
+    finalSummary: input.finalSummary,
+    workerResultText: input.workerResultText,
+    phases,
+  });
 
   return {
     schemaVersion: 'theone.worker_runtime.v1',
@@ -422,7 +527,75 @@ function describeWorkerRuntime(input: {
       severity: failureDiagnosis.severity,
       nextFixes: failureDiagnosis.nextFixes,
     },
+    missionState,
     preflight: input.preflight,
+  };
+}
+
+function buildMissionState(input: {
+  oneclawTask: OneClawTask | null;
+  oneclawRun: OneClawTaskRun | null;
+  oneclawError: string | null;
+  blocked: boolean;
+  approvalGated: boolean;
+  canSubmit: boolean;
+  finalSummary: string | null;
+  workerResultText: string;
+  phases: Array<{ key: string; title: string; status: string; detail: string }>;
+}) {
+  const state = input.oneclawError
+    ? 'failed'
+    : input.blocked
+      ? 'blocked'
+      : input.approvalGated
+        ? 'waiting_approval'
+        : input.oneclawRun && !(input.finalSummary || input.workerResultText)
+          ? 'summarizing'
+          : input.finalSummary || input.workerResultText || !input.oneclawTask
+            ? 'completed'
+            : input.canSubmit
+              ? 'executing'
+              : input.oneclawTask
+                ? 'policy_checked'
+                : 'drafted';
+
+  const stageStatus = (key: string) => {
+    const order = ['drafted', 'policy_checked', 'waiting_approval', 'executing', 'summarizing', 'completed'];
+    if (state === 'failed' || state === 'blocked') {
+      if (key === state) return 'active';
+      const index = order.indexOf(key);
+      const checkpoint = input.approvalGated ? 'waiting_approval' : input.oneclawRun ? 'executing' : 'policy_checked';
+      return index >= 0 && index <= order.indexOf(checkpoint) ? 'completed' : 'pending';
+    }
+    const currentIndex = order.indexOf(state);
+    const itemIndex = order.indexOf(key);
+    if (itemIndex < currentIndex) return 'completed';
+    if (itemIndex === currentIndex) return 'active';
+    return 'pending';
+  };
+
+  return {
+    schemaVersion: 'theone.mission_state.v1',
+    state,
+    label: state.replace(/_/g, ' '),
+    canResume: ['waiting_approval', 'executing', 'summarizing', 'blocked', 'failed', 'policy_checked'].includes(state),
+    canRetry: ['failed', 'blocked'].includes(state),
+    canRevise: true,
+    stages: [
+      { key: 'drafted', title: 'Understand goal', status: stageStatus('drafted') },
+      { key: 'policy_checked', title: 'Check policy', status: stageStatus('policy_checked') },
+      { key: 'waiting_approval', title: 'Wait for approval', status: stageStatus('waiting_approval') },
+      { key: 'executing', title: 'Run worker', status: stageStatus('executing') },
+      { key: 'summarizing', title: 'Summarize evidence', status: stageStatus('summarizing') },
+      { key: 'completed', title: 'Return answer', status: stageStatus('completed') },
+      ...(state === 'blocked' ? [{ key: 'blocked', title: 'Blocked', status: 'active' }] : []),
+      ...(state === 'failed' ? [{ key: 'failed', title: 'Failed', status: 'active' }] : []),
+    ],
+    runtimePhases: input.phases.map((phase) => ({
+      key: phase.key,
+      title: phase.title,
+      status: phase.status,
+    })),
   };
 }
 
@@ -718,6 +891,13 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       finalSummary: summary,
       workerResultText: '',
     });
+    const missionState = workerRuntime.missionState;
+    const continuity = buildChatContinuityFrame({
+      raw,
+      mission,
+      memoryContext,
+      workerRuntime,
+    });
     const proofRecords = [
       proof({
         title: 'TheOne Brain handled conversation',
@@ -730,6 +910,8 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
           modelRoute: primaryModel,
           selectedAppPackages,
           memoryContext: memorySummary(memoryContext),
+          continuity,
+          missionState,
           workerCatalogSummary: workerCatalog.summary,
           preflight,
         },
@@ -751,6 +933,22 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         raw: { brain, preflight },
       }),
     ];
+    const agentTimeline = buildAgentTimeline({
+      mode,
+      workerRuntime,
+      workflowSteps: [{
+        id: 'brain_understanding',
+        title: 'Understand and answer',
+        action: 'oneai.generate',
+        worker: 'oneai',
+        status: 'completed',
+      }],
+      executions,
+      approvals: [],
+      oneclawTask: null,
+      oneclawRun: null,
+      finalSummary: summary,
+    });
 
     return {
       ok: true,
@@ -781,6 +979,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         routedBy: 'theone.brain_layer',
         mission,
         workerRuntime,
+        missionState,
+        continuity,
+        agentTimeline,
         modelRoute: primaryModel,
         selectedAppPackages: selectedAppPackages.map((pkg) => pkg.key),
         memoryContext: memorySummary(memoryContext),
@@ -790,12 +991,14 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       },
       chat: {
         runtime: 'theone.chat_runtime.v2',
-          mission,
-          brain,
-          workerRuntime,
-          oneAiBrainReply: brainOnlyOneAi?.workflow || null,
-          modelRoute: primaryModel,
-          memoryContext: memorySummary(memoryContext),
+        mission,
+        brain,
+        workerRuntime,
+        missionState,
+        continuity,
+        oneAiBrainReply: brainOnlyOneAi?.workflow || null,
+        modelRoute: primaryModel,
+        memoryContext: memorySummary(memoryContext),
         appPackages: brain.selectedApps.length ? brain.selectedApps : appPackages.slice(0, 4),
         workerCatalog: workerCatalog.summary,
         assistant: {
@@ -841,6 +1044,8 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
           automationPolicy: null,
           preflight,
           workerRuntime,
+          missionState,
+          continuity,
         },
         nextActions: brain.nextMoves,
       },
@@ -1018,6 +1223,26 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     finalSummary,
     workerResultText,
   });
+  const missionState = workerRuntime.missionState;
+  const continuity = buildChatContinuityFrame({
+    raw,
+    mission,
+    memoryContext,
+    workerRuntime,
+  });
+  const agentTimeline = buildAgentTimeline({
+    mode,
+    workerRuntime,
+    workflowSteps: plannedWorkflowSteps.map((step) => ({
+      ...step,
+      status: step.worker === 'oneai' || finalSummary ? 'completed' : oneclawRun ? 'running' : blocked ? 'blocked' : 'pending',
+    })),
+    executions,
+    approvals,
+    oneclawTask,
+    oneclawRun,
+    finalSummary,
+  });
   const proofRecords = [
     proof({
       title: 'TheOne Chat Runtime handled conversation',
@@ -1030,6 +1255,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         modelRoute: primaryModel,
         selectedAppPackages,
         memoryContext: memorySummary(memoryContext),
+        continuity,
+        missionState,
+        agentTimeline,
         workerCatalogSummary: workerCatalog.summary,
         oneAiWorkflow: oneAi.workflow,
         finalOneAiResult,
@@ -1106,6 +1334,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       routedBy: 'theone.chat_runtime',
       mission,
       workerRuntime,
+      missionState,
+      continuity,
+      agentTimeline,
       brainMode: brain.mode,
       conversationKind: brain.conversationKind,
       modelRoute: primaryModel,
@@ -1122,6 +1353,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       mission,
       brain,
       workerRuntime,
+      missionState,
+      continuity,
+      agentTimeline,
       modelRoute: primaryModel,
       memoryContext: memorySummary(memoryContext),
       appPackages: selectedAppPackages.length ? selectedAppPackages : appPackages.slice(0, 4),
@@ -1175,6 +1409,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         automationPolicy,
         preflight,
         workerRuntime,
+        missionState,
+        continuity,
+        agentTimeline,
       },
       nextActions,
     },

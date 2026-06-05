@@ -52,12 +52,29 @@ const workerPrompts = [
   },
 ];
 
+const sessionShortcuts = [
+  { label: 'New mission', href: '/run' },
+  { label: 'Apps', href: '/apps' },
+  { label: 'Workers', href: '/workers' },
+  { label: 'Runs', href: '/runs' },
+  { label: 'Proof', href: '/proof' },
+];
+
 const starterMessage: ConversationMessage = {
   id: 'assistant_starter',
   role: 'assistant',
   createdAt: new Date().toISOString(),
   content: 'Tell me the outcome you want. I will ask OneAI to build the workflow, route the right workers, check policy, call OneClaw when needed, and keep the proof trail readable.',
 };
+
+const liveProgressStages = [
+  'Understanding the outcome',
+  'Selecting the app and worker route',
+  'Checking policy and mission state',
+  'Calling workers when allowed',
+  'Reading receipts and writing proof',
+  'Preparing the answer',
+];
 
 function createId(prefix: string) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -122,6 +139,65 @@ function workflowSteps(result: any) {
   return result?.chat?.oneAiWorkflow?.steps || [];
 }
 
+function activeWorkflowSteps(result: any) {
+  const steps = workflowSteps(result);
+  if (steps.length) return steps;
+  return result?.plan?.steps || [];
+}
+
+function resultActions(result: any) {
+  const actions = [
+    { label: 'Continue', prompt: 'continue' },
+    { label: 'Retry', prompt: 'retry' },
+    { label: 'Revise', prompt: 'revise this result to be clearer and more useful' },
+    { label: 'Report', prompt: 'turn this result into a concise report' },
+    { label: 'Save', prompt: 'save this to TheOne memory' },
+  ];
+  if (pendingApprovals(result).length) {
+    return [{ label: 'Approve', prompt: 'approve' }, { label: 'Reject', prompt: 'reject' }, ...actions.filter((item) => item.label !== 'Save')];
+  }
+  return actions;
+}
+
+function PlanChecklist({ result }: { result: any }) {
+  const steps = activeWorkflowSteps(result).slice(0, 6);
+  if (!steps.length) return null;
+
+  return (
+    <div className="run-plan-checklist">
+      <span>Plan</span>
+      {steps.map((step: any, index: number) => (
+        <div key={step.id || index}>
+          <small>{friendlyStatus(step.status || step.approvalMode || 'ready')}</small>
+          <strong>{step.title || step.action || 'Task step'}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ResultActions({
+  result,
+  busy,
+  onAction,
+}: {
+  result: any;
+  busy: boolean;
+  onAction: (prompt: string) => void;
+}) {
+  if (!result?.chat && !result?.runId) return null;
+  return (
+    <div className="run-result-actions">
+      {resultActions(result).map((action) => (
+        <button key={action.label} type="button" disabled={busy} onClick={() => onAction(action.prompt)}>
+          {action.label}
+        </button>
+      ))}
+      {result.runId ? <Link href={`/runs/${result.runId}`}>Open run</Link> : null}
+    </div>
+  );
+}
+
 function pendingApprovals(result: any) {
   const approvals = result?.approvals || [];
   return Array.isArray(approvals)
@@ -135,6 +211,32 @@ function coordinationWorkers(result: any) {
     { key: 'theone', title: 'TheOne Kernel', role: 'Checks policy and proof', status: result ? 'ready' : 'waiting' },
     { key: 'oneclaw', title: 'OneClaw', role: 'Runs approved workers', status: result ? 'ready' : 'waiting' },
   ];
+}
+
+function missionQuickCommand(content: string, result: any) {
+  const runId = result?.runId;
+  if (!runId) return null;
+  const value = content.trim().toLowerCase();
+  const compact = value.replace(/\s+/g, ' ');
+  const pending = pendingApprovals(result).length > 0;
+  if (pending && /^(approve|approve all|批准|同意|确认|yes|ok|可以)$/.test(compact)) return 'approve';
+  if (pending && /^(reject|reject all|拒绝|取消|不要|no)$/.test(compact)) return 'reject';
+  if (/^(continue|resume|sync|继续|接着|同步|刷新)$/.test(compact)) return 'resume';
+  if (/^(retry|rebuild|replay|重试|重新执行|重新规划|再跑一次)$/.test(compact)) return 'replay';
+  return null;
+}
+
+function AgentProgress({ stage }: { stage: number }) {
+  return (
+    <div className="run-agent-progress" aria-live="polite">
+      {liveProgressStages.map((label, index) => (
+        <div key={label} className={index < stage ? 'done' : index === stage ? 'active' : ''}>
+          <span>{String(index + 1).padStart(2, '0')}</span>
+          <strong>{label}</strong>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function ApprovalCard({
@@ -179,6 +281,7 @@ function ToolTrace({ result }: { result: any }) {
   const coordination = result.chat.workerCoordination;
   const workers = coordinationWorkers(result);
   const steps = workflowSteps(result);
+  const timeline = result.chat.agentTimeline || coordination?.agentTimeline || [];
   const oneclawRun = coordination?.oneclawRun;
   const evidence = evidenceText(result);
   const reason = approvalReason(result);
@@ -186,10 +289,22 @@ function ToolTrace({ result }: { result: any }) {
   return (
     <details className="run-tool-trace">
       <summary>
-        <span>Tool calls</span>
+        <span>Work trace</span>
         <strong>{steps.length || workers.length || 1} step(s)</strong>
       </summary>
       <div className="run-tool-body">
+        {timeline.length ? (
+          <div className="run-agent-timeline">
+            {timeline.map((item: any) => (
+              <div key={item.key || `${item.actor}_${item.title}`} className={`timeline-${workerTone(item.status)}`}>
+                <span>{item.actor || 'TheOne'}</span>
+                <strong>{item.title}</strong>
+                <em>{friendlyStatus(item.status)} · {item.detail}</em>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
         <div className="run-tool-section">
           <span>OneAI plan</span>
           <strong>{workflow?.summary || 'TheOne asked OneAI to decide the workflow.'}</strong>
@@ -249,6 +364,7 @@ function RunPageContent() {
   const [input, setInput] = useState('');
   const [mode, setMode] = useState<Mode>('assist');
   const [loading, setLoading] = useState(false);
+  const [progressStage, setProgressStage] = useState(0);
   const [messages, setMessages] = useState<ConversationMessage[]>([starterMessage]);
   const [result, setResult] = useState<any>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
@@ -266,10 +382,25 @@ function RunPageContent() {
   const latestResult = latestAssistantResult(messages) || result;
   const mission = latestResult?.chat?.mission || result?.chat?.mission;
   const workerRuntime = latestResult?.chat?.workerRuntime || result?.chat?.workerRuntime;
+  const missionState = latestResult?.chat?.missionState || workerRuntime?.missionState || result?.chat?.missionState;
+  const continuity = latestResult?.chat?.continuity || result?.chat?.continuity;
+  const currentSteps = activeWorkflowSteps(latestResult);
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages, loading]);
+
+  useEffect(() => {
+    if (!loading) {
+      setProgressStage(0);
+      return undefined;
+    }
+
+    const timer = window.setInterval(() => {
+      setProgressStage((stage) => Math.min(liveProgressStages.length - 1, stage + 1));
+    }, 850);
+    return () => window.clearInterval(timer);
+  }, [loading]);
 
   useEffect(() => {
     const continueRunId = searchParams.get('continue');
@@ -310,6 +441,46 @@ function RunPageContent() {
     setLoading(true);
 
     try {
+      const command = missionQuickCommand(content, latestResult);
+      if (command && latestResult?.runId) {
+        const endpoint = command === 'approve'
+          ? '/api/theone/approvals/approve'
+          : command === 'reject'
+            ? '/api/theone/approvals/reject'
+            : command === 'resume'
+              ? `/api/theone/runs/${latestResult.runId}/resume`
+              : `/api/theone/runs/${latestResult.runId}/replay`;
+        const data = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: command === 'approve'
+            ? JSON.stringify({ runId: latestResult.runId, approveAll: true })
+            : command === 'reject'
+              ? JSON.stringify({ runId: latestResult.runId, rejectAll: true })
+              : undefined,
+        }).then((res) => res.json());
+        const resolved = data.result || data;
+        if (resolved?.ok === false || data?.ok === false) throw new Error(data.error || resolved.error || 'Mission command failed.');
+        setResult(resolved);
+        setMessages((current) => ([
+          ...current,
+          {
+            id: createId(`assistant_${command}`),
+            role: 'assistant',
+            content: command === 'approve'
+              ? 'Approved. I continued the mission and refreshed the worker status.'
+              : command === 'reject'
+                ? 'Rejected. I kept the external worker from running.'
+                : command === 'resume'
+                  ? plainResult(resolved)
+                  : `I rebuilt the mission route.\n\n${plainResult(resolved)}`,
+            createdAt: new Date().toISOString(),
+            result: resolved,
+          },
+        ]));
+        return;
+      }
+
       const res = await fetch('/api/theone/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -321,6 +492,12 @@ function RunPageContent() {
             runId: latestResult.runId,
             mission: latestResult.chat.mission,
             workerRuntime: latestResult.chat.workerRuntime,
+            missionState: latestResult.chat.missionState || latestResult.chat.workerRuntime?.missionState,
+            continuity: latestResult.chat.continuity,
+            pendingOneClawTask: latestResult.pendingOneClawTask,
+            approvals: latestResult.approvals,
+            executions: latestResult.executions,
+            lastAssistant: latestResult.chat.assistant?.content || latestResult.summary,
           } : undefined,
           messages: nextMessages.map((message) => ({ role: message.role, content: message.content })),
         }),
@@ -426,6 +603,31 @@ function RunPageContent() {
     >
       <section className="run-codex-workspace">
         <div className="run-codex-main">
+          <aside className="run-session-rail" aria-label="TheOne sessions">
+            <div className="run-rail-brand">
+              <strong>TheOne</strong>
+              <span>AI OS</span>
+            </div>
+            <nav className="run-rail-nav">
+              {sessionShortcuts.map((item) => (
+                <Link key={item.label} href={item.href}>{item.label}</Link>
+              ))}
+            </nav>
+            <div className="run-rail-projects">
+              <span>Active Work</span>
+              {(messages.filter((message) => message.role === 'user').slice(-5).reverse()).map((message, index) => (
+                <button key={message.id} type="button" onClick={() => setInput(message.content)}>
+                  <strong>{message.content.slice(0, 48)}{message.content.length > 48 ? '...' : ''}</strong>
+                  <small>#{index + 1}</small>
+                </button>
+              ))}
+              {messages.filter((message) => message.role === 'user').length === 0 ? (
+                <p>Start a mission to build the working thread.</p>
+              ) : null}
+            </div>
+          </aside>
+
+          <main className="run-chat-stage">
           <div className="run-codex-toolbar">
             <div>
               <span className="product-card-kicker">TheOne Chat Runtime</span>
@@ -448,6 +650,7 @@ function RunPageContent() {
                   <small>{new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small>
                 </div>
                 <p>{message.content}</p>
+                {message.role === 'assistant' && message.result ? <PlanChecklist result={message.result} /> : null}
                 {message.result?.appRoute ? (
                   <div className="run-message-route">
                     <span>{message.result.appRoute.title}</span>
@@ -458,12 +661,21 @@ function RunPageContent() {
                 {message.role === 'assistant' && message.result ? (
                   <ApprovalCard result={message.result} busy={loading} onDecision={decideApproval} />
                 ) : null}
+                {message.role === 'assistant' && message.result ? (
+                  <ResultActions result={message.result} busy={loading} onAction={(prompt) => sendMessage(prompt)} />
+                ) : null}
               </article>
             ))}
-            {loading ? <div className="run-thinking-line" aria-live="polite">TheOne is thinking...</div> : null}
+            {loading ? <AgentProgress stage={progressStage} /> : null}
           </div>
 
           <div className="run-composer">
+            <div className="run-composer-toolbar">
+              <button type="button" onClick={() => setInput('continue')} disabled={loading || !latestResult?.runId}>Continue mission</button>
+              <button type="button" onClick={() => setInput('approve')} disabled={loading || !pendingApprovals(latestResult).length}>Approve</button>
+              <button type="button" onClick={() => setInput('retry')} disabled={loading || !latestResult?.runId}>Retry</button>
+              <button type="button" onClick={() => setInput('turn the current result into a report')} disabled={loading}>Report</button>
+            </div>
             <textarea
               value={input}
               onChange={(event) => setInput(event.target.value)}
@@ -473,17 +685,18 @@ function RunPageContent() {
             <div className="run-composer-actions">
               <span>Cmd/Ctrl + Enter to run</span>
               <button className="run-button" type="button" onClick={() => sendMessage()} disabled={loading || !input.trim()}>
-                {loading ? 'Thinking...' : 'Send to TheOne'}
+                {loading ? 'Coordinating...' : 'Send'}
               </button>
             </div>
           </div>
+          </main>
         </div>
 
         <aside className="run-codex-side">
           <div className="panel-head">
             <div>
-              <h2 className="panel-title">Mission</h2>
-              <p className="panel-subtitle">A small live view of the current run.</p>
+              <h2 className="panel-title">Current Work</h2>
+              <p className="panel-subtitle">Only the live work that matters now.</p>
             </div>
             <span className={`status-pill status-${status}`}>{friendlyStatus(status)}</span>
           </div>
@@ -511,17 +724,48 @@ function RunPageContent() {
             ) : null}
           </div>
 
+          <div className="run-mission-card">
+            <span className="product-card-kicker">Plan checklist</span>
+            <div className="run-current-plan">
+              {(currentSteps.length ? currentSteps.slice(0, 6) : [{ id: 'ready', title: 'Describe an outcome', status: 'ready' }]).map((step: any, index: number) => (
+                <div key={step.id || index}>
+                  <small>{friendlyStatus(step.status || step.approvalMode || 'ready')}</small>
+                  <strong>{step.title || step.action || 'Task step'}</strong>
+                </div>
+              ))}
+            </div>
+          </div>
+
           {workerRuntime ? (
             <div className="run-mission-card">
               <span className="product-card-kicker">Now</span>
               <strong>{workerRuntime.current?.title || friendlyStatus(workerRuntime.status)}</strong>
               <p className="panel-subtitle">{workerRuntime.current?.detail || workerRuntime.diagnostics?.userReadable}</p>
+              {missionState ? (
+                <div className="run-state-strip">
+                  <span>{friendlyStatus(missionState.state)}</span>
+                  <strong>{missionState.canResume ? 'Can resume' : 'Stable'}</strong>
+                  <em>{missionState.canRetry ? 'Retry available' : continuity?.followUpIntent || 'Context linked'}</em>
+                </div>
+              ) : null}
             </div>
           ) : null}
 
-          <details className="run-side-details" open>
+          {pendingApprovals(latestResult).length ? (
+            <div className="run-mission-card">
+              <span className="product-card-kicker">Needs decision</span>
+              <strong>{pendingApprovals(latestResult)[0]?.action || 'Approval required'}</strong>
+              <p className="panel-subtitle">{pendingApprovals(latestResult)[0]?.reason}</p>
+              <div className="approval-actions">
+                <button className="mini-action primary" type="button" disabled={loading} onClick={() => decideApproval('approve')}>Approve all</button>
+                <button className="mini-action" type="button" disabled={loading} onClick={() => decideApproval('reject')}>Reject all</button>
+              </div>
+            </div>
+          ) : null}
+
+          <details className="run-side-details">
             <summary>
-              <span>Workflow</span>
+              <span>Workflow detail</span>
               <strong>{workflowSteps(latestResult).length || 1}</strong>
             </summary>
             <strong>{workflow?.summary || 'Waiting for a goal.'}</strong>
@@ -545,6 +789,17 @@ function RunPageContent() {
                     <small>{friendlyStatus(phase.status)}</small>
                     <p>{phase.title}</p>
                     <em>{phase.detail}</em>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {missionState?.stages?.length ? (
+              <div className="run-tool-steps">
+                {missionState.stages.map((stage: any) => (
+                  <div key={stage.key}>
+                    <small>{friendlyStatus(stage.status)}</small>
+                    <p>{stage.title}</p>
+                    <em>{stage.key}</em>
                   </div>
                 ))}
               </div>
@@ -583,7 +838,7 @@ function RunPageContent() {
 
           <details className="run-side-details">
             <summary>
-              <span>Runtime</span>
+              <span>Advanced context</span>
               <strong>{modelRoute?.model || 'frontier'}</strong>
             </summary>
             <div className="run-explain-grid">

@@ -4,7 +4,7 @@ import { computeExecutionStats } from '../metrics';
 import { canSubmitExternalTasks } from '../policy/approval-policy';
 import { extractOneAIData, runOneAI } from '../providers/oneai';
 import { getOneClawTask, runOneClawTask } from '../providers/oneclaw';
-import { receiptForTheOne, receiptFromOneClawRun } from '../providers/receipts';
+import { normalizeWorkerReceipt, receiptForTheOne, receiptFromOneClawRun } from '../providers/receipts';
 import { createExecutionRecord, createWorkflowTrace, markApprovalBlockedSteps } from '../runtime/workflow-runtime';
 import type {
   ApprovalGate,
@@ -647,14 +647,21 @@ export async function approveRun(input: { runId: string; approvalId?: string; ap
       const startedAt = Date.now();
       const oneclawRun = await runOneClawTask<OneClawTaskRun>(stored.oneclawTask);
       const receipt = receiptFromOneClawRun(oneclawRun, 'oneclaw.task.run', startedAt);
+      const normalizedReceipt = normalizeWorkerReceipt({
+        provider: 'oneclaw',
+        taskName: stored.oneclawTask.taskName,
+        status: oneclawRun.status,
+        raw: oneclawRun.raw ?? oneclawRun,
+        receipt,
+      });
       const status = oneclawRun.status === 'mock' ? 'mock' : 'submitted';
       const execution = createExecutionRecord({
         provider: 'oneclaw',
         status,
-        summary: oneclawRun.mock ? 'Mock OneClaw task completed.' : 'OneClaw task submitted after approval.',
+        summary: normalizedReceipt.summary || (oneclawRun.mock ? 'Mock OneClaw task completed.' : 'OneClaw task submitted after approval.'),
         externalId: oneclawRun.id ?? null,
         taskName: stored.oneclawTask.taskName,
-        raw: oneclawRun,
+        raw: { oneclawRun, normalizedReceipt },
         receipt,
       });
 
@@ -673,6 +680,7 @@ export async function approveRun(input: { runId: string; approvalId?: string; ap
           oneclawTaskId: oneclawRun.id ?? null,
           taskName: stored.oneclawTask.taskName,
           receipt,
+          normalizedReceipt,
         },
       });
 
@@ -712,7 +720,7 @@ export async function approveRun(input: { runId: string; approvalId?: string; ap
         kind: 'execution.submitted',
         title: 'OneClaw task submitted',
         summary: workerSummary?.summary || `${stored.oneclawTask.taskName} submitted after approval.`,
-        content: { oneclawRun, oneclawTask: stored.oneclawTask, receipt, workerSummary },
+        content: { oneclawRun, oneclawTask: stored.oneclawTask, receipt, normalizedReceipt, workerSummary },
       });
       await recordTheOneEvent({
         runId: stored.result.runId,
@@ -799,16 +807,23 @@ export async function syncRunExecution(input: { runId: string }) {
       mock: Boolean(latest.mock),
       raw: latest,
     }, 'oneclaw.task.get');
+    const normalizedReceipt = normalizeWorkerReceipt({
+      provider: 'oneclaw',
+      taskName: oneclawExecution.taskName,
+      status,
+      raw: latest,
+      receipt: latestReceipt,
+    });
 
     stored.result.executions = (stored.result.executions || []).map((execution) => {
       if (execution.id !== oneclawExecution.id) return execution;
       return {
         ...execution,
         status: status === 'mock' ? 'mock' : mapOneClawStatusToExecutionStatus(status),
-        summary: failureDetail
+        summary: normalizedReceipt.summary || (failureDetail
           ? `OneClaw task ${oneclawExecution.externalId} is ${status}: ${failureDetail}`
-          : `OneClaw task ${oneclawExecution.externalId} is ${status}.`,
-        raw: latest,
+          : `OneClaw task ${oneclawExecution.externalId} is ${status}.`),
+        raw: { latest, normalizedReceipt },
         receipt: latestReceipt,
       };
     });
@@ -824,6 +839,7 @@ export async function syncRunExecution(input: { runId: string }) {
         provider: 'oneclaw',
         oneclawTaskId: oneclawExecution.externalId,
         receipt: latestReceipt,
+        normalizedReceipt,
       },
     });
 
@@ -834,7 +850,7 @@ export async function syncRunExecution(input: { runId: string }) {
       summary: failureDetail
         ? `Task ${oneclawExecution.externalId} is ${status}: ${failureDetail}`
         : `Task ${oneclawExecution.externalId} is ${status}.`,
-      content: { latest, receipt: latestReceipt },
+      content: { latest, receipt: latestReceipt, normalizedReceipt },
     });
     await recordTheOneEvent({
       runId: stored.result.runId,

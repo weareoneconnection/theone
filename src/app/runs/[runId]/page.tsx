@@ -104,6 +104,7 @@ export default function RunMissionPage({ params }: { params: Promise<{ runId: st
 
   const mission = run?.chat?.mission || run?.proof?.[0]?.metadata?.mission;
   const workerRuntime = run?.chat?.workerRuntime || run?.proof?.[0]?.metadata?.workerRuntime;
+  const missionState = run?.chat?.missionState || workerRuntime?.missionState || run?.proof?.[0]?.metadata?.missionState;
   const workflow = run?.os?.workflow || {};
   const approvals = run?.approvals || [];
   const executions = run?.executions || [];
@@ -194,6 +195,20 @@ export default function RunMissionPage({ params }: { params: Promise<{ runId: st
                 </div>
               ))}
             </div>
+            {missionState?.stages?.length ? (
+              <>
+                <h2 className="panel-title">Mission State Machine</h2>
+                <div className="run-tool-steps">
+                  {missionState.stages.map((stage: any) => (
+                    <div key={stage.key}>
+                      <small>{friendlyStatus(stage.status)}</small>
+                      <p>{stage.title}</p>
+                      <em>{stage.key}</em>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : null}
             {workerRuntime?.diagnostics?.nextFixes?.length ? (
               <div className="app-next-list">
                 {workerRuntime.diagnostics.nextFixes.map((item: string) => <span key={item}>{item}</span>)}

@@ -30,12 +30,19 @@ function normalizeContextMessage(value: unknown) {
   const record = value as Record<string, unknown>;
   const mission = record.mission && typeof record.mission === 'object' ? record.mission as Record<string, unknown> : null;
   const workerRuntime = record.workerRuntime && typeof record.workerRuntime === 'object' ? record.workerRuntime as Record<string, unknown> : null;
-  if (!mission && !workerRuntime) return null;
+  const missionState = record.missionState && typeof record.missionState === 'object' ? record.missionState as Record<string, unknown> : null;
+  const continuity = record.continuity && typeof record.continuity === 'object' ? record.continuity as Record<string, unknown> : null;
+  const pendingOneClawTask = record.pendingOneClawTask && typeof record.pendingOneClawTask === 'object' ? record.pendingOneClawTask as Record<string, unknown> : null;
+  const lastAssistant = typeof record.lastAssistant === 'string' ? record.lastAssistant.slice(0, 2400) : '';
+  const approvals = Array.isArray(record.approvals) ? record.approvals.slice(0, 8) : [];
+  const executions = Array.isArray(record.executions) ? record.executions.slice(-6) : [];
+  if (!mission && !workerRuntime && !lastAssistant) return null;
 
   return {
     role: 'system' as const,
     content: [
       'Previous TheOne mission context is available. Treat follow-up requests such as continue, retry, revise, approve, summarize, or make it shorter as referring to this mission unless the user clearly starts a new task.',
+      lastAssistant ? `Last assistant answer: ${lastAssistant}` : '',
       mission ? `Mission: ${JSON.stringify({
         id: mission.id,
         runId: mission.runId,
@@ -51,6 +58,29 @@ function normalizeContextMessage(value: unknown) {
         current: workerRuntime.current,
         diagnostics: workerRuntime.diagnostics,
       })}` : '',
+      missionState ? `Mission state: ${JSON.stringify({
+        state: missionState.state,
+        label: missionState.label,
+        canResume: missionState.canResume,
+        canRetry: missionState.canRetry,
+        canRevise: missionState.canRevise,
+        stages: missionState.stages,
+      })}` : '',
+      continuity ? `Continuity: ${JSON.stringify(continuity)}` : '',
+      pendingOneClawTask ? `Pending OneClaw task: ${JSON.stringify({
+        taskName: pendingOneClawTask.taskName,
+        approvalMode: pendingOneClawTask.approvalMode,
+        steps: pendingOneClawTask.steps,
+      })}` : '',
+      approvals.length ? `Approvals: ${JSON.stringify(approvals)}` : '',
+      executions.length ? `Executions: ${JSON.stringify(executions.map((execution: any) => ({
+        provider: execution?.provider,
+        status: execution?.status,
+        summary: execution?.summary,
+        taskName: execution?.taskName,
+        externalId: execution?.externalId,
+        normalizedReceipt: execution?.raw?.normalizedReceipt,
+      })))}` : '',
     ].filter(Boolean).join('\n'),
   };
 }
