@@ -518,6 +518,22 @@ function missionQuickCommand(content: string, result: any) {
   return null;
 }
 
+function approvalDecisionMessage(decision: 'approve' | 'reject', result: any) {
+  if (decision === 'reject') return 'Rejected. I kept the external worker from running.';
+  const oneclaw = [...(result?.executions || [])].reverse().find((execution: any) => execution.provider === 'oneclaw');
+  const pending = pendingApprovals(result).length;
+  if (oneclaw?.status === 'failed') {
+    return `Approved, but OneClaw failed to execute: ${oneclaw.summary || 'No worker receipt was returned.'}`;
+  }
+  if (oneclaw?.externalId || ['success', 'submitted', 'running', 'mock'].includes(String(oneclaw?.status || '').toLowerCase())) {
+    return plainResult(result);
+  }
+  if (pending) {
+    return `Approved in TheOne, but ${pending} approval gate is still waiting. Open the run details before expecting the external action to appear.`;
+  }
+  return 'Approved. TheOne refreshed the mission, but no OneClaw execution receipt was returned yet.';
+}
+
 function AgentProgress({ stage }: { stage: number }) {
   return (
     <div className="run-agent-progress" aria-live="polite">
@@ -1109,9 +1125,7 @@ function RunPageContent() {
         {
           id: createId(`assistant_${decision}`),
           role: 'assistant',
-          content: decision === 'approve'
-            ? 'Approved. I refreshed the mission so you can see whether OneClaw executed or still needs follow-up.'
-            : 'Rejected. I kept the external worker from running.',
+          content: approvalDecisionMessage(decision, data),
           createdAt: new Date().toISOString(),
           result: data,
         },

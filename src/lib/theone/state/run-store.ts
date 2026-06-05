@@ -645,11 +645,27 @@ export async function approveRun(input: { runId: string; approvalId?: string; ap
       !getPrimaryOneClawExecution(stored.result.executions || [])?.externalId
     ) {
       const startedAt = Date.now();
-      const oneclawRun = await runOneClawTask<OneClawTaskRun>(stored.oneclawTask);
+      const approvedOneClawTask: OneClawTask = {
+        ...stored.oneclawTask,
+        approvalMode: 'auto',
+        metadata: {
+          ...(stored.oneclawTask.metadata || {}),
+          source: stored.oneclawTask.metadata?.source || 'theone.approved_dispatch',
+          theoneApproval: {
+            approvedAt: now(),
+            runId: stored.result.runId,
+            approvalIds: stored.result.approvals
+              .filter((approval) => approval.required && approval.status === 'approved')
+              .map((approval) => approval.id),
+            originalApprovalMode: stored.oneclawTask.approvalMode || 'manual',
+          },
+        },
+      };
+      const oneclawRun = await runOneClawTask<OneClawTaskRun>(approvedOneClawTask);
       const receipt = receiptFromOneClawRun(oneclawRun, 'oneclaw.task.run', startedAt);
       const normalizedReceipt = normalizeWorkerReceipt({
         provider: 'oneclaw',
-        taskName: stored.oneclawTask.taskName,
+        taskName: approvedOneClawTask.taskName,
         status: oneclawRun.status,
         raw: oneclawRun.raw ?? oneclawRun,
         receipt,
@@ -660,7 +676,7 @@ export async function approveRun(input: { runId: string; approvalId?: string; ap
         status,
         summary: normalizedReceipt.summary || (oneclawRun.mock ? 'Mock OneClaw task completed.' : 'OneClaw task submitted after approval.'),
         externalId: oneclawRun.id ?? null,
-        taskName: stored.oneclawTask.taskName,
+        taskName: approvedOneClawTask.taskName,
         raw: { oneclawRun, normalizedReceipt },
         receipt,
       });
@@ -678,7 +694,7 @@ export async function approveRun(input: { runId: string; approvalId?: string; ap
         metadata: {
           provider: 'oneclaw',
           oneclawTaskId: oneclawRun.id ?? null,
-          taskName: stored.oneclawTask.taskName,
+          taskName: approvedOneClawTask.taskName,
           receipt,
           normalizedReceipt,
         },
@@ -686,7 +702,7 @@ export async function approveRun(input: { runId: string; approvalId?: string; ap
 
       const workerSummary = await summarizeApprovedWorkerResult({
         objective: stored.result.intent.objective,
-        taskName: stored.oneclawTask.taskName,
+        taskName: approvedOneClawTask.taskName,
         oneclawRun,
       });
 
@@ -709,7 +725,7 @@ export async function approveRun(input: { runId: string; approvalId?: string; ap
           timestamp: now(),
           metadata: {
             provider: 'oneai',
-            taskName: stored.oneclawTask.taskName,
+            taskName: approvedOneClawTask.taskName,
             evidence: workerSummary.evidence.slice(0, 1200),
           },
         });
@@ -719,15 +735,15 @@ export async function approveRun(input: { runId: string; approvalId?: string; ap
         runId: stored.result.runId,
         kind: 'execution.submitted',
         title: 'OneClaw task submitted',
-        summary: workerSummary?.summary || `${stored.oneclawTask.taskName} submitted after approval.`,
-        content: { oneclawRun, oneclawTask: stored.oneclawTask, receipt, normalizedReceipt, workerSummary },
+        summary: workerSummary?.summary || `${approvedOneClawTask.taskName} submitted after approval.`,
+        content: { oneclawRun, oneclawTask: approvedOneClawTask, receipt, normalizedReceipt, workerSummary },
       });
       await recordTheOneEvent({
         runId: stored.result.runId,
         type: 'execution.submitted',
         provider: 'oneclaw',
         status,
-        summary: `${stored.oneclawTask.taskName} submitted after approval.`,
+        summary: `${approvedOneClawTask.taskName} submitted after approval.`,
         payload: { oneclawRun, receipt },
       });
     }
