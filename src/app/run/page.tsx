@@ -23,6 +23,25 @@ type CommandItem = {
   prompt: string;
   meta: string;
   source: 'template' | 'worker';
+  action?: string;
+};
+
+type ChatAttachment = {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  text?: string;
+  textPreview?: string;
+  summary?: string;
+  status: 'uploading' | 'ready' | 'failed';
+};
+
+type StreamEvent = {
+  id: string;
+  event: string;
+  data: any;
+  createdAt: string;
 };
 
 type TimelineItem = {
@@ -95,7 +114,9 @@ function createId(prefix: string) {
 
 async function postChatWithStream(
   payload: Record<string, unknown>,
-  onStage: (stage: number) => void
+  onStage: (stage: number) => void,
+  onDelta: (text: string) => void,
+  onEvent?: (event: string, data: any) => void
 ) {
   const response = await fetch('/api/theone/chat/stream', {
     method: 'POST',
@@ -126,6 +147,8 @@ async function postChatWithStream(
       if (!event || !dataLine) continue;
       const data = JSON.parse(dataLine);
       if (event === 'stage') onStage(Number(data.index || 0));
+      if (event === 'answer_delta' && typeof data.text === 'string') onDelta(data.text);
+      if (!['stage', 'answer_delta', 'result', 'error'].includes(event)) onEvent?.(event, data);
       if (event === 'result') finalResult = data;
       if (event === 'error') streamError = data.error || 'TheOne stream failed.';
     }
@@ -143,6 +166,33 @@ async function postChatJson(payload: Record<string, unknown>) {
     body: JSON.stringify(payload),
   });
   return response.json();
+}
+
+async function uploadChatAttachments(files: FileList | null): Promise<ChatAttachment[]> {
+  const selected = Array.from(files || []).slice(0, 8);
+  if (!selected.length) return [];
+
+  const form = new FormData();
+  selected.forEach((file) => form.append('files', file));
+  const response = await fetch('/api/theone/chat/upload', {
+    method: 'POST',
+    body: form,
+  });
+  const data = await response.json();
+  if (!response.ok || data?.ok === false) {
+    throw new Error(data?.error || 'Attachment upload failed.');
+  }
+
+  return (Array.isArray(data.attachments) ? data.attachments : []).map((attachment: any) => ({
+    id: String(attachment.id || createId('attachment')),
+    name: String(attachment.name || 'attachment'),
+    type: String(attachment.type || 'application/octet-stream'),
+    size: Number(attachment.size || 0),
+    text: typeof attachment.text === 'string' ? attachment.text : undefined,
+    textPreview: typeof attachment.textPreview === 'string' ? attachment.textPreview : undefined,
+    summary: typeof attachment.summary === 'string' ? attachment.summary : undefined,
+    status: 'ready' as const,
+  }));
 }
 
 function plainResult(result: any) {
@@ -301,6 +351,7 @@ function normalizeWorkerCommands(payload: any): CommandItem[] {
         prompt: promptForWorker(action, title),
         meta: `${action} · ${friendlyStatus(status)}${raw?.approvalRequired || worker?.approvalRequired ? ' · approval' : ''}`,
         source: 'worker',
+        action,
       });
     }
   }
@@ -328,6 +379,46 @@ function missionTimeline(result: any, loading: boolean, stage: number): Timeline
     { key: 'worker', title: executions ? 'Worker called' : 'Prepare worker', detail: executions ? `${executions} execution record(s).` : 'OneClaw route is selected when needed.', status: timed(3) },
     { key: 'proof', title: proof ? 'Proof stored' : 'Collect proof', detail: proof ? `${proof} proof record(s).` : 'Receipts and evidence are attached.', status: timed(4) },
     { key: 'answer', title: 'Return answer', detail: hasResult ? 'Readable result is shown in chat.' : 'TheOne will answer when the route completes.', status: timed(5) },
+  ];
+}
+
+function workerLifecycle(result: any, execution: any): TimelineItem[] {
+  const approvals = pendingApprovals(result);
+  const status = String(execution?.status || '').toLowerCase();
+  const failed = /failed|error|rejected|blocked/.test(status);
+  const completed = /success|completed|mock/.test(status);
+  const approvalWaiting = approvals.length > 0;
+  return [
+    {
+      key: 'planned',
+      title: 'Planned',
+      detail: execution?.taskName || result?.pendingOneClawTask?.taskName || 'TheOne selected a worker route.',
+      status: 'done',
+    },
+    {
+      key: 'policy',
+      title: approvalWaiting ? 'Approval waiting' : 'Policy cleared',
+      detail: approvalWaiting ? `${approvals.length} approval decision needed.` : 'Risk, mode, and worker access checked.',
+      status: approvalWaiting ? 'blocked' : 'done',
+    },
+    {
+      key: 'running',
+      title: completed || failed ? 'Worker finished' : 'Worker running',
+      detail: execution?.externalId || execution?.provider || 'OneClaw worker execution.',
+      status: completed || failed ? 'done' : 'running',
+    },
+    {
+      key: 'completed',
+      title: failed ? 'Failed' : completed ? 'Completed' : 'Awaiting receipt',
+      detail: execution?.summary || 'The worker receipt is tracked by TheOne.',
+      status: failed ? 'blocked' : completed ? 'done' : 'waiting',
+    },
+    {
+      key: 'summarized',
+      title: 'Summarized',
+      detail: result?.chat?.assistant?.content ? 'The result was converted into a readable answer.' : 'TheOne will summarize the worker output.',
+      status: result?.chat?.assistant?.content ? 'done' : 'waiting',
+    },
   ];
 }
 
@@ -648,6 +739,15 @@ function WorkerCallCards({ result }: { result: any }) {
             </summary>
             <div>
               <p>{execution.summary || 'The worker returned a receipt for this mission.'}</p>
+              <div className="run-worker-lifecycle">
+                {workerLifecycle(result, execution).map((item, itemIndex) => (
+                  <div key={item.key} className={`timeline-${item.status}`}>
+                    <small>{String(itemIndex + 1).padStart(2, '0')}</small>
+                    <strong>{item.title}</strong>
+                    <span>{item.detail}</span>
+                  </div>
+                ))}
+              </div>
               {execution.externalId ? <code>{execution.externalId}</code> : null}
               {receipt ? <pre>{JSON.stringify(receipt, null, 2).slice(0, 1800)}</pre> : null}
             </div>
@@ -655,6 +755,35 @@ function WorkerCallCards({ result }: { result: any }) {
         );
       })}
     </div>
+  );
+}
+
+function StreamEventList({ events }: { events: StreamEvent[] }) {
+  if (!events.length) return null;
+  const labelFor = (event: string) => ({
+    plan_delta: 'Plan',
+    tool_start: 'Worker start',
+    tool_result: 'Worker result',
+    approval_required: 'Approval',
+    proof_recorded: 'Proof',
+  }[event] || event.replace(/_/g, ' '));
+
+  return (
+    <details className="run-side-details" open>
+      <summary>
+        <span>Live events</span>
+        <strong>{events.length}</strong>
+      </summary>
+      <div className="run-stream-events">
+        {events.slice(-8).map((item) => (
+          <div key={item.id}>
+            <small>{labelFor(item.event)}</small>
+            <strong>{item.data?.title || item.data?.taskName || item.data?.action || item.data?.summary || item.data?.status || 'event'}</strong>
+            {item.data?.reason || item.data?.value ? <p>{item.data.reason || item.data.value}</p> : null}
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -666,12 +795,16 @@ function RunPageContent() {
   const [progressStage, setProgressStage] = useState(0);
   const [messages, setMessages] = useState<ConversationMessage[]>([starterMessage]);
   const [result, setResult] = useState<any>(null);
-  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [examplesOpen, setExamplesOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
   const [runHistory, setRunHistory] = useState<any[]>([]);
   const [workerCommands, setWorkerCommands] = useState<CommandItem[]>([]);
+  const [selectedWorker, setSelectedWorker] = useState<CommandItem | null>(null);
+  const [streamEvents, setStreamEvents] = useState<StreamEvent[]>([]);
   const [workedMs, setWorkedMs] = useState<number | null>(null);
+  const [chatSessionId, setChatSessionId] = useState('');
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const threadRef = useRef<HTMLDivElement | null>(null);
 
   const status = activeStatus(result, loading);
@@ -702,6 +835,13 @@ function RunPageContent() {
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages, loading]);
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem('theone.chatSessionId');
+    const id = stored || createId('session');
+    window.localStorage.setItem('theone.chatSessionId', id);
+    setChatSessionId(id);
+  }, []);
 
   useEffect(() => {
     if (!loading) {
@@ -738,6 +878,10 @@ function RunPageContent() {
       .then((data) => {
         if (!data?.runId) return;
         setResult(data);
+        if (data?.chat?.conversation?.sessionId) {
+          setChatSessionId(data.chat.conversation.sessionId);
+          window.localStorage.setItem('theone.chatSessionId', data.chat.conversation.sessionId);
+        }
         const restoredMessages = Array.isArray(data?.chat?.conversation?.messages)
           ? data.chat.conversation.messages
             .filter((message: any) => message?.role === 'user' || message?.role === 'assistant' || message?.role === 'system')
@@ -784,6 +928,7 @@ function RunPageContent() {
     setInput('');
     setLoading(true);
     setWorkedMs(null);
+    setStreamEvents([]);
     const startedAt = Date.now();
 
     try {
@@ -843,24 +988,85 @@ function RunPageContent() {
           lastAssistant: latestResult.chat.assistant?.content || latestResult.summary,
         } : undefined,
         messages: nextMessages.map((message) => ({ role: message.role, content: message.content })),
+        sessionId: chatSessionId || undefined,
+        attachments,
+        selectedWorker: selectedWorker ? {
+          key: selectedWorker.key,
+          label: selectedWorker.label,
+          action: selectedWorker.action,
+          meta: selectedWorker.meta,
+        } : undefined,
       };
       let data: any;
+      const streamMessageId = createId('assistant_stream');
+      let streamed = false;
       try {
-        data = await postChatWithStream(payload, (stage) => setProgressStage(stage));
+        data = await postChatWithStream(
+          payload,
+          (stage) => setProgressStage(stage),
+          (delta) => {
+            streamed = true;
+            setMessages((current) => {
+              const existing = current.find((message) => message.id === streamMessageId);
+              if (existing) {
+                return current.map((message) => (
+                  message.id === streamMessageId
+                    ? { ...message, content: `${message.content}${delta}` }
+                    : message
+                ));
+              }
+              return [
+                ...current,
+                {
+                  id: streamMessageId,
+                  role: 'assistant',
+                  content: delta,
+                  createdAt: new Date().toISOString(),
+                },
+              ];
+            });
+          },
+          (event, eventData) => {
+            setStreamEvents((current) => [
+              ...current.slice(-24),
+              {
+                id: createId('stream'),
+                event,
+                data: eventData,
+                createdAt: new Date().toISOString(),
+              },
+            ]);
+          }
+        );
       } catch {
         data = await postChatJson(payload);
       }
       setResult(data);
-      setMessages((current) => ([
-        ...current,
-        {
-          id: createId('assistant'),
-          role: 'assistant',
-          content: plainResult(data),
-          createdAt: new Date().toISOString(),
-          result: data,
-        },
-      ]));
+      setMessages((current) => {
+        if (streamed) {
+          return current.map((message) => (
+            message.id === streamMessageId
+              ? { ...message, content: plainResult(data), result: data }
+              : message
+          ));
+        }
+        return [
+          ...current,
+          {
+            id: createId('assistant'),
+            role: 'assistant',
+            content: plainResult(data),
+            createdAt: new Date().toISOString(),
+            result: data,
+          },
+        ];
+      });
+      if (data?.chat?.conversation?.sessionId) {
+        setChatSessionId(data.chat.conversation.sessionId);
+        window.localStorage.setItem('theone.chatSessionId', data.chat.conversation.sessionId);
+      }
+      setAttachments([]);
+      setSelectedWorker(null);
     } catch (error) {
       const failure = { ok: false, error: error instanceof Error ? error.message : 'TheOne could not start this run.' };
       setResult(failure);
@@ -936,6 +1142,48 @@ function RunPageContent() {
     }
   }
 
+  async function handleAttachmentInput(files: FileList | null) {
+    const pending = Array.from(files || []).slice(0, 8).map((file) => ({
+      id: createId('attachment_pending'),
+      name: file.name,
+      type: file.type || 'application/octet-stream',
+      size: file.size,
+      status: 'uploading' as const,
+    }));
+    if (!pending.length) return;
+    setAttachments((current) => [...current, ...pending].slice(-12));
+    try {
+      const uploaded = await uploadChatAttachments(files);
+      setAttachments((current) => [
+        ...current.filter((item) => !pending.some((pendingItem) => pendingItem.id === item.id)),
+        ...uploaded,
+      ].slice(-12));
+    } catch {
+      setAttachments((current) => current.map((item) => (
+        pending.some((pendingItem) => pendingItem.id === item.id)
+          ? { ...item, status: 'failed' as const, summary: 'Upload failed.' }
+          : item
+      )));
+    }
+  }
+
+  function startNewChat() {
+    const id = createId('session');
+    window.localStorage.setItem('theone.chatSessionId', id);
+    setChatSessionId(id);
+    setMessages([{
+      ...starterMessage,
+      id: createId('assistant_starter'),
+      createdAt: new Date().toISOString(),
+    }]);
+    setResult(null);
+    setInput('');
+    setAttachments([]);
+    setSelectedWorker(null);
+    setStreamEvents([]);
+    setWorkedMs(null);
+  }
+
   return (
     <main className={inspectorOpen ? 'run-product-shell' : 'run-product-shell inspector-closed'}>
           <aside className="run-session-rail run-product-sidebar" aria-label="TheOne sessions">
@@ -944,7 +1192,8 @@ function RunPageContent() {
               <span>AI OS</span>
             </div>
             <nav className="run-rail-nav">
-              {sessionShortcuts.map((item) => (
+              <button type="button" onClick={startNewChat}>New chat</button>
+              {sessionShortcuts.filter((item) => item.label !== 'New chat').map((item) => (
                 <Link key={item.label} href={item.href}>{item.label}</Link>
               ))}
             </nav>
@@ -971,6 +1220,7 @@ function RunPageContent() {
             <div className="run-rail-footer">
               <Link href="/runs">History</Link>
               <Link href="/settings">Settings</Link>
+              <Link href="/admin">Admin</Link>
             </div>
           </aside>
 
@@ -984,7 +1234,7 @@ function RunPageContent() {
             <div className="run-topbar-actions">
               <span className={`status-pill status-${status}`}>{friendlyStatus(status)}</span>
               <button type="button" className="mini-action" onClick={() => setInspectorOpen((open) => !open)}>
-                {inspectorOpen ? 'Inspector' : 'Show'}
+                {inspectorOpen ? 'Hide inspector' : 'Current work'}
               </button>
             </div>
           </div>
@@ -1021,6 +1271,21 @@ function RunPageContent() {
           <div className="run-composer">
             <div className="run-composer-toolbar">
               <button type="button" onClick={() => setExamplesOpen((open) => !open)} disabled={loading}>/ Commands</button>
+              <button type="button" onClick={() => {
+                setExamplesOpen(true);
+                setCommandQuery('worker');
+              }} disabled={loading}>@ Worker</button>
+              <label className="run-attach-button">
+                Attach
+                <input
+                  type="file"
+                  multiple
+                  onChange={async (event) => {
+                    await handleAttachmentInput(event.target.files);
+                    event.currentTarget.value = '';
+                  }}
+                />
+              </label>
             </div>
             {examplesOpen ? (
               <div className="run-examples-popover">
@@ -1040,6 +1305,7 @@ function RunPageContent() {
                       setExamplesOpen(false);
                       setCommandQuery('');
                       setInput(item.prompt);
+                      setSelectedWorker(item.source === 'worker' ? item : null);
                     }}
                     disabled={loading}
                   >
@@ -1059,11 +1325,22 @@ function RunPageContent() {
                 if (value.startsWith('/')) {
                   setExamplesOpen(true);
                   setCommandQuery(value.slice(1));
+                } else if (value.startsWith('@')) {
+                  setExamplesOpen(true);
+                  setCommandQuery(value.slice(1) || 'worker');
                 }
               }}
               onKeyDown={handleKeyDown}
               placeholder="Ask TheOne to finish a job, call a worker, inspect a site, prepare an X post, check GitHub, use desktop bridge..."
             />
+            {selectedWorker ? (
+              <div className="run-selected-worker">
+                <span>Worker route</span>
+                <strong>{selectedWorker.action || selectedWorker.label}</strong>
+                <small>{selectedWorker.meta}</small>
+                <button type="button" onClick={() => setSelectedWorker(null)}>Clear</button>
+              </div>
+            ) : null}
             <div className="run-composer-actions">
               <div className="run-permission-menu" aria-label="Execution mode">
                 {modes.map((item) => (
@@ -1077,6 +1354,17 @@ function RunPageContent() {
                 {loading ? 'Working...' : 'Send'}
               </button>
             </div>
+            {attachments.length ? (
+              <div className="run-attachment-strip">
+                {attachments.map((attachment) => (
+                  <span key={attachment.id} className={`attachment-${attachment.status}`}>
+                    {attachment.name}
+                    <small>{attachment.status === 'ready' ? 'ready' : attachment.status}</small>
+                  </span>
+                ))}
+                <button type="button" onClick={() => setAttachments([])}>Clear</button>
+              </div>
+            ) : null}
           </div>
           </section>
 
@@ -1113,6 +1401,7 @@ function RunPageContent() {
           </div>
 
           <MissionTimeline result={latestResult} loading={loading} stage={progressStage} />
+          <StreamEventList events={streamEvents} />
 
           <details className="run-side-details">
             <summary>
@@ -1294,19 +1583,6 @@ function RunPageContent() {
             </details>
           ) : null}
 
-          <details className="run-side-details run-admin-details">
-            <summary>
-              <span>Admin tools</span>
-              <strong>hidden</strong>
-            </summary>
-            <div className="run-control-links">
-              <Link href="/apps">Apps</Link>
-              <Link href="/workers">Workers</Link>
-              <Link href="/proof">Proof</Link>
-              <Link href="/approvals">Approvals</Link>
-              <Link href="/admin">Admin</Link>
-            </div>
-          </details>
         </aside>
     </main>
   );

@@ -1,5 +1,6 @@
 import { runTheOneChatRuntime, type TheOneChatRuntimeInput } from '@/lib/theone/chat/chat-runtime';
 import { saveRunResult } from '@/lib/theone/state/run-store';
+import { saveChatSessionSnapshot, type TheOneChatAttachment } from '@/lib/theone/state/chat-session-store';
 import type { TheOneMode } from '@/lib/theone/types';
 
 type ChatRole = 'user' | 'assistant' | 'system';
@@ -85,13 +86,55 @@ function normalizeContextMessage(value: unknown) {
   };
 }
 
-function attachConversation(result: Awaited<ReturnType<typeof runTheOneChatRuntime>>, messages: TheOneChatRuntimeInput['messages']) {
+function normalizeAttachments(value: unknown): TheOneChatAttachment[] {
+  if (!Array.isArray(value)) return [];
+  const attachments: TheOneChatAttachment[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const name = typeof record.name === 'string' ? record.name : '';
+    if (!name) continue;
+    const attachment: TheOneChatAttachment = {
+      id: typeof record.id === 'string' ? record.id : name,
+      name,
+      type: typeof record.type === 'string' ? record.type : 'application/octet-stream',
+      size: typeof record.size === 'number' ? record.size : 0,
+    };
+    if (typeof record.text === 'string') attachment.text = record.text.slice(0, 12000);
+    if (typeof record.textPreview === 'string') attachment.textPreview = record.textPreview.slice(0, 6000);
+    if (typeof record.summary === 'string') attachment.summary = record.summary.slice(0, 1000);
+    attachments.push(attachment);
+  }
+  return attachments.slice(0, 8);
+}
+
+function normalizeAttachmentMessage(value: unknown) {
+  const attachments = normalizeAttachments(value);
+  if (!attachments.length) return null;
+  return {
+    role: 'system' as const,
+    content: [
+      'The user attached files. Use their readable content as context when relevant. Do not claim to inspect binary content unless a worker is routed for it.',
+      ...attachments.map((attachment) => [
+        `Attachment: ${attachment.name}`,
+        `Type: ${attachment.type}`,
+        `Size: ${attachment.size} bytes`,
+        attachment.summary ? `Summary: ${attachment.summary}` : '',
+        attachment.textPreview || attachment.text ? `Content:\n${attachment.textPreview || attachment.text}` : '',
+      ].filter(Boolean).join('\n')),
+    ].join('\n\n'),
+  };
+}
+
+function attachConversation(result: Awaited<ReturnType<typeof runTheOneChatRuntime>>, messages: TheOneChatRuntimeInput['messages'], sessionId?: string) {
   const assistant = (result.chat as any)?.assistant;
   return {
     ...result,
     chat: {
       ...result.chat,
       conversation: {
+        sessionId: sessionId || result.runId,
+        updatedAt: new Date().toISOString(),
         messages: [
           ...(messages || []).filter((message) => message.role !== 'system'),
           assistant?.content ? {
@@ -109,16 +152,39 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const contextMessage = normalizeContextMessage(body.context);
+    const attachmentMessage = normalizeAttachmentMessage(body.attachments);
+    const attachments = normalizeAttachments(body.attachments);
     const messages = normalizeMessages(body.messages);
+    const runtimeMessages = [
+      contextMessage,
+      attachmentMessage,
+      ...messages,
+    ].filter(Boolean) as TheOneChatRuntimeInput['messages'];
     const result = await runTheOneChatRuntime({
-      messages: contextMessage ? [contextMessage, ...messages] : messages,
+      messages: runtimeMessages,
       input: typeof body.input === 'string' ? body.input : undefined,
       mode: normalizeMode(body.mode),
       userId: typeof body.userId === 'string' ? body.userId : undefined,
       sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
     });
-    const withConversation = attachConversation(result, messages);
+    const withConversation = attachConversation(result, messages, typeof body.sessionId === 'string' ? body.sessionId : undefined);
     const stored = await saveRunResult(withConversation);
+    await saveChatSessionSnapshot({
+      sessionId: String((withConversation.chat as any)?.conversation?.sessionId || body.sessionId || stored.runId),
+      runId: stored.runId,
+      mode: stored.os?.mode || normalizeMode(body.mode),
+      title: (withConversation.chat as any)?.mission?.title || stored.intent?.objective || 'TheOne chat',
+      summary: stored.summary,
+      status: stored.ok ? 'active' : 'failed',
+      messages: (withConversation.chat as any)?.conversation?.messages || messages,
+      attachments,
+      metadata: {
+        approvals: stored.approvals?.length || 0,
+        executions: stored.executions?.length || 0,
+        proof: stored.proof?.length || 0,
+        selectedWorker: body.selectedWorker || null,
+      },
+    });
 
     return Response.json({
       ...stored,

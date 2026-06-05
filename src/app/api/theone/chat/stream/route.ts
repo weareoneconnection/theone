@@ -1,5 +1,6 @@
 import { runTheOneChatRuntime, type TheOneChatRuntimeInput } from '@/lib/theone/chat/chat-runtime';
 import { saveRunResult } from '@/lib/theone/state/run-store';
+import { saveChatSessionSnapshot, type TheOneChatAttachment } from '@/lib/theone/state/chat-session-store';
 import type { TheOneMode } from '@/lib/theone/types';
 
 type ChatRole = 'user' | 'assistant' | 'system';
@@ -85,13 +86,55 @@ function normalizeContextMessage(value: unknown) {
   };
 }
 
-function attachConversation(result: Awaited<ReturnType<typeof runTheOneChatRuntime>>, messages: TheOneChatRuntimeInput['messages']) {
+function normalizeAttachments(value: unknown): TheOneChatAttachment[] {
+  if (!Array.isArray(value)) return [];
+  const attachments: TheOneChatAttachment[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const name = typeof record.name === 'string' ? record.name : '';
+    if (!name) continue;
+    const attachment: TheOneChatAttachment = {
+      id: typeof record.id === 'string' ? record.id : name,
+      name,
+      type: typeof record.type === 'string' ? record.type : 'application/octet-stream',
+      size: typeof record.size === 'number' ? record.size : 0,
+    };
+    if (typeof record.text === 'string') attachment.text = record.text.slice(0, 12000);
+    if (typeof record.textPreview === 'string') attachment.textPreview = record.textPreview.slice(0, 6000);
+    if (typeof record.summary === 'string') attachment.summary = record.summary.slice(0, 1000);
+    attachments.push(attachment);
+  }
+  return attachments.slice(0, 8);
+}
+
+function normalizeAttachmentMessage(value: unknown) {
+  const attachments = normalizeAttachments(value);
+  if (!attachments.length) return null;
+  return {
+    role: 'system' as const,
+    content: [
+      'The user attached files. Use their readable content as context when relevant. Do not claim to inspect binary content unless a worker is routed for it.',
+      ...attachments.map((attachment) => [
+        `Attachment: ${attachment.name}`,
+        `Type: ${attachment.type}`,
+        `Size: ${attachment.size} bytes`,
+        attachment.summary ? `Summary: ${attachment.summary}` : '',
+        attachment.textPreview || attachment.text ? `Content:\n${attachment.textPreview || attachment.text}` : '',
+      ].filter(Boolean).join('\n')),
+    ].join('\n\n'),
+  };
+}
+
+function attachConversation(result: Awaited<ReturnType<typeof runTheOneChatRuntime>>, messages: TheOneChatRuntimeInput['messages'], sessionId?: string) {
   const assistant = (result.chat as any)?.assistant;
   return {
     ...result,
     chat: {
       ...result.chat,
       conversation: {
+        sessionId: sessionId || result.runId,
+        updatedAt: new Date().toISOString(),
         messages: [
           ...(messages || []).filter((message) => message.role !== 'system'),
           assistant?.content ? {
@@ -110,6 +153,64 @@ function send(controller: ReadableStreamDefaultController<Uint8Array>, event: st
   controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
 }
 
+function streamAnswer(controller: ReadableStreamDefaultController<Uint8Array>, content: string) {
+  const chunks = content.match(/.{1,18}(\s|$)|\S+(\s|$)/g) || [content];
+  for (const chunk of chunks) {
+    send(controller, 'answer_delta', { text: chunk });
+  }
+}
+
+function emitRuntimeEvents(controller: ReadableStreamDefaultController<Uint8Array>, result: any) {
+  const workflow = result?.chat?.oneAiWorkflow;
+  const steps = Array.isArray(workflow?.steps) ? workflow.steps : [];
+  send(controller, 'plan_delta', {
+    summary: workflow?.summary || result?.summary || 'TheOne prepared the route.',
+    steps: steps.map((step: any) => ({
+      id: step.id,
+      title: step.title || step.action || 'Workflow step',
+      action: step.action,
+      worker: step.worker || step.owner,
+      status: step.status || step.approvalMode || 'ready',
+    })).slice(0, 12),
+  });
+
+  if (result?.pendingOneClawTask) {
+    send(controller, 'tool_start', {
+      taskName: result.pendingOneClawTask.taskName,
+      approvalMode: result.pendingOneClawTask.approvalMode,
+      steps: result.pendingOneClawTask.steps || [],
+    });
+  }
+
+  for (const approval of (Array.isArray(result?.approvals) ? result.approvals : []).filter((item: any) => item?.required && item?.status === 'pending')) {
+    send(controller, 'approval_required', {
+      id: approval.id,
+      action: approval.action,
+      reason: approval.reason,
+      risk: approval.risk,
+    });
+  }
+
+  for (const execution of (Array.isArray(result?.executions) ? result.executions : []).slice(-6)) {
+    send(controller, 'tool_result', {
+      provider: execution.provider,
+      taskName: execution.taskName || execution.action,
+      status: execution.status,
+      summary: execution.summary,
+      externalId: execution.externalId,
+    });
+  }
+
+  for (const proof of (Array.isArray(result?.proof) ? result.proof : []).slice(-6)) {
+    send(controller, 'proof_recorded', {
+      type: proof.type,
+      title: proof.title,
+      value: proof.value,
+      timestamp: proof.timestamp,
+    });
+  }
+}
+
 export async function POST(req: Request) {
   const body = await req.json();
 
@@ -117,8 +218,14 @@ export async function POST(req: Request) {
     async start(controller) {
       try {
         const contextMessage = normalizeContextMessage(body.context);
+        const attachmentMessage = normalizeAttachmentMessage(body.attachments);
+        const attachments = normalizeAttachments(body.attachments);
         const messages = normalizeMessages(body.messages);
-        const runtimeMessages = contextMessage ? [contextMessage, ...messages] : messages;
+        const runtimeMessages = [
+          contextMessage,
+          attachmentMessage,
+          ...messages,
+        ].filter(Boolean) as TheOneChatRuntimeInput['messages'];
 
         send(controller, 'stage', { index: 0, label: 'Understanding', detail: 'TheOne is reading the request.' });
         send(controller, 'stage', { index: 1, label: 'Planning', detail: 'OneAI is building the workflow route.' });
@@ -135,14 +242,33 @@ export async function POST(req: Request) {
         send(controller, 'stage', { index: 3, label: 'Calling workers', detail: result.pendingOneClawTask ? 'OneClaw route prepared or called.' : 'No external worker was needed.' });
         send(controller, 'stage', { index: 4, label: 'Reading proof', detail: 'Receipts, proof, and memory are being attached.' });
 
-        const withConversation = attachConversation(result, messages);
+        const sessionId = typeof body.sessionId === 'string' ? body.sessionId : undefined;
+        const withConversation = attachConversation(result, messages, sessionId);
         const stored = await saveRunResult(withConversation);
+        await saveChatSessionSnapshot({
+          sessionId: String((withConversation.chat as any)?.conversation?.sessionId || sessionId || stored.runId),
+          runId: stored.runId,
+          mode: stored.os?.mode || normalizeMode(body.mode),
+          title: (withConversation.chat as any)?.mission?.title || stored.intent?.objective || 'TheOne chat',
+          summary: stored.summary,
+          status: stored.ok ? 'active' : 'failed',
+          messages: (withConversation.chat as any)?.conversation?.messages || messages,
+          attachments,
+          metadata: {
+            approvals: stored.approvals?.length || 0,
+            executions: stored.executions?.length || 0,
+            proof: stored.proof?.length || 0,
+            selectedWorker: body.selectedWorker || null,
+          },
+        });
         const output = {
           ...stored,
           chat: withConversation.chat,
         };
 
+        emitRuntimeEvents(controller, output);
         send(controller, 'stage', { index: 5, label: 'Writing answer', detail: 'TheOne is returning a readable answer.' });
+        streamAnswer(controller, String((withConversation.chat as any)?.assistant?.content || withConversation.summary || ''));
         send(controller, 'result', output);
       } catch (error) {
         send(controller, 'error', {
