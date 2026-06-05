@@ -105,41 +105,61 @@ function attachConversation(result: Awaited<ReturnType<typeof runTheOneChatRunti
   };
 }
 
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-    const contextMessage = normalizeContextMessage(body.context);
-    const messages = normalizeMessages(body.messages);
-    const result = await runTheOneChatRuntime({
-      messages: contextMessage ? [contextMessage, ...messages] : messages,
-      input: typeof body.input === 'string' ? body.input : undefined,
-      mode: normalizeMode(body.mode),
-      userId: typeof body.userId === 'string' ? body.userId : undefined,
-      sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
-    });
-    const withConversation = attachConversation(result, messages);
-    const stored = await saveRunResult(withConversation);
+function send(controller: ReadableStreamDefaultController<Uint8Array>, event: string, data: unknown) {
+  const encoder = new TextEncoder();
+  controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+}
 
-    return Response.json({
-      ...stored,
-      chat: withConversation.chat,
-    }, {
-      status: stored.ok ? 200 : 500,
-    });
-  } catch (error) {
-    return Response.json({
-      ok: false,
-      error: error instanceof Error ? error.message : 'TheOne Chat Runtime failed.',
-      chat: {
-        runtime: 'theone.chat_runtime.v1',
-        assistant: {
-          role: 'assistant',
-          content: 'TheOne could not start the intelligent chat workflow.',
-          createdAt: new Date().toISOString(),
-        },
-      },
-    }, {
-      status: 500,
-    });
-  }
+export async function POST(req: Request) {
+  const body = await req.json();
+
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        const contextMessage = normalizeContextMessage(body.context);
+        const messages = normalizeMessages(body.messages);
+        const runtimeMessages = contextMessage ? [contextMessage, ...messages] : messages;
+
+        send(controller, 'stage', { index: 0, label: 'Understanding', detail: 'TheOne is reading the request.' });
+        send(controller, 'stage', { index: 1, label: 'Planning', detail: 'OneAI is building the workflow route.' });
+        send(controller, 'stage', { index: 2, label: 'Checking policy', detail: 'TheOne is validating mode, risk, approvals, and worker access.' });
+
+        const result = await runTheOneChatRuntime({
+          messages: runtimeMessages,
+          input: typeof body.input === 'string' ? body.input : undefined,
+          mode: normalizeMode(body.mode),
+          userId: typeof body.userId === 'string' ? body.userId : undefined,
+          sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
+        });
+
+        send(controller, 'stage', { index: 3, label: 'Calling workers', detail: result.pendingOneClawTask ? 'OneClaw route prepared or called.' : 'No external worker was needed.' });
+        send(controller, 'stage', { index: 4, label: 'Reading proof', detail: 'Receipts, proof, and memory are being attached.' });
+
+        const withConversation = attachConversation(result, messages);
+        const stored = await saveRunResult(withConversation);
+        const output = {
+          ...stored,
+          chat: withConversation.chat,
+        };
+
+        send(controller, 'stage', { index: 5, label: 'Writing answer', detail: 'TheOne is returning a readable answer.' });
+        send(controller, 'result', output);
+      } catch (error) {
+        send(controller, 'error', {
+          ok: false,
+          error: error instanceof Error ? error.message : 'TheOne Chat stream failed.',
+        });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+    },
+  });
 }

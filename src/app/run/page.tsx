@@ -93,6 +93,58 @@ function createId(prefix: string) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
+async function postChatWithStream(
+  payload: Record<string, unknown>,
+  onStage: (stage: number) => void
+) {
+  const response = await fetch('/api/theone/chat/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error('TheOne stream unavailable.');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalResult: any = null;
+  let streamError = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const packets = buffer.split('\n\n');
+    buffer = packets.pop() || '';
+
+    for (const packet of packets) {
+      const event = packet.match(/^event:\s*(.+)$/m)?.[1]?.trim();
+      const dataLine = packet.match(/^data:\s*(.+)$/m)?.[1];
+      if (!event || !dataLine) continue;
+      const data = JSON.parse(dataLine);
+      if (event === 'stage') onStage(Number(data.index || 0));
+      if (event === 'result') finalResult = data;
+      if (event === 'error') streamError = data.error || 'TheOne stream failed.';
+    }
+  }
+
+  if (streamError) throw new Error(streamError);
+  if (!finalResult) throw new Error('TheOne stream finished without a result.');
+  return finalResult;
+}
+
+async function postChatJson(payload: Record<string, unknown>) {
+  const response = await fetch('/api/theone/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return response.json();
+}
+
 function plainResult(result: any) {
   const assistant = result?.chat?.assistant?.content;
   if (assistant) return assistant;
@@ -577,6 +629,35 @@ function ToolTrace({ result }: { result: any }) {
   );
 }
 
+function WorkerCallCards({ result }: { result: any }) {
+  const executions = Array.isArray(result?.executions) ? result.executions : [];
+  if (!executions.length) return null;
+
+  return (
+    <div className="run-worker-call-cards">
+      {executions.slice(-4).map((execution: any, index: number) => {
+        const status = friendlyStatus(execution.status || 'ready');
+        const taskName = execution.taskName || execution.action || execution.provider || 'worker.call';
+        const receipt = execution.receipt || execution.raw?.receipt || execution.raw?.normalizedReceipt || execution.raw;
+        return (
+          <details key={execution.id || `${taskName}_${index}`} className="run-worker-call-card">
+            <summary>
+              <span>{execution.provider || 'worker'}</span>
+              <strong>{taskName}</strong>
+              <small>{status}</small>
+            </summary>
+            <div>
+              <p>{execution.summary || 'The worker returned a receipt for this mission.'}</p>
+              {execution.externalId ? <code>{execution.externalId}</code> : null}
+              {receipt ? <pre>{JSON.stringify(receipt, null, 2).slice(0, 1800)}</pre> : null}
+            </div>
+          </details>
+        );
+      })}
+    </div>
+  );
+}
+
 function RunPageContent() {
   const searchParams = useSearchParams();
   const [input, setInput] = useState('');
@@ -657,16 +738,32 @@ function RunPageContent() {
       .then((data) => {
         if (!data?.runId) return;
         setResult(data);
-        setMessages((current) => ([
-          ...current,
-          {
-            id: createId('assistant_resume'),
-            role: 'assistant',
-            content: `I loaded mission ${data.runId}. Tell me what to change, retry, summarize, or continue.`,
-            createdAt: new Date().toISOString(),
-            result: data,
-          },
-        ]));
+        const restoredMessages = Array.isArray(data?.chat?.conversation?.messages)
+          ? data.chat.conversation.messages
+            .filter((message: any) => message?.role === 'user' || message?.role === 'assistant' || message?.role === 'system')
+            .map((message: any, index: number) => ({
+              id: createId(`restored_${index}`),
+              role: message.role,
+              content: String(message.content || ''),
+              createdAt: message.createdAt || new Date().toISOString(),
+              result: index === data.chat.conversation.messages.length - 1 && message.role === 'assistant' ? data : undefined,
+            }))
+            .filter((message: ConversationMessage) => message.content.trim())
+          : [];
+        if (restoredMessages.length) {
+          setMessages(restoredMessages);
+        } else {
+          setMessages((current) => ([
+            ...current,
+            {
+              id: createId('assistant_resume'),
+              role: 'assistant',
+              content: `I loaded mission ${data.runId}. Tell me what to change, retry, summarize, or continue.`,
+              createdAt: new Date().toISOString(),
+              result: data,
+            },
+          ]));
+        }
       })
       .catch(() => undefined);
   }, [searchParams, result]);
@@ -730,28 +827,29 @@ function RunPageContent() {
         return;
       }
 
-      const res = await fetch('/api/theone/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          input: content,
-          mode,
-          language: 'en',
-          context: latestResult?.chat ? {
-            runId: latestResult.runId,
-            mission: latestResult.chat.mission,
-            workerRuntime: latestResult.chat.workerRuntime,
-            missionState: latestResult.chat.missionState || latestResult.chat.workerRuntime?.missionState,
-            continuity: latestResult.chat.continuity,
-            pendingOneClawTask: latestResult.pendingOneClawTask,
-            approvals: latestResult.approvals,
-            executions: latestResult.executions,
-            lastAssistant: latestResult.chat.assistant?.content || latestResult.summary,
-          } : undefined,
-          messages: nextMessages.map((message) => ({ role: message.role, content: message.content })),
-        }),
-      });
-      const data = await res.json();
+      const payload = {
+        input: content,
+        mode,
+        language: 'en',
+        context: latestResult?.chat ? {
+          runId: latestResult.runId,
+          mission: latestResult.chat.mission,
+          workerRuntime: latestResult.chat.workerRuntime,
+          missionState: latestResult.chat.missionState || latestResult.chat.workerRuntime?.missionState,
+          continuity: latestResult.chat.continuity,
+          pendingOneClawTask: latestResult.pendingOneClawTask,
+          approvals: latestResult.approvals,
+          executions: latestResult.executions,
+          lastAssistant: latestResult.chat.assistant?.content || latestResult.summary,
+        } : undefined,
+        messages: nextMessages.map((message) => ({ role: message.role, content: message.content })),
+      };
+      let data: any;
+      try {
+        data = await postChatWithStream(payload, (stage) => setProgressStage(stage));
+      } catch {
+        data = await postChatJson(payload);
+      }
       setResult(data);
       setMessages((current) => ([
         ...current,
@@ -908,6 +1006,7 @@ function RunPageContent() {
                   </div>
                 ) : null}
                 {message.role === 'assistant' && message.result ? <ToolTrace result={message.result} /> : null}
+                {message.role === 'assistant' && message.result ? <WorkerCallCards result={message.result} /> : null}
                 {message.role === 'assistant' && message.result ? (
                   <ApprovalCard result={message.result} busy={loading} onDecision={decideApproval} />
                 ) : null}
@@ -1068,6 +1167,7 @@ function RunPageContent() {
               <button type="button" disabled={loading} onClick={() => sendMessage('turn the current result into a concise report')}>Report</button>
               <button type="button" disabled={loading} onClick={() => sendMessage('save this to TheOne memory')}>Save</button>
             </div>
+            <WorkerCallCards result={latestResult} />
           </details>
 
           <details className="run-side-details">
