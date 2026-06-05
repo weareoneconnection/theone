@@ -2899,7 +2899,7 @@ button, input, textarea { font: inherit; }
   width: 100%;
 }
 
-.run-agent-progress div {
+.run-agent-progress > div:first-child {
   align-items: center;
   color: rgba(255,255,255,0.45);
   display: grid;
@@ -2907,22 +2907,57 @@ button, input, textarea { font: inherit; }
   grid-template-columns: 34px minmax(0, 1fr);
 }
 
-.run-agent-progress div.active {
-  color: rgba(255,255,255,0.88);
-}
-
-.run-agent-progress div.done {
-  color: rgba(98,215,196,0.82);
-}
-
 .run-agent-progress span {
-  color: inherit;
+  color: var(--accent);
   font-size: 11px;
   font-weight: 900;
 }
 
 .run-agent-progress strong {
+  color: rgba(255,255,255,0.88);
   font-size: 13px;
+  line-height: 1.35;
+}
+
+.run-progress-dots {
+  display: flex;
+  gap: 5px;
+}
+
+.run-progress-dots i {
+  background: rgba(255,255,255,0.16);
+  border-radius: 999px;
+  display: block;
+  height: 4px;
+  width: 34px;
+}
+
+.run-progress-dots i.active {
+  background: rgba(98,215,196,0.76);
+}
+
+.run-work-status-line {
+  align-items: center;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.62);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 10px;
+}
+
+.run-work-status-line span {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.run-work-status-line strong {
+  color: rgba(255,255,255,0.68);
+  font-size: 12px;
+  font-weight: 850;
   line-height: 1.35;
 }
 
@@ -3233,6 +3268,7 @@ button, input, textarea { font: inherit; }
   display: grid;
   gap: 12px;
   padding: 14px;
+  position: relative;
 }
 
 .run-composer-toolbar {
@@ -3264,6 +3300,61 @@ button, input, textarea { font: inherit; }
   color: rgba(255,255,255,0.5);
   font-size: 13px;
   font-weight: 800;
+}
+
+.run-examples-popover {
+  background: rgba(12,14,18,0.98);
+  border: 1px solid rgba(98,215,196,0.28);
+  border-radius: 8px;
+  bottom: calc(100% - 6px);
+  box-shadow: 0 24px 70px rgba(0,0,0,0.45);
+  display: grid;
+  gap: 8px;
+  left: 14px;
+  max-height: min(520px, 58vh);
+  overflow: auto;
+  padding: 12px;
+  position: absolute;
+  width: min(560px, calc(100% - 28px));
+  z-index: 10;
+}
+
+.run-examples-popover button,
+.run-side-action-grid button {
+  background: rgba(255,255,255,0.045);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  color: var(--text);
+  cursor: pointer;
+  display: grid;
+  gap: 5px;
+  padding: 11px;
+  text-align: left;
+}
+
+.run-examples-popover button:hover,
+.run-side-action-grid button:hover {
+  border-color: rgba(98,215,196,0.5);
+}
+
+.run-examples-popover button:disabled,
+.run-side-action-grid button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.run-examples-popover span {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.run-examples-popover strong {
+  color: rgba(255,255,255,0.86);
+  font-size: 13px;
+  line-height: 1.35;
 }
 
 .run-orchestrator-card {
@@ -3416,6 +3507,19 @@ button, input, textarea { font: inherit; }
 
 .run-worker-row {
   grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.run-side-action-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.run-side-action-grid button {
+  color: rgba(255,255,255,0.86);
+  font-size: 13px;
+  font-weight: 850;
+  text-align: center;
 }
 
 .run-control-links {

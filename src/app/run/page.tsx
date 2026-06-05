@@ -64,16 +64,16 @@ const starterMessage: ConversationMessage = {
   id: 'assistant_starter',
   role: 'assistant',
   createdAt: new Date().toISOString(),
-  content: 'Tell me the outcome you want. I will ask OneAI to build the workflow, route the right workers, check policy, call OneClaw when needed, and keep the proof trail readable.',
+  content: 'Tell me what you want finished. I can answer directly, plan a workflow, call OneClaw workers, ask for approval when needed, and return a clear result with proof.',
 };
 
 const liveProgressStages = [
-  'Understanding the outcome',
-  'Selecting the app and worker route',
-  'Checking policy and mission state',
-  'Calling workers when allowed',
-  'Reading receipts and writing proof',
-  'Preparing the answer',
+  'Understanding',
+  'Planning',
+  'Checking policy',
+  'Calling workers',
+  'Reading proof',
+  'Writing answer',
 ];
 
 function createId(prefix: string) {
@@ -129,6 +129,21 @@ function approvalReason(result: any) {
 
 function evidenceText(result: any) {
   return result?.chat?.workerCoordination?.workerResultText || '';
+}
+
+function workStatusLine(result: any) {
+  if (!result?.chat && !result?.runId) return null;
+  const steps = workflowSteps(result).length || result?.plan?.steps?.length || 0;
+  const executions = result?.executions?.length || 0;
+  const proof = result?.proof?.length || result?.proofRecords?.length || 0;
+  const approvals = pendingApprovals(result).length;
+  const pieces = [
+    steps ? `${steps} plan step${steps === 1 ? '' : 's'}` : null,
+    executions ? `${executions} worker call${executions === 1 ? '' : 's'}` : null,
+    proof ? `${proof} proof record${proof === 1 ? '' : 's'}` : null,
+    approvals ? `${approvals} approval${approvals === 1 ? '' : 's'} waiting` : null,
+  ].filter(Boolean);
+  return pieces.length ? pieces.join(' · ') : 'Answered directly';
 }
 
 function latestAssistantResult(messages: ConversationMessage[]) {
@@ -237,12 +252,26 @@ function missionQuickCommand(content: string, result: any) {
 function AgentProgress({ stage }: { stage: number }) {
   return (
     <div className="run-agent-progress" aria-live="polite">
-      {liveProgressStages.map((label, index) => (
-        <div key={label} className={index < stage ? 'done' : index === stage ? 'active' : ''}>
-          <span>{String(index + 1).padStart(2, '0')}</span>
-          <strong>{label}</strong>
-        </div>
-      ))}
+      <div>
+        <span>{String(Math.min(stage + 1, liveProgressStages.length)).padStart(2, '0')}</span>
+        <strong>{liveProgressStages[Math.min(stage, liveProgressStages.length - 1)]}</strong>
+      </div>
+      <div className="run-progress-dots">
+        {liveProgressStages.map((label, index) => (
+          <i key={label} className={index <= stage ? 'active' : ''} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WorkStatusLine({ result }: { result: any }) {
+  const text = workStatusLine(result);
+  if (!text) return null;
+  return (
+    <div className="run-work-status-line">
+      <span>Work</span>
+      <strong>{text}</strong>
     </div>
   );
 }
@@ -376,6 +405,7 @@ function RunPageContent() {
   const [messages, setMessages] = useState<ConversationMessage[]>([starterMessage]);
   const [result, setResult] = useState<any>(null);
   const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [examplesOpen, setExamplesOpen] = useState(false);
   const threadRef = useRef<HTMLDivElement | null>(null);
 
   const status = activeStatus(result, loading);
@@ -655,7 +685,7 @@ function RunPageContent() {
                   <small>{new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small>
                 </div>
                 <p>{message.content}</p>
-                {message.role === 'assistant' && message.result ? <PlanChecklist result={message.result} /> : null}
+                {message.role === 'assistant' && message.result ? <WorkStatusLine result={message.result} /> : null}
                 {message.result?.appRoute ? (
                   <div className="run-message-route">
                     <span>{message.result.appRoute.title}</span>
@@ -676,11 +706,30 @@ function RunPageContent() {
 
           <div className="run-composer">
             <div className="run-composer-toolbar">
+              <button type="button" onClick={() => setExamplesOpen((open) => !open)} disabled={loading}>Examples</button>
               <button type="button" onClick={() => setInput('continue')} disabled={loading || !latestResult?.runId}>Continue mission</button>
               <button type="button" onClick={() => setInput('approve')} disabled={loading || !pendingApprovals(latestResult).length}>Approve</button>
               <button type="button" onClick={() => setInput('retry')} disabled={loading || !latestResult?.runId}>Retry</button>
               <button type="button" onClick={() => setInput('turn the current result into a report')} disabled={loading}>Report</button>
             </div>
+            {examplesOpen ? (
+              <div className="run-examples-popover">
+                {workerPrompts.map((item) => (
+                  <button
+                    key={item.label}
+                    type="button"
+                    onClick={() => {
+                      setExamplesOpen(false);
+                      setInput(item.prompt);
+                    }}
+                    disabled={loading}
+                  >
+                    <span>{item.label}</span>
+                    <strong>{item.prompt}</strong>
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <textarea
               value={input}
               onChange={(event) => setInput(event.target.value)}
@@ -690,7 +739,7 @@ function RunPageContent() {
             <div className="run-composer-actions">
               <span>Cmd/Ctrl + Enter to run</span>
               <button className="run-button" type="button" onClick={() => sendMessage()} disabled={loading || !input.trim()}>
-                {loading ? 'Coordinating...' : 'Send'}
+                {loading ? 'Working...' : 'Send'}
               </button>
             </div>
           </div>
@@ -728,8 +777,11 @@ function RunPageContent() {
             ) : null}
           </div>
 
-          <div className="run-mission-card">
-            <span className="product-card-kicker">Plan checklist</span>
+          <details className="run-side-details" open={currentSteps.length > 0}>
+            <summary>
+              <span>Plan</span>
+              <strong>{currentSteps.length || 1}</strong>
+            </summary>
             <div className="run-current-plan">
               {(currentSteps.length ? currentSteps.slice(0, 6) : [{ id: 'ready', title: 'Describe an outcome', status: 'ready' }]).map((step: any, index: number) => (
                 <div key={step.id || index}>
@@ -738,7 +790,7 @@ function RunPageContent() {
                 </div>
               ))}
             </div>
-          </div>
+          </details>
 
           {workerRuntime ? (
             <div className="run-mission-card">
@@ -767,9 +819,22 @@ function RunPageContent() {
             </div>
           ) : null}
 
+          <details className="run-side-details" open={pendingApprovals(latestResult).length > 0}>
+            <summary>
+              <span>Actions</span>
+              <strong>{pendingApprovals(latestResult).length ? 'decision' : 'ready'}</strong>
+            </summary>
+            <div className="run-side-action-grid">
+              <button type="button" disabled={loading || !latestResult?.runId} onClick={() => sendMessage('continue')}>Continue</button>
+              <button type="button" disabled={loading || !latestResult?.runId} onClick={() => sendMessage('retry')}>Retry</button>
+              <button type="button" disabled={loading} onClick={() => sendMessage('turn the current result into a concise report')}>Report</button>
+              <button type="button" disabled={loading} onClick={() => sendMessage('save this to TheOne memory')}>Save</button>
+            </div>
+          </details>
+
           <details className="run-side-details">
             <summary>
-              <span>Workflow detail</span>
+              <span>Details</span>
               <strong>{workflowSteps(latestResult).length || 1}</strong>
             </summary>
             <strong>{workflow?.summary || 'Waiting for a goal.'}</strong>
@@ -824,21 +889,6 @@ function RunPageContent() {
               <strong>{stats.proof}</strong>
             </div>
           </div>
-
-          <details className="run-side-details">
-            <summary>
-              <span>Examples</span>
-              <strong>{workerPrompts.length}</strong>
-            </summary>
-            <div className="run-side-examples">
-              {workerPrompts.map((item) => (
-                <button key={item.label} type="button" onClick={() => sendMessage(item.prompt)} disabled={loading}>
-                  <span>{item.label}</span>
-                  <strong>{item.prompt}</strong>
-                </button>
-              ))}
-            </div>
-          </details>
 
           <details className="run-side-details">
             <summary>
