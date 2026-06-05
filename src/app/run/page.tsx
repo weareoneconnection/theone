@@ -17,6 +17,21 @@ type ConversationMessage = {
   result?: any;
 };
 
+type CommandItem = {
+  key: string;
+  label: string;
+  prompt: string;
+  meta: string;
+  source: 'template' | 'worker';
+};
+
+type TimelineItem = {
+  key: string;
+  title: string;
+  detail: string;
+  status: 'ready' | 'running' | 'done' | 'blocked' | 'waiting';
+};
+
 const workerPrompts = [
   {
     label: 'Web research',
@@ -54,8 +69,8 @@ const workerPrompts = [
 
 const sessionShortcuts = [
   { label: 'New chat', href: '/run' },
-  { label: 'History', href: '/runs' },
-  { label: 'Settings', href: '/settings' },
+  { label: 'Search', href: '/runs' },
+  { label: 'Workspaces', href: '/workspaces' },
 ];
 
 const starterMessage: ConversationMessage = {
@@ -154,6 +169,114 @@ function conversationTitle(result: any, messages: ConversationMessage[]) {
     result?.chat?.brain?.objective ||
     result?.intent?.objective ||
     (latestUser ? latestUser.slice(0, 92) : 'New TheOne mission');
+}
+
+function formatDuration(ms?: number | null) {
+  if (!ms) return 'Ready';
+  const seconds = Math.max(1, Math.round(ms / 1000));
+  if (seconds < 60) return `Worked for ${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `Worked for ${minutes}m ${rest}s`;
+}
+
+function formatRelativeTime(value?: string) {
+  if (!value) return 'recent';
+  const time = new Date(value).getTime();
+  if (!Number.isFinite(time)) return 'recent';
+  const diff = Date.now() - time;
+  const minutes = Math.max(0, Math.round(diff / 60000));
+  if (minutes < 1) return 'now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+function runIdOf(run: any) {
+  return run?.runId || run?.id || run?.taskId || '';
+}
+
+function runTitleOf(run: any) {
+  return run?.title ||
+    run?.taskName ||
+    run?.chat?.mission?.title ||
+    run?.metadata?.normalizedTask?.taskName ||
+    run?.summary ||
+    runIdOf(run) ||
+    'TheOne mission';
+}
+
+function templateCommands(): CommandItem[] {
+  return workerPrompts.map((item) => ({
+    key: `template:${item.label}`,
+    label: item.label,
+    prompt: item.prompt,
+    meta: 'starter',
+    source: 'template' as const,
+  }));
+}
+
+function promptForWorker(action: string, title?: string) {
+  if (/browser\.extract|browser\.scrape|search\.web/i.test(action)) return `Use ${action} to analyze https://weareoneconnection.org and summarize useful findings`;
+  if (/social\.post|x\./i.test(action)) return `Use ${action} to prepare a high-signal X workflow and wait for approval when needed`;
+  if (/git\./i.test(action)) return `Use ${action} for repo weareoneconnection/theone and explain what needs attention`;
+  if (/desktop\./i.test(action)) return `Use ${action} through the local desktop bridge for Google Chrome`;
+  if (/file\.|document\.|spreadsheet\./i.test(action)) return `Use ${action} to inspect files and summarize the result`;
+  if (/api\.|webhook|health/i.test(action)) return `Use ${action} to call the OneClaw health API and summarize the response`;
+  return `Use ${action || title || 'this worker'} to help finish my task`;
+}
+
+function normalizeWorkerCommands(payload: any): CommandItem[] {
+  const workers = Array.isArray(payload?.workers) ? payload.workers : [];
+  const commands: CommandItem[] = [];
+  for (const worker of workers) {
+    const rawActions = Array.isArray(worker?.actions)
+      ? worker.actions
+      : Array.isArray(worker?.capabilities)
+        ? worker.capabilities
+        : worker?.action
+          ? [worker.action]
+          : [];
+    for (const raw of rawActions) {
+      const action = typeof raw === 'string' ? raw : raw?.action || raw?.name || raw?.key;
+      if (!action) continue;
+      const title = typeof raw === 'string' ? worker?.title || worker?.name : raw?.title || worker?.title || worker?.name;
+      const status = raw?.liveMode || raw?.maturity || worker?.status || worker?.mode || 'worker';
+      commands.push({
+        key: `worker:${worker?.key || worker?.id || worker?.name || 'oneclaw'}:${action}`,
+        label: title || action,
+        prompt: promptForWorker(action, title),
+        meta: `${action} · ${friendlyStatus(status)}${raw?.approvalRequired || worker?.approvalRequired ? ' · approval' : ''}`,
+        source: 'worker',
+      });
+    }
+  }
+  return commands;
+}
+
+function missionTimeline(result: any, loading: boolean, stage: number): TimelineItem[] {
+  const hasResult = Boolean(result?.chat || result?.runId || result?.ok !== undefined);
+  const blocked = result?.ok === false || activeStatus(result, loading) === 'blocked';
+  const approvals = pendingApprovals(result).length;
+  const executions = result?.executions?.length || 0;
+  const proof = result?.proof?.length || result?.proofRecords?.length || 0;
+  const current = Math.min(stage, 5);
+  const timed = (index: number): TimelineItem['status'] => {
+    if (blocked && index >= Math.max(2, current)) return 'blocked';
+    if (loading && index === current) return 'running';
+    if (loading && index > current) return 'waiting';
+    return hasResult ? 'done' : index === 0 ? 'ready' : 'waiting';
+  };
+
+  return [
+    { key: 'intent', title: 'Understand goal', detail: result?.chat?.brain?.objective || 'Turn the message into an outcome.', status: timed(0) },
+    { key: 'plan', title: 'Build workflow', detail: result?.chat?.oneAiWorkflow?.summary || 'OneAI creates a structured route.', status: timed(1) },
+    { key: 'policy', title: approvals ? 'Approval gate' : 'Policy cleared', detail: approvals ? `${approvals} decision waiting.` : 'TheOne validates risk and mode.', status: approvals ? 'blocked' : timed(2) },
+    { key: 'worker', title: executions ? 'Worker called' : 'Prepare worker', detail: executions ? `${executions} execution record(s).` : 'OneClaw route is selected when needed.', status: timed(3) },
+    { key: 'proof', title: proof ? 'Proof stored' : 'Collect proof', detail: proof ? `${proof} proof record(s).` : 'Receipts and evidence are attached.', status: timed(4) },
+    { key: 'answer', title: 'Return answer', detail: hasResult ? 'Readable result is shown in chat.' : 'TheOne will answer when the route completes.', status: timed(5) },
+  ];
 }
 
 function workflowSteps(result: any) {
@@ -264,6 +387,35 @@ function AgentProgress({ stage }: { stage: number }) {
           <i key={label} className={index <= stage ? 'active' : ''} />
         ))}
       </div>
+    </div>
+  );
+}
+
+function MissionTimeline({
+  result,
+  loading,
+  stage,
+}: {
+  result: any;
+  loading: boolean;
+  stage: number;
+}) {
+  const items = missionTimeline(result, loading, stage);
+  return (
+    <div className="run-mission-timeline">
+      <div className="run-timeline-head">
+        <span>Mission timeline</span>
+        <strong>{loading ? liveProgressStages[Math.min(stage, liveProgressStages.length - 1)] : activeStatus(result, loading)}</strong>
+      </div>
+      {items.map((item, index) => (
+        <div key={item.key} className={`run-timeline-item timeline-${item.status}`}>
+          <small>{String(index + 1).padStart(2, '0')}</small>
+          <div>
+            <strong>{item.title}</strong>
+            <span>{item.detail}</span>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -436,6 +588,9 @@ function RunPageContent() {
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [examplesOpen, setExamplesOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
+  const [runHistory, setRunHistory] = useState<any[]>([]);
+  const [workerCommands, setWorkerCommands] = useState<CommandItem[]>([]);
+  const [workedMs, setWorkedMs] = useState<number | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
 
   const status = activeStatus(result, loading);
@@ -456,10 +611,11 @@ function RunPageContent() {
   const currentSteps = activeWorkflowSteps(latestResult);
   const title = conversationTitle(latestResult, messages);
   const hasUserMessages = messages.some((message) => message.role === 'user');
-  const filteredPrompts = workerPrompts.filter((item) => {
+  const commands = [...templateCommands(), ...workerCommands];
+  const filteredPrompts = commands.filter((item) => {
     const query = commandQuery.trim().toLowerCase();
     if (!query) return true;
-    return `${item.label} ${item.prompt}`.toLowerCase().includes(query);
+    return `${item.label} ${item.prompt} ${item.meta}`.toLowerCase().includes(query);
   });
 
   useEffect(() => {
@@ -477,6 +633,21 @@ function RunPageContent() {
     }, 850);
     return () => window.clearInterval(timer);
   }, [loading]);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      fetch('/api/theone/runs?limit=8', { cache: 'no-store' }).then((res) => res.json()).catch(() => null),
+      fetch('/api/theone/workers', { cache: 'no-store' }).then((res) => res.json()).catch(() => null),
+    ]).then(([runsData, workersData]) => {
+      if (!active) return;
+      if (Array.isArray(runsData?.items)) setRunHistory(runsData.items);
+      setWorkerCommands(normalizeWorkerCommands(workersData).slice(0, 80));
+    });
+    return () => {
+      active = false;
+    };
+  }, [latestResult?.runId, stats.executions]);
 
   useEffect(() => {
     const continueRunId = searchParams.get('continue');
@@ -515,6 +686,8 @@ function RunPageContent() {
     setMessages(nextMessages);
     setInput('');
     setLoading(true);
+    setWorkedMs(null);
+    const startedAt = Date.now();
 
     try {
       const command = missionQuickCommand(content, latestResult);
@@ -604,6 +777,7 @@ function RunPageContent() {
         },
       ]));
     } finally {
+      setWorkedMs(Date.now() - startedAt);
       setLoading(false);
     }
   }
@@ -612,6 +786,8 @@ function RunPageContent() {
     const runId = latestResult?.runId || result?.runId;
     if (!runId || loading) return;
     setLoading(true);
+    setWorkedMs(null);
+    const startedAt = Date.now();
     try {
       const endpoint = decision === 'approve' ? '/api/theone/approvals/approve' : '/api/theone/approvals/reject';
       const payload = decision === 'approve'
@@ -650,6 +826,7 @@ function RunPageContent() {
         },
       ]));
     } finally {
+      setWorkedMs(Date.now() - startedAt);
       setLoading(false);
     }
   }
@@ -675,13 +852,21 @@ function RunPageContent() {
             </nav>
             <div className="run-rail-projects">
               <span>Active Work</span>
-              {(messages.filter((message) => message.role === 'user').slice(-5).reverse()).map((message, index) => (
+              {runHistory.length ? runHistory.slice(0, 7).map((run) => {
+                const id = runIdOf(run);
+                return (
+                  <Link key={id || runTitleOf(run)} className="run-history-item" href={id ? `/run?continue=${id}` : '/runs'}>
+                    <strong>{runTitleOf(run).slice(0, 58)}{runTitleOf(run).length > 58 ? '...' : ''}</strong>
+                    <small>{friendlyStatus(run?.status || run?.workflow?.status || 'saved')} · {formatRelativeTime(run?.updatedAt || run?.createdAt)}</small>
+                  </Link>
+                );
+              }) : (messages.filter((message) => message.role === 'user').slice(-5).reverse()).map((message, index) => (
                 <button key={message.id} type="button" onClick={() => setInput(message.content)}>
                   <strong>{message.content.slice(0, 48)}{message.content.length > 48 ? '...' : ''}</strong>
                   <small>#{index + 1}</small>
                 </button>
               ))}
-              {messages.filter((message) => message.role === 'user').length === 0 ? (
+              {!runHistory.length && messages.filter((message) => message.role === 'user').length === 0 ? (
                 <p>Start a mission to build the working thread.</p>
               ) : null}
             </div>
@@ -696,18 +881,12 @@ function RunPageContent() {
             <div className="run-title-block">
               <span>TheOne</span>
               <strong>{title}</strong>
+              <em>{loading ? liveProgressStages[Math.min(progressStage, liveProgressStages.length - 1)] : formatDuration(workedMs)}</em>
             </div>
             <div className="run-topbar-actions">
-              <div className="product-mode-selector mode-selector run-topbar-mode" aria-label="Execution mode">
-                {modes.map((item) => (
-                  <button key={item} type="button" className={mode === item ? 'active' : ''} onClick={() => setMode(item)}>
-                    {item}
-                  </button>
-                ))}
-              </div>
               <span className={`status-pill status-${status}`}>{friendlyStatus(status)}</span>
               <button type="button" className="mini-action" onClick={() => setInspectorOpen((open) => !open)}>
-                {inspectorOpen ? 'Hide inspector' : 'Show inspector'}
+                {inspectorOpen ? 'Inspector' : 'Show'}
               </button>
             </div>
           </div>
@@ -743,10 +922,6 @@ function RunPageContent() {
           <div className="run-composer">
             <div className="run-composer-toolbar">
               <button type="button" onClick={() => setExamplesOpen((open) => !open)} disabled={loading}>/ Commands</button>
-              <button type="button" onClick={() => setInput('continue')} disabled={loading || !latestResult?.runId}>Continue mission</button>
-              <button type="button" onClick={() => setInput('approve')} disabled={loading || !pendingApprovals(latestResult).length}>Approve</button>
-              <button type="button" onClick={() => setInput('retry')} disabled={loading || !latestResult?.runId}>Retry</button>
-              <button type="button" onClick={() => setInput('turn the current result into a report')} disabled={loading}>Report</button>
             </div>
             {examplesOpen ? (
               <div className="run-examples-popover">
@@ -758,9 +933,9 @@ function RunPageContent() {
                     placeholder="Search apps, workers, or actions..."
                   />
                 </div>
-                {filteredPrompts.map((item) => (
+                {filteredPrompts.slice(0, 24).map((item) => (
                   <button
-                    key={item.label}
+                    key={item.key}
                     type="button"
                     onClick={() => {
                       setExamplesOpen(false);
@@ -769,8 +944,9 @@ function RunPageContent() {
                     }}
                     disabled={loading}
                   >
-                    <span>{item.label}</span>
+                    <span>{item.source === 'worker' ? 'Worker' : item.label}</span>
                     <strong>{item.prompt}</strong>
+                    <small>{item.source === 'worker' ? item.meta : 'template'}</small>
                   </button>
                 ))}
                 {!filteredPrompts.length ? <p>No matching command yet.</p> : null}
@@ -790,7 +966,14 @@ function RunPageContent() {
               placeholder="Ask TheOne to finish a job, call a worker, inspect a site, prepare an X post, check GitHub, use desktop bridge..."
             />
             <div className="run-composer-actions">
-              <span>Cmd/Ctrl + Enter to run</span>
+              <div className="run-permission-menu" aria-label="Execution mode">
+                {modes.map((item) => (
+                  <button key={item} type="button" className={mode === item ? 'active' : ''} onClick={() => setMode(item)}>
+                    {item}
+                  </button>
+                ))}
+              </div>
+              <span>Cmd/Ctrl + Enter</span>
               <button className="run-button" type="button" onClick={() => sendMessage()} disabled={loading || !input.trim()}>
                 {loading ? 'Working...' : 'Send'}
               </button>
@@ -830,7 +1013,9 @@ function RunPageContent() {
             ) : null}
           </div>
 
-          <details className="run-side-details" open={currentSteps.length > 0}>
+          <MissionTimeline result={latestResult} loading={loading} stage={progressStage} />
+
+          <details className="run-side-details">
             <summary>
               <span>Plan</span>
               <strong>{currentSteps.length || 1}</strong>
