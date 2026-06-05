@@ -55,9 +55,7 @@ const workerPrompts = [
 const sessionShortcuts = [
   { label: 'New chat', href: '/run' },
   { label: 'History', href: '/runs' },
-  { label: 'Approvals', href: '/approvals' },
   { label: 'Settings', href: '/settings' },
-  { label: 'Admin', href: '/admin' },
 ];
 
 const starterMessage: ConversationMessage = {
@@ -202,15 +200,20 @@ function PlanChecklist({ result }: { result: any }) {
 function ResultActions({
   result,
   busy,
+  content,
   onAction,
 }: {
   result: any;
   busy: boolean;
+  content: string;
   onAction: (prompt: string) => void;
 }) {
   if (!result?.chat && !result?.runId) return null;
   return (
     <div className="run-result-actions">
+      <button type="button" disabled={busy} onClick={() => navigator.clipboard?.writeText(content)}>
+        Copy
+      </button>
       {resultActions(result).map((action) => (
         <button key={action.label} type="button" disabled={busy} onClick={() => onAction(action.prompt)}>
           {action.label}
@@ -273,6 +276,32 @@ function WorkStatusLine({ result }: { result: any }) {
       <span>Work</span>
       <strong>{text}</strong>
     </div>
+  );
+}
+
+function WelcomePanel({
+  busy,
+  onPrompt,
+}: {
+  busy: boolean;
+  onPrompt: (prompt: string) => void;
+}) {
+  return (
+    <section className="run-welcome-panel">
+      <span>TheOne AI OS</span>
+      <h1>What should TheOne finish?</h1>
+      <p>
+        Give me an outcome. I can answer, plan, call workers, request approval, and return proof without exposing the system machinery.
+      </p>
+      <div className="run-welcome-prompts">
+        {workerPrompts.slice(0, 4).map((item) => (
+          <button key={item.label} type="button" disabled={busy} onClick={() => onPrompt(item.prompt)}>
+            <small>{item.label}</small>
+            <strong>{item.prompt}</strong>
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -406,6 +435,7 @@ function RunPageContent() {
   const [result, setResult] = useState<any>(null);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [examplesOpen, setExamplesOpen] = useState(false);
+  const [commandQuery, setCommandQuery] = useState('');
   const threadRef = useRef<HTMLDivElement | null>(null);
 
   const status = activeStatus(result, loading);
@@ -425,6 +455,12 @@ function RunPageContent() {
   const continuity = latestResult?.chat?.continuity || result?.chat?.continuity;
   const currentSteps = activeWorkflowSteps(latestResult);
   const title = conversationTitle(latestResult, messages);
+  const hasUserMessages = messages.some((message) => message.role === 'user');
+  const filteredPrompts = workerPrompts.filter((item) => {
+    const query = commandQuery.trim().toLowerCase();
+    if (!query) return true;
+    return `${item.label} ${item.prompt}`.toLowerCase().includes(query);
+  });
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' });
@@ -650,9 +686,8 @@ function RunPageContent() {
               ) : null}
             </div>
             <div className="run-rail-footer">
-              <Link href="/apps">Apps</Link>
-              <Link href="/workers">Workers</Link>
-              <Link href="/proof">Proof</Link>
+              <Link href="/runs">History</Link>
+              <Link href="/settings">Settings</Link>
             </div>
           </aside>
 
@@ -677,7 +712,8 @@ function RunPageContent() {
             </div>
           </div>
 
-          <div className="run-thread" ref={threadRef} aria-live="polite">
+          <div className={`run-thread ${!hasUserMessages ? 'run-thread-empty' : ''}`} ref={threadRef} aria-live="polite">
+            {!hasUserMessages ? <WelcomePanel busy={loading} onPrompt={(prompt) => sendMessage(prompt)} /> : null}
             {messages.map((message) => (
               <article key={message.id} className={`run-message run-message-${message.role}`}>
                 <div className="run-message-meta">
@@ -697,7 +733,7 @@ function RunPageContent() {
                   <ApprovalCard result={message.result} busy={loading} onDecision={decideApproval} />
                 ) : null}
                 {message.role === 'assistant' && message.result ? (
-                  <ResultActions result={message.result} busy={loading} onAction={(prompt) => sendMessage(prompt)} />
+                  <ResultActions result={message.result} busy={loading} content={message.content} onAction={(prompt) => sendMessage(prompt)} />
                 ) : null}
               </article>
             ))}
@@ -706,7 +742,7 @@ function RunPageContent() {
 
           <div className="run-composer">
             <div className="run-composer-toolbar">
-              <button type="button" onClick={() => setExamplesOpen((open) => !open)} disabled={loading}>Examples</button>
+              <button type="button" onClick={() => setExamplesOpen((open) => !open)} disabled={loading}>/ Commands</button>
               <button type="button" onClick={() => setInput('continue')} disabled={loading || !latestResult?.runId}>Continue mission</button>
               <button type="button" onClick={() => setInput('approve')} disabled={loading || !pendingApprovals(latestResult).length}>Approve</button>
               <button type="button" onClick={() => setInput('retry')} disabled={loading || !latestResult?.runId}>Retry</button>
@@ -714,12 +750,21 @@ function RunPageContent() {
             </div>
             {examplesOpen ? (
               <div className="run-examples-popover">
-                {workerPrompts.map((item) => (
+                <div className="run-command-search">
+                  <span>Command palette</span>
+                  <input
+                    value={commandQuery}
+                    onChange={(event) => setCommandQuery(event.target.value)}
+                    placeholder="Search apps, workers, or actions..."
+                  />
+                </div>
+                {filteredPrompts.map((item) => (
                   <button
                     key={item.label}
                     type="button"
                     onClick={() => {
                       setExamplesOpen(false);
+                      setCommandQuery('');
                       setInput(item.prompt);
                     }}
                     disabled={loading}
@@ -728,11 +773,19 @@ function RunPageContent() {
                     <strong>{item.prompt}</strong>
                   </button>
                 ))}
+                {!filteredPrompts.length ? <p>No matching command yet.</p> : null}
               </div>
             ) : null}
             <textarea
               value={input}
-              onChange={(event) => setInput(event.target.value)}
+              onChange={(event) => {
+                const value = event.target.value;
+                setInput(value);
+                if (value.startsWith('/')) {
+                  setExamplesOpen(true);
+                  setCommandQuery(value.slice(1));
+                }
+              }}
               onKeyDown={handleKeyDown}
               placeholder="Ask TheOne to finish a job, call a worker, inspect a site, prepare an X post, check GitHub, use desktop bridge..."
             />
@@ -956,12 +1009,19 @@ function RunPageContent() {
             </details>
           ) : null}
 
-          <div className="run-control-links">
-            <Link href="/runs">History</Link>
-            <Link href="/approvals">Approvals</Link>
-            <Link href="/settings">Settings</Link>
-            <Link href="/admin">Admin</Link>
-          </div>
+          <details className="run-side-details run-admin-details">
+            <summary>
+              <span>Admin tools</span>
+              <strong>hidden</strong>
+            </summary>
+            <div className="run-control-links">
+              <Link href="/apps">Apps</Link>
+              <Link href="/workers">Workers</Link>
+              <Link href="/proof">Proof</Link>
+              <Link href="/approvals">Approvals</Link>
+              <Link href="/admin">Admin</Link>
+            </div>
+          </details>
         </aside>
     </main>
   );

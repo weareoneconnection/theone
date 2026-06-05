@@ -2862,6 +2862,84 @@ button, input, textarea { font: inherit; }
   white-space: pre-wrap;
 }
 
+.run-welcome-panel {
+  align-self: center;
+  display: grid;
+  gap: 18px;
+  justify-self: center;
+  max-width: 860px;
+  padding: 26px 0;
+  text-align: center;
+  width: 100%;
+}
+
+.run-welcome-panel > span {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.run-welcome-panel h1 {
+  color: rgba(255,255,255,0.95);
+  font-size: clamp(42px, 7vw, 82px);
+  line-height: 0.98;
+  margin: 0;
+}
+
+.run-welcome-panel p {
+  color: rgba(255,255,255,0.66);
+  font-size: 18px;
+  line-height: 1.55;
+  margin: 0 auto;
+  max-width: 720px;
+}
+
+.run-welcome-prompts {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 6px;
+}
+
+.run-welcome-prompts button {
+  background: rgba(255,255,255,0.045);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  color: var(--text);
+  cursor: pointer;
+  display: grid;
+  gap: 8px;
+  min-height: 98px;
+  padding: 14px;
+  text-align: left;
+}
+
+.run-welcome-prompts button:hover {
+  border-color: rgba(98,215,196,0.5);
+  transform: translateY(-1px);
+}
+
+.run-welcome-prompts button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.run-welcome-prompts small {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.run-welcome-prompts strong {
+  color: rgba(255,255,255,0.88);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
 .run-thinking-line {
   align-items: center;
   color: rgba(255,255,255,0.58);
@@ -3332,6 +3410,41 @@ button, input, textarea { font: inherit; }
   text-align: left;
 }
 
+.run-command-search {
+  display: grid;
+  gap: 8px;
+  padding-bottom: 4px;
+}
+
+.run-command-search span {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.run-command-search input {
+  background: rgba(0,0,0,0.28);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  color: var(--text);
+  outline: none;
+  padding: 11px 12px;
+  width: 100%;
+}
+
+.run-command-search input:focus {
+  border-color: rgba(98,215,196,0.5);
+}
+
+.run-examples-popover > p {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0;
+  padding: 6px 2px;
+}
+
 .run-examples-popover button:hover,
 .run-side-action-grid button:hover {
   border-color: rgba(98,215,196,0.5);
@@ -3658,6 +3771,10 @@ button, input, textarea { font: inherit; }
   padding: 44px min(8vw, 110px) 24px;
 }
 
+.run-product-main .run-thread-empty {
+  align-content: center;
+}
+
 .run-product-main .run-message {
   border-radius: 8px;
   max-width: min(900px, 88%);
@@ -3667,6 +3784,10 @@ button, input, textarea { font: inherit; }
 .run-product-main .run-message-assistant {
   background: rgba(255,255,255,0.06);
   border-color: rgba(255,255,255,0.105);
+}
+
+.run-thread-empty .run-message-assistant:first-of-type {
+  display: none;
 }
 
 .run-product-main .run-message-user {
@@ -3691,6 +3812,14 @@ button, input, textarea { font: inherit; }
 
 .run-product-main .run-composer textarea {
   min-height: 132px;
+}
+
+.run-admin-details {
+  opacity: 0.82;
+}
+
+.run-admin-details:not([open]) {
+  opacity: 0.62;
 }
 
 .run-product-inspector {
