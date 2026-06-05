@@ -147,12 +147,70 @@ function textField(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : '';
 }
 
+function attachmentContextText(messages: TheOneChatMessage[]) {
+  return messages
+    .filter((message) => message.role === 'system' && /Attachment:|Attached file context|Content:\n/i.test(message.content))
+    .map((message) => message.content.trim())
+    .filter(Boolean)
+    .join('\n\n')
+    .slice(0, 32_000);
+}
+
+function isAttachmentReportRequest(raw: string, messages: TheOneChatMessage[]) {
+  return Boolean(attachmentContextText(messages)) &&
+    /read this|document|file|attachment|report|summary|summarize|analy[sz]e|读|文档|文件|附件|报告|总结|分析/i.test(raw);
+}
+
+function taskIncludesAction(task: OneClawTask | null | undefined, action: string) {
+  return Boolean(task?.steps?.some((step) => step.action === action));
+}
+
+function asksForFileArtifact(raw: string) {
+  return /save|export|write.*file|generate.*(docx|pdf|file)|email|send (?:it|the report|report|file|document) to|保存|导出|生成文件|写入文件|另存|邮件|发送到|发给/i.test(raw);
+}
+
+async function generateAttachmentReport(input: {
+  raw: string;
+  attachmentContext: string;
+  mode: TheOneMode;
+}) {
+  const result = await runOneAI<unknown>({
+    type: 'theone_chat_workflow',
+    input: {
+      message: [
+        'The user attached a document or file and asked TheOne to read it.',
+        'Write the final answer directly in the chat. Do not create an external worker task. Do not ask for a file path.',
+        'If the user asks for a report, produce a practical report with: executive summary, key findings, risks/issues, action items, and evidence from the attachment.',
+        `User request: ${input.raw}`,
+        `Attachment context:\n${input.attachmentContext}`,
+      ].join('\n\n'),
+      mode: input.mode,
+      availableActions: [],
+      responseContract: {
+        assistantReply: 'final report text for the user',
+        intent: 'document_report',
+        workflow: 'reasoning-only',
+      },
+    },
+    options: {
+      responseFormat: 'json',
+      chain: 'theone_attachment_report',
+    },
+  });
+  const data = extractOneAIData<Record<string, unknown>>(result);
+  return {
+    result,
+    summary: textField(data?.assistantReply) || textField(data?.reply) || textField(data?.summary) ||
+      'I read the attached document, but OneAI did not return a readable report.',
+  };
+}
+
 function capabilityAvailable(actions: Array<{ action: string }>, action: string) {
   return actions.some((capability) => capability.action === action);
 }
 
 function extractGitHubRepo(raw: string) {
-  if (!/(github|repo|repository|仓库|代码库)/i.test(raw)) return null;
+  if (!/(\bgithub\b|\brepo\b|repository|仓库|代码库)/i.test(raw)) return null;
   const match = raw.match(/(?:github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/i);
   if (!match) return null;
   const owner = match[1];
@@ -1064,14 +1122,53 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     appPackages,
     brain,
   });
-  const fallbackOneClawTask = oneAi.oneclawTask ? null : synthesizeGitHubRepoTask({
+  const attachmentContext = attachmentContextText(contextualMessages);
+  const directAttachmentReport = isAttachmentReportRequest(raw, contextualMessages) && !asksForFileArtifact(raw);
+  const oneAiProposedDocumentWorker = taskIncludesAction(oneAi.oneclawTask, 'document.generate') ||
+    oneAi.workflow.workflow.steps.some((step) => step.action === 'document.generate');
+  const attachmentReport = directAttachmentReport
+    ? await generateAttachmentReport({ raw, attachmentContext, mode }).catch(() => null)
+    : null;
+  const effectiveOneAi = attachmentReport
+    ? {
+        ...oneAi,
+        workflow: {
+          ...oneAi.workflow,
+          assistantReply: attachmentReport.summary,
+          workflow: {
+            ...oneAi.workflow.workflow,
+            summary: 'Read the attached document and produce a chat report.',
+            steps: [
+              {
+                id: 'attachment_report',
+                title: 'Read attachment and write report',
+                worker: 'oneai',
+                action: 'oneai.generate',
+                input: { objective: raw, source: 'attached_file_context' },
+                approvalMode: 'auto' as const,
+                dependsOn: [],
+              },
+            ],
+          },
+          requiredWorkers: ['oneai', 'theone'],
+          oneclawTask: null,
+          safety: {
+            requiresApproval: false,
+            reason: 'Reading an uploaded attachment and writing a chat report does not require external execution.',
+          },
+        },
+        oneAiResult: attachmentReport.result as typeof oneAi.oneAiResult,
+        oneclawTask: null,
+      }
+    : oneAi;
+  const fallbackOneClawTask = effectiveOneAi.oneclawTask ? null : synthesizeGitHubRepoTask({
     raw,
     actions: oneClawManifest.capabilities,
   });
-  const rawPlannedOneClawTask = oneAi.oneclawTask || fallbackOneClawTask;
+  const rawPlannedOneClawTask = effectiveOneAi.oneclawTask || fallbackOneClawTask;
   const plannedWorkflowSteps = fallbackOneClawTask
     ? [
-        ...oneAi.workflow.workflow.steps,
+        ...effectiveOneAi.workflow.workflow.steps,
         ...fallbackOneClawTask.steps.map((step, index) => ({
           id: step.id || `github_step_${index + 1}`,
           title: step.action === 'git.repo.get'
@@ -1088,22 +1185,22 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
           dependsOn: step.dependsOn || [],
         })),
       ]
-    : oneAi.workflow.workflow.steps;
+    : effectiveOneAi.workflow.workflow.steps;
   const workflowSummary = fallbackOneClawTask
     ? `Check GitHub repository ${fallbackOneClawTask.metadata?.repo || ''} and summarize attention points.`
-    : oneAi.workflow.workflow.summary;
-  const workflowDomain = fallbackOneClawTask ? 'github' : oneAi.workflow.intent.domain;
+    : effectiveOneAi.workflow.workflow.summary;
+  const workflowDomain = fallbackOneClawTask ? 'github' : effectiveOneAi.workflow.intent.domain;
 
   const intent = buildIntent({
-    raw: oneAi.workflow.intent.objective || raw,
+    raw: effectiveOneAi.workflow.intent.objective || raw,
     domain: workflowDomain,
-    risk: oneAi.workflow.intent.risk,
-    requiresApproval: oneAi.workflow.intent.requiresApproval || oneAi.workflow.safety.requiresApproval,
+    risk: effectiveOneAi.workflow.intent.risk,
+    requiresApproval: effectiveOneAi.workflow.intent.requiresApproval || effectiveOneAi.workflow.safety.requiresApproval,
   });
   const plannedOneClawTask = normalizeOneClawTaskContract({
     task: rawPlannedOneClawTask,
     intent,
-    oneAiData: oneAi.workflow as unknown as Record<string, unknown>,
+    oneAiData: effectiveOneAi.workflow as unknown as Record<string, unknown>,
   });
   const preflight = preflightOneClawTask({
     task: plannedOneClawTask,
@@ -1171,16 +1268,16 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     oneAiSteps: plannedWorkflowSteps,
     hasOneClawTask: Boolean(oneclawTask),
     oneClawStatus: dispatchStatus,
-    risk: automationPolicy.risk || oneAi.workflow.intent.risk,
+    risk: automationPolicy.risk || effectiveOneAi.workflow.intent.risk,
   }), approvals);
   const workflow = createWorkflowTrace({ runId, mode, plan, approvals });
   const executions = [
     createExecutionRecord({
       provider: 'oneai',
-      status: oneAi.oneAiResult.mock ? 'mock' : oneAi.oneAiResult.success ? 'success' : 'failed',
-      summary: 'OneAI generated a structured chat workflow.',
-      taskName: 'oneai.chat.workflow',
-      raw: oneAi.oneAiResult,
+      status: effectiveOneAi.oneAiResult.mock ? 'mock' : effectiveOneAi.oneAiResult.success ? 'success' : 'failed',
+      summary: attachmentReport ? 'OneAI generated an attachment report for the chat.' : 'OneAI generated a structured chat workflow.',
+      taskName: attachmentReport ? 'oneai.chat.attachment_report' : 'oneai.chat.workflow',
+      raw: effectiveOneAi.oneAiResult,
     }),
     createExecutionRecord({
       provider: 'theone',
@@ -1211,13 +1308,13 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
   ];
   const approvalSummary = approvalGated
     ? pendingTaskSummary({
-        baseReply: oneAi.workflow.assistantReply,
+        baseReply: effectiveOneAi.workflow.assistantReply,
         oneclawTask,
         approvals,
         automationReason: automationPolicy.reasons?.join(' '),
       })
     : null;
-  const summary = finalSummary || approvalSummary || oneAi.workflow.assistantReply;
+  const summary = finalSummary || approvalSummary || effectiveOneAi.workflow.assistantReply;
   const workerRuntime = describeWorkerRuntime({
     oneclawTask,
     oneclawRun,
@@ -1267,7 +1364,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         missionState,
         agentTimeline,
         workerCatalogSummary: workerCatalog.summary,
-        oneAiWorkflow: oneAi.workflow,
+        oneAiWorkflow: effectiveOneAi.workflow,
+        attachmentReportMode: Boolean(attachmentReport),
+        oneAiProposedDocumentWorker,
         finalOneAiResult,
         finalSummary,
         approvalSummary,
@@ -1280,7 +1379,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     }),
   ];
 
-  const ok = oneAi.oneAiResult.success && !automationPolicy.blocked && !oneclawError;
+  const ok = effectiveOneAi.oneAiResult.success && !automationPolicy.blocked && !oneclawError;
   const theoneWorkerStatus = blocked
     ? 'blocked'
     : approvalGated
@@ -1307,6 +1406,8 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
           : ['Review the pending approval before OneClaw executes this worker task.']
         : oneclawTask && !oneclawRun && automationPolicy.canAutoRun
           ? ['The read-only worker task is auto-cleared; wait for OneClaw execution receipt or refresh the run.']
+          : attachmentReport
+            ? ['Use this report, ask a follow-up, or ask TheOne to export it as a file.']
           : finalSummary
             ? ['Use this result, ask a follow-up, or turn it into a report.']
             : oneclawRun
@@ -1351,7 +1452,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       selectedAppPackages: selectedAppPackages.map((pkg) => pkg.key),
       memoryContext: memorySummary(memoryContext),
       workerCatalogSummary: workerCatalog.summary,
-      oneAiWorkflowId: oneAi.workflow.workflow.id,
+      oneAiWorkflowId: effectiveOneAi.workflow.workflow.id,
       fallbackRoute: fallbackOneClawTask ? 'github_repo_shorthand' : null,
       oneClawTaskName: oneclawTask?.taskName || null,
       oneClawRunId: oneclawRun?.id || null,
@@ -1374,7 +1475,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         createdAt: new Date().toISOString(),
       },
       oneAiWorkflow: {
-        ...oneAi.workflow.workflow,
+        ...effectiveOneAi.workflow.workflow,
         summary: workflowSummary,
         source: 'oneai',
         owner: 'OneAI',
@@ -1387,13 +1488,13 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       },
       workerCoordination: {
         mode,
-        requiredWorkers: oneAi.workflow.requiredWorkers,
+        requiredWorkers: effectiveOneAi.workflow.requiredWorkers,
         workers: [
           {
             key: 'oneai',
             title: 'OneAI',
             role: 'Builds the structured workflow from the conversation.',
-            status: oneAi.oneAiResult.success ? 'ready' : 'needs_attention',
+            status: effectiveOneAi.oneAiResult.success ? 'ready' : 'needs_attention',
           },
           {
             key: 'theone',
