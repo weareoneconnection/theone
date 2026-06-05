@@ -179,7 +179,7 @@ function inferRisk(raw: string): 'low' | 'medium' | 'high' {
   if (hasAny(raw, [/发布|发帖|回复|send|post|delete|删除|payment|transfer|交易|付款|desktop|电脑|click|type|hotkey/i])) {
     return 'high';
   }
-  if (hasAny(raw, [/browse|website|github|repo|api|file|网页|网站|仓库|文件|接口/i])) return 'medium';
+  if (hasAny(raw, [/browse|website|\bgithub\b|\brepo\b|repository|api|file|document|report|网页|网站|仓库|文件|文档|报告|接口/i])) return 'medium';
   return 'low';
 }
 
@@ -187,7 +187,7 @@ function inferCapabilityRoute(raw: string) {
   const route = new Set<string>(['think', 'plan', 'govern', 'record']);
   if (hasAny(raw, [/browse|website|web|search|research|网页|网站|搜索|研究/i])) route.add('research');
   if (hasAny(raw, [/post|tweet|x\b|twitter|发布|推文|回复/i])) route.add('communicate');
-  if (hasAny(raw, [/github|repo|代码|仓库|ci|pr|issue/i])) route.add('coordinate');
+  if (hasAny(raw, [/\bgithub\b|\brepo\b|repository|代码|仓库|ci|pr|issue/i])) route.add('coordinate');
   if (hasAny(raw, [/desktop|computer|chrome|电脑|本地|click|type|hotkey|截图/i])) route.add('operate');
   if (hasAny(raw, [/file|folder|document|report|文件|目录|报告/i])) route.add('create');
   if (hasAny(raw, [/api|webhook|接口|sync|同步/i])) route.add('integrate');
@@ -211,8 +211,13 @@ function fallbackApps(appPackages: AppRuntimePackage[], raw: string) {
 function missingInformation(raw: string, kind: TheOneBrainConversationKind) {
   const missing: string[] = [];
   if (kind === 'capability') return missing;
-  if (/github|repo|仓库|代码库/i.test(raw) && !/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/.test(raw)) {
+  const hasAttachmentContext = /attached file context|readable attachment content|stored path/i.test(raw);
+  const isDocumentRequest = /file|document|report|summary|summarize|read this|文件|文档|报告|总结/i.test(raw);
+  if ((/\bgithub\b|\brepo\b|repository|仓库|代码库/i.test(raw)) && !isDocumentRequest && !/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/.test(raw)) {
     missing.push('GitHub owner/repo or repository URL');
+  }
+  if (isDocumentRequest && !hasAttachmentContext && !/(\/[^\s]+|[A-Za-z]:\\[^\s]+)/.test(raw)) {
+    missing.push('attached file or file path');
   }
   if (/browse|website|网页|网站|分析网站/i.test(raw) && !/(https?:\/\/[^\s)]+|(?:[a-z0-9-]+\.)+[a-z]{2,})/i.test(raw)) {
     missing.push('website URL');
