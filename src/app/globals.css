@@ -3439,6 +3439,25 @@ button, input, textarea { font: inherit; }
   border-color: rgba(98,215,196,0.5);
 }
 
+.admin-control-grid a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.admin-control-card {
+  min-height: 190px;
+}
+
+.admin-control-card h2 {
+  margin: 0;
+}
+
+.admin-control-card p {
+  color: var(--muted);
+  line-height: 1.55;
+  margin: 0;
+}
+
 .worker-app-workspace {
   display: grid;
   gap: 20px;

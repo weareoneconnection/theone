@@ -4,21 +4,34 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import type { ReactNode } from 'react';
 
-const links = [
-  { href: '/run', label: 'Run' },
+const productLinks = [
+  { href: '/run', label: 'Chat' },
+  { href: '/runs', label: 'History' },
+  { href: '/approvals', label: 'Approvals' },
+  { href: '/settings', label: 'Settings' },
+  { href: '/admin', label: 'Admin' },
+];
+
+const adminLinks = [
+  { href: '/admin', label: 'Admin Home' },
   { href: '/apps', label: 'Apps' },
   { href: '/workspaces', label: 'Workspaces' },
-  { href: '/packages', label: 'Packages' },
   { href: '/workers', label: 'Workers' },
-  { href: '/approvals', label: 'Approvals' },
-  { href: '/runs', label: 'Runs' },
+  { href: '/packages', label: 'Packages' },
   { href: '/proof', label: 'Proof' },
-  { href: '/settings', label: 'Settings' },
   { href: '/theone', label: 'Advanced' },
 ];
 
 export function ProductNav() {
   const pathname = usePathname();
+  const isAdminSurface = pathname?.startsWith('/admin') ||
+    pathname?.startsWith('/apps') ||
+    pathname?.startsWith('/workers') ||
+    pathname?.startsWith('/packages') ||
+    pathname?.startsWith('/proof') ||
+    pathname?.startsWith('/workspaces') ||
+    pathname?.startsWith('/theone');
+  const links = isAdminSurface ? adminLinks : productLinks;
 
   return (
     <header className="product-nav">

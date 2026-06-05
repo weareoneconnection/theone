@@ -903,10 +903,10 @@ function RunPageContent() {
           ) : null}
 
           <div className="run-control-links">
-            <Link href="/apps">Apps</Link>
-            <Link href="/workers">Workers</Link>
-            <Link href="/runs">Runs</Link>
-            <Link href="/theone">Advanced trace</Link>
+            <Link href="/runs">History</Link>
+            <Link href="/approvals">Approvals</Link>
+            <Link href="/settings">Settings</Link>
+            <Link href="/admin">Admin</Link>
           </div>
         </aside>
       </section>
