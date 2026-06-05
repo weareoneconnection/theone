@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
-import { ProductPage, ProductStatusStrip, friendlyStatus } from '@/components/theone/ProductNav';
+import { friendlyStatus } from '@/components/theone/ProductNav';
 
 const modes = ['manual', 'assist', 'auto'] as const;
 
@@ -53,11 +53,11 @@ const workerPrompts = [
 ];
 
 const sessionShortcuts = [
-  { label: 'New mission', href: '/run' },
-  { label: 'Apps', href: '/apps' },
-  { label: 'Workers', href: '/workers' },
-  { label: 'Runs', href: '/runs' },
-  { label: 'Proof', href: '/proof' },
+  { label: 'New chat', href: '/run' },
+  { label: 'History', href: '/runs' },
+  { label: 'Approvals', href: '/approvals' },
+  { label: 'Settings', href: '/settings' },
+  { label: 'Admin', href: '/admin' },
 ];
 
 const starterMessage: ConversationMessage = {
@@ -133,6 +133,14 @@ function evidenceText(result: any) {
 
 function latestAssistantResult(messages: ConversationMessage[]) {
   return [...messages].reverse().find((message) => message.role === 'assistant' && message.result)?.result || null;
+}
+
+function conversationTitle(result: any, messages: ConversationMessage[]) {
+  const latestUser = [...messages].reverse().find((message) => message.role === 'user')?.content;
+  return result?.chat?.mission?.title ||
+    result?.chat?.brain?.objective ||
+    result?.intent?.objective ||
+    (latestUser ? latestUser.slice(0, 92) : 'New TheOne mission');
 }
 
 function workflowSteps(result: any) {
@@ -367,6 +375,7 @@ function RunPageContent() {
   const [progressStage, setProgressStage] = useState(0);
   const [messages, setMessages] = useState<ConversationMessage[]>([starterMessage]);
   const [result, setResult] = useState<any>(null);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
   const threadRef = useRef<HTMLDivElement | null>(null);
 
   const status = activeStatus(result, loading);
@@ -385,6 +394,7 @@ function RunPageContent() {
   const missionState = latestResult?.chat?.missionState || workerRuntime?.missionState || result?.chat?.missionState;
   const continuity = latestResult?.chat?.continuity || result?.chat?.continuity;
   const currentSteps = activeWorkflowSteps(latestResult);
+  const title = conversationTitle(latestResult, messages);
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' });
@@ -586,24 +596,8 @@ function RunPageContent() {
   }
 
   return (
-    <ProductPage
-      eyebrow="Run TheOne"
-      title="A super-agent chat for real-world work."
-      subtitle="Tell TheOne the outcome. It can answer directly, build a workflow with OneAI, call OneClaw workers, and return receipts without turning the main screen into a control panel."
-      compact
-      aside={(
-        <ProductStatusStrip
-          items={[
-            { label: 'State', value: friendlyStatus(status), tone: status },
-            { label: 'Mode', value: mode, tone: mode },
-            { label: 'Workers', value: coordination?.workers?.length || 'ready', tone: 'assist' },
-          ]}
-        />
-      )}
-    >
-      <section className="run-codex-workspace">
-        <div className="run-codex-main">
-          <aside className="run-session-rail" aria-label="TheOne sessions">
+    <main className={inspectorOpen ? 'run-product-shell' : 'run-product-shell inspector-closed'}>
+          <aside className="run-session-rail run-product-sidebar" aria-label="TheOne sessions">
             <div className="run-rail-brand">
               <strong>TheOne</strong>
               <span>AI OS</span>
@@ -625,20 +619,31 @@ function RunPageContent() {
                 <p>Start a mission to build the working thread.</p>
               ) : null}
             </div>
+            <div className="run-rail-footer">
+              <Link href="/apps">Apps</Link>
+              <Link href="/workers">Workers</Link>
+              <Link href="/proof">Proof</Link>
+            </div>
           </aside>
 
-          <main className="run-chat-stage">
-          <div className="run-codex-toolbar">
-            <div>
-              <span className="product-card-kicker">TheOne Chat Runtime</span>
-              <strong>Chat first. Tools when needed.</strong>
+          <section className="run-product-main">
+          <div className="run-product-topbar">
+            <div className="run-title-block">
+              <span>TheOne</span>
+              <strong>{title}</strong>
             </div>
-            <div className="product-mode-selector mode-selector" aria-label="Execution mode">
-              {modes.map((item) => (
-                <button key={item} type="button" className={mode === item ? 'active' : ''} onClick={() => setMode(item)}>
-                  {item}
-                </button>
-              ))}
+            <div className="run-topbar-actions">
+              <div className="product-mode-selector mode-selector run-topbar-mode" aria-label="Execution mode">
+                {modes.map((item) => (
+                  <button key={item} type="button" className={mode === item ? 'active' : ''} onClick={() => setMode(item)}>
+                    {item}
+                  </button>
+                ))}
+              </div>
+              <span className={`status-pill status-${status}`}>{friendlyStatus(status)}</span>
+              <button type="button" className="mini-action" onClick={() => setInspectorOpen((open) => !open)}>
+                {inspectorOpen ? 'Hide inspector' : 'Show inspector'}
+              </button>
             </div>
           </div>
 
@@ -689,14 +694,13 @@ function RunPageContent() {
               </button>
             </div>
           </div>
-          </main>
-        </div>
+          </section>
 
-        <aside className="run-codex-side">
+        <aside className="run-codex-side run-product-inspector">
           <div className="panel-head">
             <div>
-              <h2 className="panel-title">Current Work</h2>
-              <p className="panel-subtitle">Only the live work that matters now.</p>
+              <h2 className="panel-title">Inspector</h2>
+              <p className="panel-subtitle">Current work, gates, proof, and raw details when needed.</p>
             </div>
             <span className={`status-pill status-${status}`}>{friendlyStatus(status)}</span>
           </div>
@@ -909,8 +913,7 @@ function RunPageContent() {
             <Link href="/admin">Admin</Link>
           </div>
         </aside>
-      </section>
-    </ProductPage>
+    </main>
   );
 }
 
