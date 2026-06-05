@@ -5,6 +5,7 @@ export type TheOneChatAttachment = {
   name: string;
   type: string;
   size: number;
+  path?: string;
   text?: string;
   textPreview?: string;
   summary?: string;

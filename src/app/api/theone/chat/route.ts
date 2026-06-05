@@ -100,6 +100,7 @@ function normalizeAttachments(value: unknown): TheOneChatAttachment[] {
       type: typeof record.type === 'string' ? record.type : 'application/octet-stream',
       size: typeof record.size === 'number' ? record.size : 0,
     };
+    if (typeof record.path === 'string') attachment.path = record.path.slice(0, 1000);
     if (typeof record.text === 'string') attachment.text = record.text.slice(0, 12000);
     if (typeof record.textPreview === 'string') attachment.textPreview = record.textPreview.slice(0, 6000);
     if (typeof record.summary === 'string') attachment.summary = record.summary.slice(0, 1000);
@@ -114,16 +115,30 @@ function normalizeAttachmentMessage(value: unknown) {
   return {
     role: 'system' as const,
     content: [
-      'The user attached files. Use their readable content as context when relevant. Do not claim to inspect binary content unless a worker is routed for it.',
+      'The user attached files to this message. Treat attachments as the document/file source for requests like "read this document", "summarize this", "send me a report", or "analyze this file".',
+      'If readable attachment content is present below, answer from it directly and do not ask the user for a path. If only an attachment path is present, route a safe file/document worker when possible. Ask for a path only when no attachment, URL, or stored path exists.',
       ...attachments.map((attachment) => [
         `Attachment: ${attachment.name}`,
         `Type: ${attachment.type}`,
         `Size: ${attachment.size} bytes`,
+        attachment.path ? `Stored path: ${attachment.path}` : '',
         attachment.summary ? `Summary: ${attachment.summary}` : '',
         attachment.textPreview || attachment.text ? `Content:\n${attachment.textPreview || attachment.text}` : '',
       ].filter(Boolean).join('\n')),
     ].join('\n\n'),
   };
+}
+
+function attachmentInputHint(value: unknown) {
+  const attachments = normalizeAttachments(value);
+  if (!attachments.length) return '';
+  const readable = attachments.filter((attachment) => attachment.text || attachment.textPreview);
+  return [
+    `Attached file context: ${attachments.map((attachment) => attachment.name).join(', ')}.`,
+    readable.length
+      ? 'Readable attachment content is already available in system context; do not ask for a file path.'
+      : 'The uploaded attachment has a stored path; route file/document workers if the request requires reading it.',
+  ].join(' ');
 }
 
 function attachConversation(result: Awaited<ReturnType<typeof runTheOneChatRuntime>>, messages: TheOneChatRuntimeInput['messages'], sessionId?: string) {
@@ -155,6 +170,7 @@ export async function POST(req: Request) {
     const attachmentMessage = normalizeAttachmentMessage(body.attachments);
     const attachments = normalizeAttachments(body.attachments);
     const messages = normalizeMessages(body.messages);
+    const inputHint = attachmentInputHint(body.attachments);
     const runtimeMessages = [
       contextMessage,
       attachmentMessage,
@@ -166,6 +182,7 @@ export async function POST(req: Request) {
       mode: normalizeMode(body.mode),
       userId: typeof body.userId === 'string' ? body.userId : undefined,
       sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
+      contextHint: inputHint || undefined,
     });
     const withConversation = attachConversation(result, messages, typeof body.sessionId === 'string' ? body.sessionId : undefined);
     const stored = await saveRunResult(withConversation);

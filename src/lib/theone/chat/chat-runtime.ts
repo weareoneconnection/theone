@@ -31,6 +31,7 @@ export type TheOneChatRuntimeInput = {
   mode?: TheOneMode;
   userId?: string;
   sessionId?: string;
+  contextHint?: string;
 };
 
 function latestUserMessage(messages: TheOneChatMessage[], explicit?: string) {
@@ -788,6 +789,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
   const mode = normalizeMode(input.mode);
   const messages = input.messages || [];
   const raw = latestUserMessage(messages, input.input);
+  const planningRaw = [raw, input.contextHint?.trim()].filter(Boolean).join('\n\n');
 
   if (!raw) {
     throw new Error('A user message is required.');
@@ -803,10 +805,10 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     connectors: oneClawManifest.connectors || [],
   });
   const appPackages = await listEnabledAppRuntimePackages();
-  const selectedAppPackages = selectAppRuntimePackagesFromCatalog(raw, appPackages).slice(0, 3);
+  const selectedAppPackages = selectAppRuntimePackagesFromCatalog(planningRaw, appPackages).slice(0, 3);
   const primaryModel = resolveTheOneModel('theone.chat.primary');
   const brain = buildTheOneBrainFrame({
-    raw,
+    raw: planningRaw,
     mode,
     messages,
     appPackages,
@@ -822,7 +824,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     selectedAppPackages,
   });
   const memoryContext = await queryMemoryGraph({
-    query: raw,
+    query: planningRaw,
     intentType: brain.conversationKind,
     capabilities: brain.capabilityRoute,
     limit: 6,
