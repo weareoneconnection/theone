@@ -9,6 +9,10 @@ const MAX_TEXT_BYTES = 512 * 1024;
 const MAX_EXTRACTED_TEXT = 80_000;
 const MAX_FILES = 8;
 
+const DOCUMENT_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'rtf']);
+const SPREADSHEET_EXTENSIONS = new Set(['csv', 'tsv', 'xls', 'xlsx']);
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'heic']);
+
 function createId(name: string) {
   return `att_${Date.now()}_${name.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 32)}_${Math.random().toString(36).slice(2, 7)}`;
 }
@@ -31,6 +35,98 @@ function isTextLike(name: string, type: string) {
 function summarizeText(value: string) {
   const compact = value.replace(/\s+/g, ' ').trim();
   return compact.slice(0, 500);
+}
+
+function fileKind(name: string, type: string) {
+  const ext = extension(name);
+  if (ext === 'pdf' || type === 'application/pdf') return 'pdf';
+  if (DOCUMENT_EXTENSIONS.has(ext)) return 'document';
+  if (SPREADSHEET_EXTENSIONS.has(ext)) return 'spreadsheet';
+  if (IMAGE_EXTENSIONS.has(ext) || type.startsWith('image/')) return 'image';
+  if (isTextLike(name, type)) return 'text';
+  return 'file';
+}
+
+function recommendedWorker(name: string, type: string) {
+  const kind = fileKind(name, type);
+  if (kind === 'pdf' || kind === 'document') return 'document.parse';
+  if (kind === 'spreadsheet') return 'spreadsheet.read';
+  if (kind === 'image') return 'image.extractText';
+  return 'file.read';
+}
+
+function estimatePdfPages(buffer: Buffer) {
+  const latin = buffer.toString('latin1');
+  const matches = latin.match(/\/Type\s*\/Page\b/g);
+  return matches?.length || undefined;
+}
+
+function usefulEvidenceLines(text: string) {
+  return text
+    .split('\n')
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter((line) => line.length > 28 && line.length < 240)
+    .slice(0, 8);
+}
+
+function detectedTopics(text: string, name: string) {
+  const haystack = `${name}\n${text}`.toLowerCase();
+  const topics: string[] = [];
+  const checks: Array<[string, RegExp]> = [
+    ['contract', /contract|subcontract|agreement|clause|scope|variation|payment|retention|liquidated/i],
+    ['construction', /construction|project|site|works|completion|defect|qaqc|hse|engineer|contractor/i],
+    ['commercial', /invoice|cost|budget|price|payment|purchase|order|commercial/i],
+    ['schedule', /schedule|milestone|deadline|program|delay|timeline|calendar/i],
+    ['risk', /risk|liability|penalty|termination|insurance|indemnity|dispute|claim/i],
+    ['technical', /specification|drawing|design|technical|material|equipment|method/i],
+  ];
+  for (const [topic, pattern] of checks) {
+    if (pattern.test(haystack)) topics.push(topic);
+  }
+  return topics.slice(0, 6);
+}
+
+function reportSectionsFor(kind: string, topics: string[]) {
+  if (topics.includes('contract') || topics.includes('construction')) {
+    return ['Executive summary', 'Scope and deliverables', 'Commercial terms', 'Risks and issues', 'Action items', 'Evidence'];
+  }
+  if (kind === 'spreadsheet') return ['Executive summary', 'Data overview', 'Notable values', 'Risks or gaps', 'Action items'];
+  if (kind === 'image') return ['Image summary', 'Visible text', 'Findings', 'Limitations', 'Next actions'];
+  return ['Executive summary', 'Key findings', 'Risks or issues', 'Action items', 'Evidence'];
+}
+
+function buildAttachmentInsights(input: {
+  name: string;
+  type: string;
+  size: number;
+  text: string;
+  buffer: Buffer;
+}) {
+  const kind = fileKind(input.name, input.type);
+  const lines = input.text ? input.text.split(/\r?\n/) : [];
+  const words = input.text.trim() ? input.text.trim().split(/\s+/).length : 0;
+  const topics = detectedTopics(input.text, input.name);
+  const readable = Boolean(input.text.trim());
+  const limitations = [
+    readable ? '' : 'No readable text was extracted during upload; TheOne should route a worker for deeper reading.',
+    kind === 'pdf' && readable && input.text.length >= MAX_EXTRACTED_TEXT ? 'PDF text was truncated to the upload extraction limit.' : '',
+  ].filter(Boolean);
+
+  return {
+    schemaVersion: 'theone.attachment_insights.v1',
+    kind,
+    readable,
+    size: input.size,
+    extraction: readable ? 'upload_text_extract' : 'stored_file_only',
+    recommendedWorker: recommendedWorker(input.name, input.type),
+    pageEstimate: kind === 'pdf' ? estimatePdfPages(input.buffer) : undefined,
+    wordCount: words,
+    lineCount: lines.length,
+    detectedTopics: topics,
+    evidencePreview: usefulEvidenceLines(input.text),
+    reportSections: reportSectionsFor(kind, topics),
+    limitations,
+  };
 }
 
 function decodeXmlEntities(value: string) {
@@ -186,12 +282,20 @@ export async function POST(req: Request) {
       };
 
       const text = extractReadableContent(file.name, file.type || '', bytes);
+      item.insights = buildAttachmentInsights({
+        name: file.name,
+        type: file.type || 'application/octet-stream',
+        size: file.size,
+        text,
+        buffer: bytes,
+      });
       if (text.trim()) {
         item.text = text;
         item.textPreview = text.slice(0, 4000);
         item.summary = summarizeText(text);
       } else {
-        item.summary = 'Attachment uploaded and stored. TheOne can route a document, image, spreadsheet, or file worker if deeper inspection is needed.';
+        const worker = typeof item.insights.recommendedWorker === 'string' ? item.insights.recommendedWorker : recommendedWorker(file.name, file.type || '');
+        item.summary = `Attachment uploaded and stored. Recommended worker: ${worker}. TheOne should use the stored attachment path instead of asking the user for a new path.`;
       }
 
       attachments.push(item);

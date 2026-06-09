@@ -9,6 +9,7 @@ export type TheOneChatAttachment = {
   text?: string;
   textPreview?: string;
   summary?: string;
+  insights?: Record<string, unknown>;
 };
 
 export type TheOneChatSessionMessage = {

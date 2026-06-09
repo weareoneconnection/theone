@@ -54,6 +54,17 @@ function extractPath(input: string) {
   return input.match(/(?:\/Users|\/tmp|\/private|~\/|\.\/)[^\s]+/)?.[0] || '/tmp';
 }
 
+function pathExtension(value: string) {
+  return value.split(/[?#]/)[0]?.split('.').pop()?.toLowerCase() || '';
+}
+
+function readActionForPath(value: string) {
+  const ext = pathExtension(value);
+  if (['pdf', 'doc', 'docx', 'rtf'].includes(ext)) return 'document.parse';
+  if (['csv', 'tsv', 'xls', 'xlsx'].includes(ext)) return 'spreadsheet.read';
+  return 'file.read';
+}
+
 function extractHttpUrl(input: string) {
   const match = input.match(/https?:\/\/[^\s)]+/i);
   return match?.[0] || '';
@@ -224,14 +235,19 @@ export function routeRunToApp(raw: string): AppRoute | null {
       };
     }
     if (/(read|读取)/i.test(value)) {
+      const action = readActionForPath(path);
       return {
         app: 'files',
         title: 'Files',
-        action: 'file.read',
+        action,
         input: { path },
         approvalMode: 'auto',
         risk: 'low',
-        summary: `Read file ${path}.`,
+        summary: action === 'document.parse'
+          ? `Parse document ${path}.`
+          : action === 'spreadsheet.read'
+            ? `Read spreadsheet ${path}.`
+            : `Read file ${path}.`,
       };
     }
     return {
@@ -359,11 +375,15 @@ export async function runUnifiedAppRoute(input: {
       ? 'exists'
       : action === 'file.read'
         ? 'read'
-        : action === 'file.write'
-          ? 'write'
-          : action === 'file.append'
-            ? 'append'
-            : 'list';
+        : action === 'document.parse'
+          ? 'document_parse'
+          : action === 'spreadsheet.read'
+            ? 'spreadsheet_read'
+            : action === 'file.write'
+              ? 'write'
+              : action === 'file.append'
+                ? 'append'
+                : 'list';
     return runFilesWorkflowApp({
       path: String(input.route.input.path || '/tmp'),
       operation,

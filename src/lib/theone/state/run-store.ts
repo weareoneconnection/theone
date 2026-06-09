@@ -259,8 +259,19 @@ async function summarizeApprovedWorkerResult(input: {
   objective: string;
   taskName?: string | null;
   oneclawRun: OneClawTaskRun;
+  normalizedReceipt?: ReturnType<typeof normalizeWorkerReceipt> | null;
 }) {
-  const evidence = readableWorkerEvidence(input.oneclawRun.raw || input.oneclawRun);
+  const normalizedEvidence = input.normalizedReceipt
+    ? [
+        input.normalizedReceipt.summary,
+        input.normalizedReceipt.error ? `Error: ${input.normalizedReceipt.error}` : '',
+        ...(input.normalizedReceipt.evidence || []),
+      ].filter(Boolean).join('\n\n')
+    : '';
+  const evidence = [normalizedEvidence, readableWorkerEvidence(input.oneclawRun.raw || input.oneclawRun)]
+    .filter(Boolean)
+    .join('\n\n')
+    .slice(0, 9000);
   if (!evidence) return null;
 
   try {
@@ -270,6 +281,7 @@ async function summarizeApprovedWorkerResult(input: {
         message: [
           'A OneClaw worker finished after TheOne approval.',
           'Write a concise user-facing result. Explain what happened, what evidence supports it, and the next useful action.',
+          'If the worker failed, say it failed, give the exact reason, and suggest the fastest fix. Do not say it was published, sent, or completed.',
           'Do not expose raw JSON unless it is the only useful output.',
           `Original objective: ${input.objective}`,
           `Worker task: ${input.taskName || 'oneclaw task'}`,
@@ -679,7 +691,7 @@ export async function approveRun(input: { runId: string; approvalId?: string; ap
         raw: oneclawRun.raw ?? oneclawRun,
         receipt,
       });
-      const status = oneclawRun.status === 'mock' ? 'mock' : 'submitted';
+      const status = oneclawRun.status === 'mock' ? 'mock' : mapOneClawStatusToExecutionStatus(oneclawRun.status);
       const execution = createExecutionRecord({
         provider: 'oneclaw',
         status,
@@ -713,6 +725,7 @@ export async function approveRun(input: { runId: string; approvalId?: string; ap
         objective: stored.result.intent.objective,
         taskName: approvedOneClawTask.taskName,
         oneclawRun,
+        normalizedReceipt,
       });
 
       if (workerSummary) {

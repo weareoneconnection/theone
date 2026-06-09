@@ -32,6 +32,10 @@ function normalizeContextMessage(value: unknown) {
   const mission = record.mission && typeof record.mission === 'object' ? record.mission as Record<string, unknown> : null;
   const workerRuntime = record.workerRuntime && typeof record.workerRuntime === 'object' ? record.workerRuntime as Record<string, unknown> : null;
   const missionState = record.missionState && typeof record.missionState === 'object' ? record.missionState as Record<string, unknown> : null;
+  const documentRuntime = record.documentRuntime && typeof record.documentRuntime === 'object' ? record.documentRuntime as Record<string, unknown> : null;
+  const reportArtifact = record.reportArtifact && typeof record.reportArtifact === 'object' ? record.reportArtifact as Record<string, unknown> : null;
+  const exportBundle = record.exportBundle && typeof record.exportBundle === 'object' ? record.exportBundle as Record<string, unknown> : null;
+  const deliveryStatus = record.deliveryStatus && typeof record.deliveryStatus === 'object' ? record.deliveryStatus as Record<string, unknown> : null;
   const continuity = record.continuity && typeof record.continuity === 'object' ? record.continuity as Record<string, unknown> : null;
   const pendingOneClawTask = record.pendingOneClawTask && typeof record.pendingOneClawTask === 'object' ? record.pendingOneClawTask as Record<string, unknown> : null;
   const lastAssistant = typeof record.lastAssistant === 'string' ? record.lastAssistant.slice(0, 2400) : '';
@@ -66,6 +70,36 @@ function normalizeContextMessage(value: unknown) {
         canRetry: missionState.canRetry,
         canRevise: missionState.canRevise,
         stages: missionState.stages,
+      })}` : '',
+      documentRuntime ? `Document runtime: ${JSON.stringify({
+        status: documentRuntime.status,
+        objective: documentRuntime.objective,
+        attachments: documentRuntime.attachments,
+        report: documentRuntime.report,
+        nextActions: documentRuntime.nextActions,
+      })}` : '',
+      reportArtifact ? `Report artifact: ${JSON.stringify({
+        id: reportArtifact.id,
+        title: reportArtifact.title,
+        format: reportArtifact.format,
+        sourceFiles: reportArtifact.sourceFiles,
+        executiveSummary: reportArtifact.executiveSummary,
+        keyFindings: reportArtifact.keyFindings,
+        risks: reportArtifact.risks,
+        actionItems: reportArtifact.actionItems,
+        evidence: reportArtifact.evidence,
+      })}` : '',
+      exportBundle ? `Report export bundle: ${JSON.stringify({
+        id: exportBundle.id,
+        status: exportBundle.status,
+        createdAt: exportBundle.createdAt,
+        files: exportBundle.files,
+      })}` : '',
+      deliveryStatus ? `Delivery status: ${JSON.stringify({
+        status: deliveryStatus.status,
+        stages: deliveryStatus.stages,
+        files: deliveryStatus.files,
+        nextAction: deliveryStatus.nextAction,
       })}` : '',
       continuity ? `Continuity: ${JSON.stringify(continuity)}` : '',
       pendingOneClawTask ? `Pending OneClaw task: ${JSON.stringify({
@@ -104,6 +138,7 @@ function normalizeAttachments(value: unknown): TheOneChatAttachment[] {
     if (typeof record.text === 'string') attachment.text = record.text.slice(0, 12000);
     if (typeof record.textPreview === 'string') attachment.textPreview = record.textPreview.slice(0, 6000);
     if (typeof record.summary === 'string') attachment.summary = record.summary.slice(0, 1000);
+    if (record.insights && typeof record.insights === 'object') attachment.insights = record.insights as Record<string, unknown>;
     attachments.push(attachment);
   }
   return attachments.slice(0, 8);
@@ -122,6 +157,7 @@ function normalizeAttachmentMessage(value: unknown) {
         `Type: ${attachment.type}`,
         `Size: ${attachment.size} bytes`,
         attachment.path ? `Stored path: ${attachment.path}` : '',
+        attachment.insights ? `Attachment insights: ${JSON.stringify(attachment.insights)}` : '',
         attachment.summary ? `Summary: ${attachment.summary}` : '',
         attachment.textPreview || attachment.text ? `Content:\n${attachment.textPreview || attachment.text}` : '',
       ].filter(Boolean).join('\n')),
@@ -135,10 +171,16 @@ function attachmentInputHint(value: unknown) {
   const readable = attachments.filter((attachment) => attachment.text || attachment.textPreview);
   return [
     `Attached file context: ${attachments.map((attachment) => attachment.name).join(', ')}.`,
+    attachments.some((attachment) => attachment.insights)
+      ? `Attachment worker hints: ${attachments.map((attachment) => {
+        const worker = typeof attachment.insights?.recommendedWorker === 'string' ? attachment.insights.recommendedWorker : 'file.read';
+        return `${attachment.name} -> ${worker}`;
+      }).join('; ')}.`
+      : '',
     readable.length
       ? 'Readable attachment content is already available in system context; do not ask for a file path.'
       : 'The uploaded attachment has a stored path; route file/document workers if the request requires reading it.',
-  ].join(' ');
+  ].filter(Boolean).join(' ');
 }
 
 function attachConversation(result: Awaited<ReturnType<typeof runTheOneChatRuntime>>, messages: TheOneChatRuntimeInput['messages'], sessionId?: string) {

@@ -7,10 +7,12 @@ import { createExecutionRecord, createWorkflowTrace, markApprovalBlockedSteps } 
 import { getTheOneKernelStatus } from '../kernel/status';
 import { extractOneAIData, runOneAI } from '../providers/oneai';
 import { getOneClawBridgeStatus, getOneClawCapabilityManifest, runOneClawTask } from '../providers/oneclaw';
+import { normalizeWorkerReceipt } from '../providers/receipts';
 import { listEnabledAppRuntimePackages, selectAppRuntimePackagesFromCatalog } from '../apps/runtime-packages';
 import { resolveTheOneModel } from '../models/model-router';
 import { buildUniversalWorkerCatalog } from '../workers/action-catalog';
 import { queryMemoryGraph } from '../state/run-store';
+import { exportReportArtifact, type ReportExportBundle, type TheOneReportArtifact } from '../report-artifacts';
 import { buildBrainOnlyReply, buildTheOneBrainFrame } from './brain-layer';
 import { buildOneAIChatWorkflow, type TheOneChatMessage } from './oneai-workflow-builder';
 import type {
@@ -49,6 +51,10 @@ function executionStatus(raw: OneClawTaskRun | null, blocked: boolean): 'submitt
   if (raw?.status && /success|complete|submitted|running|queued|awaiting/i.test(raw.status)) return 'submitted';
   if (blocked) return 'blocked';
   return 'planned';
+}
+
+function oneClawRunFailed(run: OneClawTaskRun | null) {
+  return Boolean(run?.status && /fail|error|rejected/i.test(run.status));
 }
 
 function mapApprovalsForAutomation(input: {
@@ -135,6 +141,17 @@ function extractWorkerResultText(run: OneClawTaskRun | null) {
   return Array.from(new Set(fragments)).join('\n\n').slice(0, 9000);
 }
 
+function normalizeOneClawRunForChat(run: OneClawTaskRun | null, task: OneClawTask | null) {
+  if (!run) return null;
+  return normalizeWorkerReceipt({
+    provider: 'oneclaw',
+    taskName: task?.taskName || run.taskName || null,
+    action: task?.steps?.[0]?.action || null,
+    status: run.status,
+    raw: run.raw ?? run,
+  });
+}
+
 function firstTaskStepInput(task: { steps?: Array<{ input?: Record<string, unknown>; action?: string }> } | null | undefined) {
   return task?.steps?.[0]?.input || {};
 }
@@ -143,8 +160,116 @@ function firstTaskAction(task: { steps?: Array<{ action?: string }> } | null | u
   return task?.steps?.[0]?.action || '';
 }
 
-function textField(value: unknown) {
-  return typeof value === 'string' && value.trim() ? value.trim() : '';
+function textField(value: unknown, fallback = '') {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
+
+const SOCIAL_POST_MAX_CHARS = 280;
+
+function countPostCharacters(value: string) {
+  return Array.from(value).length;
+}
+
+function socialPostContentField(input: Record<string, unknown>) {
+  for (const key of ['content', 'text', 'body', 'message']) {
+    const value = textField(input[key]);
+    if (value) return { key, value };
+  }
+  return null;
+}
+
+function fallbackShortPost(content: string) {
+  const cleaned = content
+    .replace(/\s+/g, ' ')
+    .replace(/\b(exciting news|stay tuned for more updates|this evolution will|revolutionize your workflow and productivity)[!.]?/gi, '')
+    .trim();
+  const base = cleaned || content.replace(/\s+/g, ' ').trim();
+  const chars = Array.from(base);
+  return chars.length <= SOCIAL_POST_MAX_CHARS
+    ? base
+    : `${chars.slice(0, SOCIAL_POST_MAX_CHARS - 1).join('').trim()}…`;
+}
+
+async function shortenSocialPost(input: {
+  content: string;
+  raw: string;
+  mode: TheOneMode;
+}) {
+  const fallback = fallbackShortPost(input.content);
+  try {
+    const result = await runOneAI<unknown>({
+      type: 'theone_chat_workflow',
+      input: {
+        message: [
+          'Rewrite this X/Twitter post so it is publication-ready and strictly under 280 characters.',
+          'Keep the strategic intent. Remove filler, hype, and repeated claims. Return JSON with shortenedPost only.',
+          `User objective: ${input.raw}`,
+          `Draft:\n${input.content}`,
+        ].join('\n\n'),
+        mode: input.mode,
+        availableActions: [],
+        responseContract: {
+          shortenedPost: 'string under 280 characters',
+        },
+      },
+      options: {
+        responseFormat: 'json',
+        chain: 'theone_social_post_repair',
+      },
+    });
+    const data = extractOneAIData<Record<string, unknown>>(result);
+    const candidate = textField(data?.shortenedPost) || textField(data?.assistantReply) || textField(data?.reply);
+    return countPostCharacters(candidate) <= SOCIAL_POST_MAX_CHARS ? candidate : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function repairOneClawTaskBeforePolicy(input: {
+  task: OneClawTask | null;
+  raw: string;
+  mode: TheOneMode;
+}) {
+  if (!input.task?.steps?.length) return input.task;
+  let repaired = false;
+  const steps = [];
+  for (const step of input.task.steps) {
+    if (step.action !== 'social.post') {
+      steps.push(step);
+      continue;
+    }
+    const content = socialPostContentField(step.input || {});
+    if (!content || countPostCharacters(content.value) <= SOCIAL_POST_MAX_CHARS) {
+      steps.push(step);
+      continue;
+    }
+    const shortened = await shortenSocialPost({
+      content: content.value,
+      raw: input.raw,
+      mode: input.mode,
+    });
+    repaired = true;
+    steps.push({
+      ...step,
+      input: {
+        ...(step.input || {}),
+        [content.key]: shortened,
+      },
+    });
+  }
+  if (!repaired) return input.task;
+  return {
+    ...input.task,
+    steps,
+    metadata: {
+      ...(input.task.metadata || {}),
+      autoRepair: {
+        type: 'social_post_length',
+        maxCharacters: SOCIAL_POST_MAX_CHARS,
+        repairedAt: new Date().toISOString(),
+      },
+    },
+  };
 }
 
 function attachmentContextText(messages: TheOneChatMessage[]) {
@@ -169,6 +294,307 @@ function asksForFileArtifact(raw: string) {
   return /save|export|write.*file|generate.*(docx|pdf|file)|email|send (?:it|the report|report|file|document) to|保存|导出|生成文件|写入文件|另存|邮件|发送到|发给/i.test(raw);
 }
 
+function wantsChatReport(raw: string) {
+  return /report|summary|summarize|analy[sz]e|read this|document|报告|总结|分析|阅读|读/i.test(raw) &&
+    !/email|send .* to|发送到|发给|邮件/i.test(raw);
+}
+
+function attachmentInventory(context: string) {
+  if (!context.trim()) return [];
+  return context
+    .split(/\n\n(?=Attachment: )/i)
+    .map((block) => {
+      const name = block.match(/Attachment:\s*(.+)/i)?.[1]?.trim() || '';
+      if (!name) return null;
+      const type = block.match(/Type:\s*(.+)/i)?.[1]?.trim() || 'file';
+      const size = Number(block.match(/Size:\s*(\d+)/i)?.[1] || 0);
+      const path = block.match(/Stored path:\s*(.+)/i)?.[1]?.trim() || '';
+      const summary = block.match(/Summary:\s*([\s\S]*?)(?:\nContent:|$)/i)?.[1]?.trim() || '';
+      const insightsText = block.match(/Attachment insights:\s*(\{[\s\S]*?\})(?:\nSummary:|\nContent:|$)/i)?.[1]?.trim() || '';
+      let insights: Record<string, unknown> | null = null;
+      if (insightsText) {
+        try {
+          const parsed = JSON.parse(insightsText);
+          if (isRecord(parsed)) insights = parsed;
+        } catch {
+          insights = null;
+        }
+      }
+      const hasReadableText = /Content:\n/i.test(block);
+      return {
+        name,
+        type,
+        size,
+        path,
+        summary: summary.slice(0, 800),
+        hasReadableText,
+        insights,
+        recommendedWorker: textField(insights?.recommendedWorker),
+        pageEstimate: typeof insights?.pageEstimate === 'number' ? insights.pageEstimate : null,
+        wordCount: typeof insights?.wordCount === 'number' ? insights.wordCount : null,
+        detectedTopics: Array.isArray(insights?.detectedTopics) ? insights.detectedTopics.map(String).filter(Boolean).slice(0, 8) : [],
+        reportSections: Array.isArray(insights?.reportSections) ? insights.reportSections.map(String).filter(Boolean).slice(0, 8) : [],
+        evidencePreview: Array.isArray(insights?.evidencePreview) ? insights.evidencePreview.map(String).filter(Boolean).slice(0, 6) : [],
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+}
+
+function buildDocumentRuntime(input: {
+  raw: string;
+  attachmentContext: string;
+  attachmentReport: { summary: string } | null;
+  summary: string;
+  reportArtifact?: ChatReportArtifact | null;
+}) {
+  const attachments = attachmentInventory(input.attachmentContext);
+  if (!attachments.length && !input.attachmentReport) return null;
+  const readable = attachments.filter((attachment) => attachment.hasReadableText).length;
+  const workerHints = attachments.map((attachment) => attachment.recommendedWorker).filter(Boolean);
+  const topicHints = Array.from(new Set(attachments.flatMap((attachment) => attachment.detectedTopics)));
+  const reportSections = Array.from(new Set(attachments.flatMap((attachment) => attachment.reportSections)));
+  const reportReady = Boolean(input.attachmentReport || input.summary);
+  const artifactReady = Boolean(input.reportArtifact);
+  const wantsReport = /report|报告|总结|summary|summarize|分析|analy[sz]e/i.test(input.raw);
+
+  return {
+    schemaVersion: 'theone.document_runtime.v1',
+    status: artifactReady ? 'artifact_ready' : reportReady ? 'report_ready' : readable ? 'read_ready' : 'needs_worker_read',
+    objective: input.raw,
+    attachments,
+    readableCount: readable,
+    sourceQuality: readable ? 'upload_text_ready' : 'worker_read_needed',
+    recommendedWorkers: workerHints,
+    detectedTopics: topicHints,
+    reportSections,
+    stages: [
+      { key: 'uploaded', title: 'File attached', status: attachments.length ? 'completed' : 'pending' },
+      { key: 'classify', title: topicHints.length ? `Classified: ${topicHints.slice(0, 3).join(', ')}` : 'Classify source', status: attachments.length ? 'completed' : 'pending' },
+      { key: 'read', title: readable ? 'Readable text extracted' : 'File worker read needed', status: readable ? 'completed' : 'pending' },
+      { key: 'analyze', title: 'Evidence analyzed', status: reportReady ? 'completed' : readable ? 'active' : 'pending' },
+      { key: 'report', title: wantsReport ? 'Report prepared' : 'Summary prepared', status: reportReady ? 'completed' : 'pending' },
+      { key: 'export', title: artifactReady ? 'Export package ready' : 'Export on request', status: artifactReady ? 'available' : 'pending' },
+    ],
+    report: reportReady ? {
+      available: true,
+      format: artifactReady ? 'structured' : 'chat',
+      summary: input.summary.slice(0, 1200),
+      artifactId: input.reportArtifact?.id || null,
+    } : null,
+    nextActions: [
+      'Turn this into a formal report.',
+      'Extract risk register and action items.',
+      'Export as DOCX or PDF when needed.',
+    ],
+  };
+}
+
+type ChatReportArtifact = TheOneReportArtifact;
+
+function reportLines(summary: string) {
+  return summary
+    .split('\n')
+    .map((line) => line.replace(/^[-*•\d.)\s]+/, '').trim())
+    .filter((line) => line.length > 16);
+}
+
+function inferSeverity(line: string): 'low' | 'medium' | 'high' {
+  if (/critical|urgent|high|major|material|termination|penalty|liquidated|高|重大|严重|违约/i.test(line)) return 'high';
+  if (/low|minor|optional|低|轻微/i.test(line)) return 'low';
+  return 'medium';
+}
+
+function pickReportLines(lines: string[], patterns: RegExp[], fallbackStart = 0) {
+  const matches = lines.filter((line) => patterns.some((pattern) => pattern.test(line)));
+  return (matches.length ? matches : lines.slice(fallbackStart, fallbackStart + 5)).slice(0, 8);
+}
+
+function buildReportArtifactFromSummary(input: {
+  raw: string;
+  summary: string;
+  attachmentContext: string;
+}): ChatReportArtifact | null {
+  const attachments = attachmentInventory(input.attachmentContext);
+  if (!attachments.length || !input.summary.trim()) return null;
+  const lines = reportLines(input.summary);
+  const executiveSummary = lines.find((line) => !/^#+\s/.test(line)) || input.summary.replace(/\s+/g, ' ').slice(0, 600);
+  const keyFindings = pickReportLines(lines, [/finding|发现|scope|范围|deliverable|term|条款|summary|结论/i], 1);
+  const riskLines = pickReportLines(lines, [/risk|issue|problem|gap|liabil|delay|penalty|exclusion|风险|问题|缺口|责任|延期|罚/i], 2);
+  const actionLines = pickReportLines(lines, [/action|next|review|confirm|approve|prepare|verify|follow|行动|下一步|确认|审核|批准|准备/i], 3);
+  const evidence = pickReportLines(lines, [/evidence|source|clause|page|document|附件|证据|来源|条款|页/i], 0);
+
+  return {
+    schemaVersion: 'theone.report_artifact.v1',
+    id: `chat_report_${createRunId()}`,
+    title: input.raw.replace(/\s+/g, ' ').slice(0, 96) || 'Document report',
+    format: 'chat_report',
+    sourceFiles: attachments.map((attachment) => ({
+      name: attachment.name,
+      type: attachment.type,
+      path: attachment.path,
+      summary: attachment.summary,
+      insights: attachment.insights || undefined,
+      pageEstimate: attachment.pageEstimate || undefined,
+      wordCount: attachment.wordCount || undefined,
+      recommendedWorker: attachment.recommendedWorker || undefined,
+    })),
+    executiveSummary,
+    keyFindings,
+    risks: riskLines.map((line) => ({
+      title: line,
+      severity: inferSeverity(line),
+      evidence: line,
+      action: 'Review source file and decide mitigation or clarification.',
+    })),
+    actionItems: actionLines.map((line) => ({
+      task: line,
+      priority: inferSeverity(line),
+      evidence: line,
+    })),
+    evidence: evidence.slice(0, 8),
+    sourceExcerpt: input.summary.slice(0, 1600),
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function extractBalancedJsonObject(value: string) {
+  const start = value.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < value.length; index += 1) {
+    const char = value[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') inString = true;
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return value.slice(start, index + 1);
+    }
+  }
+  return null;
+}
+
+function parsePreviousReportArtifact(messages: TheOneChatMessage[]): ChatReportArtifact | null {
+  for (const message of [...messages].reverse()) {
+    const marker = 'Report artifact:';
+    const index = message.content.indexOf(marker);
+    if (index < 0) continue;
+    const text = message.content.slice(index + marker.length).trim();
+    const candidate = extractBalancedJsonObject(text);
+    if (!candidate) continue;
+    try {
+      const parsed = JSON.parse(candidate);
+      if (isRecord(parsed) && parsed.schemaVersion === 'theone.report_artifact.v1') return parsed as ChatReportArtifact;
+      if (isRecord(parsed) && parsed.id && parsed.executiveSummary) {
+        return {
+          schemaVersion: 'theone.report_artifact.v1',
+          id: textField(parsed.id, `report_${Date.now()}`),
+          title: textField(parsed.title, 'Report'),
+          format: textField(parsed.format, 'structured'),
+          sourceFiles: Array.isArray(parsed.sourceFiles) ? parsed.sourceFiles as ChatReportArtifact['sourceFiles'] : [],
+          executiveSummary: textField(parsed.executiveSummary),
+          keyFindings: Array.isArray(parsed.keyFindings) ? parsed.keyFindings.map((item) => String(item)).filter(Boolean) : [],
+          risks: Array.isArray(parsed.risks) ? parsed.risks as ChatReportArtifact['risks'] : [],
+          actionItems: Array.isArray(parsed.actionItems) ? parsed.actionItems as ChatReportArtifact['actionItems'] : [],
+          evidence: Array.isArray(parsed.evidence) ? parsed.evidence.map((item) => String(item)).filter(Boolean) : [],
+          sourceExcerpt: textField(parsed.sourceExcerpt),
+          createdAt: textField(parsed.createdAt, new Date().toISOString()),
+        };
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function buildDeliveryStatus(input: {
+  documentRuntime: ReturnType<typeof buildDocumentRuntime>;
+  reportArtifact: ChatReportArtifact | null;
+  exportBundle: ReportExportBundle | null;
+  approvals: ApprovalGate[];
+}) {
+  if (!input.documentRuntime && !input.reportArtifact && !input.exportBundle) return null;
+  return {
+    schemaVersion: 'theone.delivery_status.v1',
+    status: input.exportBundle ? 'export_ready' : input.reportArtifact ? 'report_ready' : 'in_progress',
+    quality: {
+      sourceCoverage: input.documentRuntime?.sourceQuality || 'unknown',
+      readableFiles: input.documentRuntime?.readableCount || 0,
+      sourceFiles: Array.isArray(input.documentRuntime?.attachments) ? input.documentRuntime.attachments.length : 0,
+      reportSections: input.documentRuntime?.reportSections || [],
+    },
+    stages: [
+      { key: 'read', title: 'Read source', status: input.documentRuntime ? 'completed' : 'pending' },
+      { key: 'report', title: 'Build report', status: input.reportArtifact ? 'completed' : 'pending' },
+      { key: 'export', title: 'Export files', status: input.exportBundle ? 'completed' : 'available' },
+      { key: 'approval', title: 'Approval gates', status: input.approvals.some((approval) => approval.status === 'pending') ? 'waiting' : 'clear' },
+    ],
+    files: input.exportBundle?.files || [],
+    nextAction: input.exportBundle
+      ? 'Open or download the exported report files.'
+      : input.reportArtifact
+        ? 'Ask TheOne to export as PDF, DOCX, Markdown, HTML, or JSON.'
+        : 'Finish reading and reporting first.',
+  };
+}
+
+function buildObjectiveAssessment(input: {
+  summary: string;
+  runtimeError: string | null;
+  approvalGated: boolean;
+  documentRuntime: ReturnType<typeof buildDocumentRuntime>;
+  oneclawRun: OneClawTaskRun | null;
+  oneclawTask: OneClawTask | null;
+}) {
+  const hasAnswer = Boolean(input.summary.trim());
+  const documentDone = input.documentRuntime?.status === 'report_ready' || input.documentRuntime?.status === 'artifact_ready';
+  const workerDone = Boolean(input.oneclawRun && !input.runtimeError);
+  const directAnswer = !input.oneclawTask && hasAnswer;
+  const satisfied = Boolean(!input.runtimeError && !input.approvalGated && (documentDone || workerDone || directAnswer));
+
+  return {
+    schemaVersion: 'theone.objective_assessment.v1',
+    status: satisfied ? 'satisfied' : input.approvalGated ? 'waiting_approval' : input.runtimeError ? 'needs_fix' : 'in_progress',
+    satisfied,
+    outcome: satisfied
+      ? 'The requested outcome has a usable answer or worker result.'
+      : input.approvalGated
+        ? 'The workflow is prepared, but a human approval is required before execution.'
+        : input.runtimeError
+          ? `The workflow needs a fix before it can complete: ${input.runtimeError}`
+          : 'The workflow has not reached a final worker result yet.',
+    evidence: [
+      documentDone ? 'Attachment content was read and converted into a report.' : null,
+      workerDone ? 'OneClaw returned a worker receipt.' : null,
+      directAnswer ? 'TheOne answered directly without external execution.' : null,
+    ].filter(Boolean),
+    gaps: [
+      input.approvalGated ? 'Approval is still waiting.' : null,
+      input.runtimeError ? input.runtimeError : null,
+      !hasAnswer ? 'No final readable answer was produced yet.' : null,
+    ].filter(Boolean),
+    nextAction: satisfied
+      ? 'Use the result, ask a follow-up, save it, or export it.'
+      : input.approvalGated
+        ? 'Approve, reject, or ask TheOne to revise the task.'
+        : input.runtimeError
+          ? 'Retry with the suggested fix or ask TheOne for an alternate route.'
+          : 'Continue the mission.',
+  };
+}
+
 async function generateAttachmentReport(input: {
   raw: string;
   attachmentContext: string;
@@ -181,6 +607,9 @@ async function generateAttachmentReport(input: {
         'The user attached a document or file and asked TheOne to read it.',
         'Write the final answer directly in the chat. Do not create an external worker task. Do not ask for a file path.',
         'If the user asks for a report, produce a practical report with: executive summary, key findings, risks/issues, action items, and evidence from the attachment.',
+        'If the document appears to be a contract, subcontract, construction package, commercial document, invoice, schedule, or technical file, adapt the report to that domain.',
+        'For construction or subcontract documents, include scope, commercial terms, deadlines, deliverables, exclusions/assumptions, risk clauses, and owner/contractor action items when evidence exists.',
+        'Use clear headings and concise bullets. If evidence is missing because the uploaded text is incomplete, say that limitation plainly and recommend the safest next step.',
         `User request: ${input.raw}`,
         `Attachment context:\n${input.attachmentContext}`,
       ].join('\n\n'),
@@ -267,7 +696,11 @@ function synthesizeGitHubRepoTask(input: {
 
 function pendingTaskSummary(input: {
   baseReply: string;
-  oneclawTask: { approvalMode?: string; steps?: Array<{ action?: string; input?: Record<string, unknown> }> } | null;
+  oneclawTask: {
+    approvalMode?: string;
+    metadata?: Record<string, unknown>;
+    steps?: Array<{ action?: string; input?: Record<string, unknown> }>;
+  } | null;
   approvals: ApprovalGate[];
   automationReason?: string;
 }) {
@@ -280,10 +713,17 @@ function pendingTaskSummary(input: {
   if (action === 'social.post') {
     const draft = textField(stepInput.content) || textField(stepInput.text) || textField(stepInput.body);
     const target = textField(stepInput.channel) || 'x';
+    const autoRepair = isRecord(input.oneclawTask?.metadata) && isRecord(input.oneclawTask.metadata.autoRepair)
+      ? input.oneclawTask.metadata.autoRepair
+      : null;
+    const repairNote = autoRepair?.type === 'social_post_length'
+      ? `TheOne also shortened the draft before approval so it fits X's ${autoRepair.maxCharacters || SOCIAL_POST_MAX_CHARS}-character limit.`
+      : '';
     return [
       'I prepared the X post workflow and paused before publishing.',
       '',
       draft ? `Draft post:\n${draft}` : 'Draft post: The publishing worker did not return a readable draft yet.',
+      repairNote ? `\n${repairNote}` : '',
       '',
       `Why approval is required: posting to ${target.toUpperCase()} is a public external write action.`,
       `Approval note: ${approvalReason}`,
@@ -675,6 +1115,20 @@ function classifyFailure(text: string) {
       nextFixes: ['Check connector credentials and permission scope.', 'Reconnect the provider, then retry the mission.'],
     };
   }
+  if (/too long|max 280|characters|character limit|字数|超长|超过/.test(value)) {
+    return {
+      category: 'content_length_limit',
+      severity: 'low',
+      nextFixes: ['Ask TheOne to shorten the content.', 'Retry after the draft fits the provider limit.'],
+    };
+  }
+  if (/attachment|document|file path|pdf|docx|xlsx|上传|附件|文档|文件/.test(value)) {
+    return {
+      category: 'document_or_attachment',
+      severity: 'medium',
+      nextFixes: ['Attach a readable file or provide a file path.', 'Ask TheOne to read the attachment and return a chat report first.'],
+    };
+  }
   if (/approval|manual|gate|requires human/.test(value)) {
     return {
       category: 'approval_required',
@@ -714,9 +1168,20 @@ async function summarizeWorkerResult(input: {
   rawRequest: string;
   workflowSummary: string;
   oneclawRun: OneClawTaskRun;
+  normalizedReceipt?: ReturnType<typeof normalizeWorkerReceipt> | null;
 }) {
   const workerResultText = extractWorkerResultText(input.oneclawRun);
-  const evidence = workerResultText || compactJson(input.oneclawRun, 9000);
+  const receiptSummary = input.normalizedReceipt
+    ? [
+        `Normalized worker summary: ${input.normalizedReceipt.summary}`,
+        input.normalizedReceipt.error ? `Worker error: ${input.normalizedReceipt.error}` : '',
+        input.normalizedReceipt.evidence?.length ? `Evidence:\n${input.normalizedReceipt.evidence.join('\n\n')}` : '',
+        input.normalizedReceipt.artifacts?.length ? `Artifacts: ${input.normalizedReceipt.artifacts.join(', ')}` : '',
+      ].filter(Boolean).join('\n\n')
+    : '';
+  const evidence = [receiptSummary, workerResultText || compactJson(input.oneclawRun, 9000)]
+    .filter(Boolean)
+    .join('\n\n');
 
   if (!evidence.trim()) {
     return {
@@ -729,8 +1194,12 @@ async function summarizeWorkerResult(input: {
   const finalMessage = [
     'You are finalizing a TheOne chat workflow after OneClaw executed a worker task.',
     'Return a polished user-facing answer. Use the worker evidence directly. Do not ask for approval or another URL if evidence is present.',
+    'If the worker failed, start with the exact reason, then give the fastest fix. Do not say the task completed.',
+    'Always judge whether the original user objective is satisfied. If not, say what is missing and the next safest action.',
+    'Use this answer shape when useful: Outcome, Evidence, Gaps or risks, Next action.',
     'For website analysis, use these sections when possible: Key findings, Positioning, Useful opportunities, Risks or gaps, Recommended next move.',
     'For API, file, GitHub, desktop, or browser work, explain what happened, what evidence supports it, and what the user can do next.',
+    'For X/social publishing failures, mention character limits, approval state, or provider restrictions when present.',
     'Do not expose raw JSON unless it is the only useful evidence.',
     `Original user request: ${input.rawRequest}`,
     `Workflow summary: ${input.workflowSummary}`,
@@ -889,8 +1358,11 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
   }).catch(() => []);
   const memoryContextMessage = buildMemoryContextMessage(memoryContext);
   const contextualMessages = memoryContextMessage ? [memoryContextMessage, ...messages] : messages;
+  const attachmentContext = attachmentContextText(contextualMessages);
+  const previousReportArtifact = parsePreviousReportArtifact(contextualMessages);
+  const directReportExport = Boolean(previousReportArtifact && asksForFileArtifact(raw));
 
-  if (!brain.executionDecision.shouldPlan || brain.reasoning.missingInformation.length > 0) {
+  if (!directReportExport && (!brain.executionDecision.shouldPlan || brain.reasoning.missingInformation.length > 0)) {
     let brainOnlyOneAi: Awaited<ReturnType<typeof buildOneAIChatWorkflow>> | null = null;
     let summary = buildBrainOnlyReply({ brain, appPackages });
 
@@ -1122,14 +1594,47 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     appPackages,
     brain,
   });
-  const attachmentContext = attachmentContextText(contextualMessages);
-  const directAttachmentReport = isAttachmentReportRequest(raw, contextualMessages) && !asksForFileArtifact(raw);
+  const directAttachmentReport = isAttachmentReportRequest(raw, contextualMessages) &&
+    (!asksForFileArtifact(raw) || wantsChatReport(raw));
   const oneAiProposedDocumentWorker = taskIncludesAction(oneAi.oneclawTask, 'document.generate') ||
     oneAi.workflow.workflow.steps.some((step) => step.action === 'document.generate');
   const attachmentReport = directAttachmentReport
     ? await generateAttachmentReport({ raw, attachmentContext, mode }).catch(() => null)
     : null;
-  const effectiveOneAi = attachmentReport
+  const directExportSummary = directReportExport
+    ? 'I exported the current report artifact into downloadable files: Markdown, HTML, JSON, PDF, and DOCX.'
+    : null;
+  const effectiveOneAi = directReportExport
+    ? {
+        ...oneAi,
+        workflow: {
+          ...oneAi.workflow,
+          assistantReply: directExportSummary || 'I exported the current report artifact into downloadable files.',
+          workflow: {
+            ...oneAi.workflow.workflow,
+            summary: 'Export the current report artifact into usable files.',
+            steps: [
+              {
+                id: 'report_export',
+                title: 'Export report artifact',
+                worker: 'theone',
+                action: 'theone.report.export',
+                input: { objective: raw, artifactId: previousReportArtifact?.id },
+                approvalMode: 'auto' as const,
+                dependsOn: [],
+              },
+            ],
+          },
+          requiredWorkers: ['theone'],
+          oneclawTask: null,
+          safety: {
+            requiresApproval: false,
+            reason: 'Exporting an existing report artifact is handled locally by TheOne.',
+          },
+        },
+        oneclawTask: null,
+      }
+    : attachmentReport
     ? {
         ...oneAi,
         workflow: {
@@ -1197,10 +1702,15 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     risk: effectiveOneAi.workflow.intent.risk,
     requiresApproval: effectiveOneAi.workflow.intent.requiresApproval || effectiveOneAi.workflow.safety.requiresApproval,
   });
-  const plannedOneClawTask = normalizeOneClawTaskContract({
+  const normalizedPlannedOneClawTask = normalizeOneClawTaskContract({
     task: rawPlannedOneClawTask,
     intent,
     oneAiData: effectiveOneAi.workflow as unknown as Record<string, unknown>,
+  });
+  const plannedOneClawTask = await repairOneClawTaskBeforePolicy({
+    task: normalizedPlannedOneClawTask,
+    raw,
+    mode,
   });
   const preflight = preflightOneClawTask({
     task: plannedOneClawTask,
@@ -1229,16 +1739,19 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
 
   let oneclawRun: OneClawTaskRun | null = null;
   let oneclawError: string | null = null;
+  let normalizedWorkerReceipt: ReturnType<typeof normalizeWorkerReceipt> | null = null;
   let finalOneAiResult: unknown = null;
   let finalSummary: string | null = null;
   let workerResultText = '';
   if (canSubmit && oneclawTask) {
     try {
       oneclawRun = await runOneClawTask<OneClawTaskRun>(oneclawTask);
+      normalizedWorkerReceipt = normalizeOneClawRunForChat(oneclawRun, oneclawTask);
       const finalized = await summarizeWorkerResult({
         rawRequest: raw,
         workflowSummary,
         oneclawRun,
+        normalizedReceipt: normalizedWorkerReceipt,
       });
       finalOneAiResult = finalized.finalOneAiResult;
       finalSummary = finalized.finalSummary;
@@ -1248,12 +1761,16 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     }
   }
 
+  const workerReturnedFailure = oneClawRunFailed(oneclawRun);
+  const workerFailureDetail = normalizedWorkerReceipt?.error ||
+    (workerReturnedFailure ? normalizedWorkerReceipt?.summary || `OneClaw task returned ${oneclawRun?.status}.` : null);
+  const runtimeError = oneclawError || workerFailureDetail;
   const blocked = automationPolicy.blocked || preflight.status === 'blocked' || Boolean(oneclawError);
   const approvalGated = pendingApprovals.length > 0 || automationPolicy.requiresHumanApproval;
   const dispatchStatus: PlanStep['status'] = !oneclawTask
     ? 'skipped'
     : oneclawRun
-      ? 'running'
+      ? workerReturnedFailure ? 'failed' : 'completed'
     : blocked
       ? 'failed'
       : approvalGated
@@ -1282,7 +1799,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     createExecutionRecord({
       provider: 'theone',
       status: blocked ? 'blocked' : 'success',
-      summary: blocked ? 'TheOne blocked or failed the workflow during validation.' : 'TheOne validated workflow, preflight, and policy.',
+      summary: blocked ? 'TheOne blocked the workflow during validation.' : 'TheOne validated workflow, preflight, and policy.',
       taskName: 'theone.chat.validate',
       raw: { preflight, automationPolicy, approvals },
     }),
@@ -1290,13 +1807,13 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       provider: 'oneclaw' as const,
       status: executionStatus(oneclawRun, blocked),
       summary: oneclawRun
-        ? 'OneClaw worker task executed by TheOne Chat Runtime.'
+        ? normalizedWorkerReceipt?.summary || 'OneClaw worker task executed by TheOne Chat Runtime.'
         : blocked
           ? 'OneClaw worker task was blocked before execution.'
           : 'OneClaw worker task is waiting for approval.',
       externalId: oneclawRun?.id || null,
       taskName: oneclawTask.taskName,
-      raw: { oneclawTask, oneclawRun, oneclawError },
+      raw: { oneclawTask, oneclawRun, oneclawError, normalizedReceipt: normalizedWorkerReceipt },
     })] : []),
     ...(finalOneAiResult ? [createExecutionRecord({
       provider: 'oneai' as const,
@@ -1315,10 +1832,42 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       })
     : null;
   const summary = finalSummary || approvalSummary || effectiveOneAi.workflow.assistantReply;
+  const generatedReportArtifact = attachmentReport
+    ? buildReportArtifactFromSummary({
+        raw,
+        summary,
+        attachmentContext,
+      })
+    : null;
+  const reportArtifact = generatedReportArtifact || (directReportExport ? previousReportArtifact : null);
+  const exportBundle = reportArtifact && (directReportExport || attachmentReport)
+    ? await exportReportArtifact(reportArtifact).catch(() => null)
+    : null;
+  const documentRuntime = buildDocumentRuntime({
+    raw,
+    attachmentContext,
+    attachmentReport: attachmentReport ? { summary: attachmentReport.summary } : null,
+    summary,
+    reportArtifact,
+  });
+  const deliveryStatus = buildDeliveryStatus({
+    documentRuntime,
+    reportArtifact,
+    exportBundle,
+    approvals,
+  });
+  const objectiveAssessment = buildObjectiveAssessment({
+    summary,
+    runtimeError,
+    approvalGated,
+    documentRuntime,
+    oneclawRun,
+    oneclawTask,
+  });
   const workerRuntime = describeWorkerRuntime({
     oneclawTask,
     oneclawRun,
-    oneclawError,
+    oneclawError: runtimeError,
     blocked,
     approvalGated,
     canSubmit,
@@ -1362,6 +1911,11 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         memoryContext: memorySummary(memoryContext),
         continuity,
         missionState,
+        documentRuntime,
+        reportArtifact,
+        exportBundle,
+        deliveryStatus,
+        objectiveAssessment,
         agentTimeline,
         workerCatalogSummary: workerCatalog.summary,
         oneAiWorkflow: effectiveOneAi.workflow,
@@ -1371,6 +1925,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         finalSummary,
         approvalSummary,
         workerResultText,
+        normalizedWorkerReceipt,
         preflight,
         automationPolicy,
         oneclawTask,
@@ -1379,7 +1934,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     }),
   ];
 
-  const ok = effectiveOneAi.oneAiResult.success && !automationPolicy.blocked && !oneclawError;
+  const ok = effectiveOneAi.oneAiResult.success && !automationPolicy.blocked && !runtimeError;
   const theoneWorkerStatus = blocked
     ? 'blocked'
     : approvalGated
@@ -1387,7 +1942,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       : automationPolicy.canAutoRun
         ? 'auto_cleared'
         : 'validated';
-  const oneclawWorkerStatus = oneclawRun
+  const oneclawWorkerStatus = workerReturnedFailure
+    ? 'failed'
+    : oneclawRun
     ? 'called'
     : blocked
       ? 'blocked'
@@ -1398,14 +1955,18 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
           : 'prepared';
   const nextActions = automationPolicy.blocked || preflight.status === 'blocked'
     ? ['Fix the blocked workflow action or input, then ask TheOne to rebuild the workflow.']
-      : oneclawError
-      ? [`Check OneClaw execution error: ${oneclawError}`]
+      : runtimeError
+      ? normalizedWorkerReceipt?.nextActions?.length
+        ? normalizedWorkerReceipt.nextActions
+        : [`Check OneClaw execution error: ${runtimeError}`]
       : approvalGated
         ? firstTaskAction(oneclawTask) === 'social.post'
           ? ['Review the draft, revise it if needed, then approve the pending X publish task.']
           : ['Review the pending approval before OneClaw executes this worker task.']
         : oneclawTask && !oneclawRun && automationPolicy.canAutoRun
           ? ['The read-only worker task is auto-cleared; wait for OneClaw execution receipt or refresh the run.']
+          : exportBundle
+            ? ['Open or download the exported report files, or ask TheOne to revise the report and export again.']
           : attachmentReport
             ? ['Use this report, ask a follow-up, or ask TheOne to export it as a file.']
           : finalSummary
@@ -1444,6 +2005,11 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       mission,
       workerRuntime,
       missionState,
+      documentRuntime,
+      reportArtifact,
+      exportBundle,
+      deliveryStatus,
+      objectiveAssessment,
       continuity,
       agentTimeline,
       brainMode: brain.mode,
@@ -1463,6 +2029,11 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       brain,
       workerRuntime,
       missionState,
+      documentRuntime,
+      reportArtifact,
+      exportBundle,
+      deliveryStatus,
+      objectiveAssessment,
       continuity,
       agentTimeline,
       modelRoute: primaryModel,
@@ -1521,6 +2092,8 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         missionState,
         continuity,
         agentTimeline,
+        exportBundle,
+        deliveryStatus,
       },
       nextActions,
     },

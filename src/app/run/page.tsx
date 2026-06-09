@@ -31,9 +31,11 @@ type ChatAttachment = {
   name: string;
   type: string;
   size: number;
+  path?: string;
   text?: string;
   textPreview?: string;
   summary?: string;
+  insights?: Record<string, unknown>;
   status: 'uploading' | 'ready' | 'failed';
 };
 
@@ -100,11 +102,11 @@ const starterMessage: ConversationMessage = {
 };
 
 const liveProgressStages = [
-  'Understanding',
-  'Planning',
-  'Checking policy',
-  'Calling workers',
-  'Reading proof',
+  'Understanding request',
+  'Choosing route',
+  'Checking safety',
+  'Running work',
+  'Collecting proof',
   'Writing answer',
 ];
 
@@ -168,6 +170,14 @@ async function postChatJson(payload: Record<string, unknown>) {
   return response.json();
 }
 
+async function refreshRunResult(runId: string) {
+  await new Promise((resolve) => window.setTimeout(resolve, 900));
+  const response = await fetch(`/api/theone/runs/${runId}`, { cache: 'no-store' });
+  if (!response.ok) return null;
+  const data = await response.json();
+  return data?.runId ? data : null;
+}
+
 async function uploadChatAttachments(files: FileList | null): Promise<ChatAttachment[]> {
   const selected = Array.from(files || []).slice(0, 8);
   if (!selected.length) return [];
@@ -188,9 +198,11 @@ async function uploadChatAttachments(files: FileList | null): Promise<ChatAttach
     name: String(attachment.name || 'attachment'),
     type: String(attachment.type || 'application/octet-stream'),
     size: Number(attachment.size || 0),
+    path: typeof attachment.path === 'string' ? attachment.path : undefined,
     text: typeof attachment.text === 'string' ? attachment.text : undefined,
     textPreview: typeof attachment.textPreview === 'string' ? attachment.textPreview : undefined,
     summary: typeof attachment.summary === 'string' ? attachment.summary : undefined,
+    insights: attachment.insights && typeof attachment.insights === 'object' ? attachment.insights : undefined,
     status: 'ready' as const,
   }));
 }
@@ -206,6 +218,37 @@ function plainResult(result: any) {
   const oneClaw = [...(result?.executions || [])].reverse().find((execution: any) => execution.provider === 'oneclaw');
   if (oneClaw?.summary) return oneClaw.summary;
   return 'TheOne is ready to plan, check policy, execute, and record proof.';
+}
+
+function latestOneClawExecution(result: any) {
+  return [...(result?.executions || [])].reverse().find((execution: any) => execution?.provider === 'oneclaw') || null;
+}
+
+function normalizedReceiptFromExecution(execution: any) {
+  return execution?.raw?.normalizedReceipt || execution?.receipt?.raw?.normalizedReceipt || null;
+}
+
+function resultFailureText(result: any) {
+  const oneclaw = latestOneClawExecution(result);
+  const receipt = normalizedReceiptFromExecution(oneclaw);
+  return [
+    result?.error,
+    result?.summary,
+    result?.chat?.workerRuntime?.diagnostics?.userReadable,
+    oneclaw?.summary,
+    oneclaw?.raw?.oneclawError,
+    receipt?.error,
+    receipt?.summary,
+    ...(Array.isArray(receipt?.nextActions) ? receipt.nextActions : []),
+  ].filter(Boolean).join(' ');
+}
+
+function isContentLengthFailure(result: any) {
+  return /too long|max 280|characters|character limit|字数|超长|超过/i.test(resultFailureText(result));
+}
+
+function isDocumentContextIssue(result: any) {
+  return /attachment|document|file path|pdf|docx|xlsx|上传|附件|文档|文件/i.test(resultFailureText(result));
 }
 
 function runStats(result: any) {
@@ -440,6 +483,62 @@ function resultActions(result: any) {
     { label: 'Report', prompt: 'turn this result into a concise report' },
     { label: 'Save', prompt: 'save this to TheOne memory' },
   ];
+  if (isContentLengthFailure(result)) {
+    actions.unshift({
+      label: 'Shorten + retry',
+      prompt: 'Shorten the failed X/social post so it is under 280 characters, keep the core meaning, then prepare the publish workflow again for approval.',
+    });
+  }
+  if (isDocumentContextIssue(result)) {
+    actions.unshift({
+      label: 'Use attachment',
+      prompt: 'Read the attached document and return a practical report in chat with executive summary, key findings, risks, action items, and evidence.',
+    });
+  }
+  if (result?.chat?.documentRuntime) {
+    actions.unshift(
+      {
+        label: 'Formal report',
+        prompt: 'Turn the attached document analysis into a formal report with executive summary, key findings, risk register, action items, and evidence.',
+      },
+      {
+        label: 'Risks',
+        prompt: 'Extract a risk register from the attached document with severity, owner, evidence, and recommended action.',
+      },
+      {
+        label: 'Export',
+        prompt: 'Export this document report as a polished DOCX or PDF file, and ask for approval if a file worker is required.',
+      }
+    );
+  }
+  if (result?.chat?.reportArtifact) {
+    actions.unshift(
+      {
+        label: 'Executive summary',
+        prompt: 'Rewrite this report artifact as a sharp executive summary with decisions needed and key evidence.',
+      },
+      {
+        label: 'Action plan',
+        prompt: 'Turn this report artifact into an action plan with owners, priorities, dates, and evidence.',
+      },
+      {
+        label: 'Export report',
+        prompt: 'Export this report artifact as a polished DOCX or PDF file. Preserve executive summary, findings, risks, action items, evidence, and source files.',
+      }
+    );
+  }
+  if (result?.chat?.exportBundle || result?.chat?.deliveryStatus?.files?.length) {
+    actions.unshift(
+      {
+        label: 'Revise + export',
+        prompt: 'Revise this report to be clearer, keep the evidence, then export it again as DOCX and PDF.',
+      },
+      {
+        label: 'Short report',
+        prompt: 'Create a shorter executive version of this report and export it as DOCX and PDF.',
+      }
+    );
+  }
   if (pendingApprovals(result).length) {
     return [{ label: 'Approve', prompt: 'approve' }, { label: 'Reject', prompt: 'reject' }, ...actions.filter((item) => item.label !== 'Save')];
   }
@@ -490,11 +589,336 @@ function ResultActions({
   );
 }
 
+function WorkerReceiptSummary({ receipt }: { receipt: any }) {
+  if (!receipt?.summary && !receipt?.error && !receipt?.evidence?.length && !receipt?.artifacts?.length) return null;
+  return (
+    <div className="run-worker-receipt-summary">
+      {receipt.error ? <strong>{receipt.error}</strong> : null}
+      {receipt.summary ? <p>{receipt.summary}</p> : null}
+      {Array.isArray(receipt.evidence) && receipt.evidence.length ? (
+        <div>
+          <span>Evidence</span>
+          {receipt.evidence.slice(0, 3).map((item: string) => <small key={item}>{item}</small>)}
+        </div>
+      ) : null}
+      {Array.isArray(receipt.artifacts) && receipt.artifacts.length ? (
+        <div>
+          <span>Artifacts</span>
+          {receipt.artifacts.slice(0, 3).map((item: string) => <small key={item}>{item}</small>)}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function DocumentRuntimeCard({ result }: { result: any }) {
+  const documentRuntime = result?.chat?.documentRuntime;
+  if (!documentRuntime) return null;
+  const attachments = Array.isArray(documentRuntime.attachments) ? documentRuntime.attachments : [];
+  const stages = Array.isArray(documentRuntime.stages) ? documentRuntime.stages : [];
+  return (
+    <div className="run-document-runtime-card">
+      <div>
+        <span>Document workflow</span>
+        <strong>{friendlyStatus(documentRuntime.status || 'ready')}</strong>
+      </div>
+      {attachments.length ? (
+        <div className="run-document-files">
+          {attachments.slice(0, 3).map((attachment: any) => (
+            <small key={attachment.name}>
+              {attachment.name}
+              <em>
+                {attachment.hasReadableText ? 'text extracted' : 'stored file'}
+                {attachment.recommendedWorker ? ` · ${attachment.recommendedWorker}` : ''}
+                {attachment.pageEstimate ? ` · ${attachment.pageEstimate}p` : ''}
+                {attachment.wordCount ? ` · ${attachment.wordCount} words` : ''}
+              </em>
+            </small>
+          ))}
+        </div>
+      ) : null}
+      {stages.length ? (
+        <div className="run-document-stages">
+          {stages.map((stage: any) => (
+            <i key={stage.key} className={`stage-${stage.status}`}>
+              <b>{stage.title}</b>
+            </i>
+          ))}
+        </div>
+      ) : null}
+      {Array.isArray(documentRuntime.nextActions) && documentRuntime.nextActions.length ? (
+        <p>{documentRuntime.nextActions.slice(0, 2).join(' ')}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function ReportArtifactCard({ result }: { result: any }) {
+  const artifact = result?.chat?.reportArtifact || result?.networkSignals?.reportArtifact || result?.appResult?.reportArtifact;
+  if (!artifact) return null;
+  const sourceFiles = Array.isArray(artifact.sourceFiles) ? artifact.sourceFiles : [];
+  const findings = Array.isArray(artifact.keyFindings) ? artifact.keyFindings : [];
+  const risks = Array.isArray(artifact.risks) ? artifact.risks : [];
+  const actions = Array.isArray(artifact.actionItems) ? artifact.actionItems : [];
+  return (
+    <div className="run-report-artifact-card">
+      <div className="run-report-artifact-head">
+        <span>Report artifact</span>
+        <strong>{artifact.format || 'structured'}</strong>
+      </div>
+      <h3>{artifact.title || 'Document report'}</h3>
+      {artifact.executiveSummary ? <p>{artifact.executiveSummary}</p> : null}
+      <div className="run-report-artifact-grid">
+        <div>
+          <span>Findings</span>
+          <strong>{findings.length}</strong>
+        </div>
+        <div>
+          <span>Risks</span>
+          <strong>{risks.length}</strong>
+        </div>
+        <div>
+          <span>Actions</span>
+          <strong>{actions.length}</strong>
+        </div>
+      </div>
+      {sourceFiles.length ? (
+        <div className="run-report-source-list">
+          {sourceFiles.slice(0, 3).map((file: any) => (
+            <small key={file.name}>
+              {file.name}
+              <em>{file.type || 'file'}</em>
+            </small>
+          ))}
+        </div>
+      ) : null}
+      {findings.length ? (
+        <ul>
+          {findings.slice(0, 3).map((item: string) => <li key={item}>{item}</li>)}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function formatFileSize(value: unknown) {
+  const size = typeof value === 'number' ? value : Number(value || 0);
+  if (!Number.isFinite(size) || size <= 0) return 'ready';
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 102.4) / 10} KB`;
+  return `${Math.round(size / 1024 / 102.4) / 10} MB`;
+}
+
+function attachmentInsight(attachment: ChatAttachment, key: string) {
+  return attachment.insights && Object.prototype.hasOwnProperty.call(attachment.insights, key)
+    ? attachment.insights[key]
+    : undefined;
+}
+
+function attachmentWorkerLabel(attachment: ChatAttachment) {
+  const worker = attachmentInsight(attachment, 'recommendedWorker');
+  if (typeof worker === 'string' && worker.trim()) return worker;
+  if (attachment.type.includes('pdf') || /\.(pdf|docx?|rtf)$/i.test(attachment.name)) return 'document.parse';
+  if (/\.(csv|tsv|xlsx?|xls)$/i.test(attachment.name)) return 'spreadsheet.read';
+  if (attachment.type.startsWith('image/')) return 'image.extractText';
+  return attachment.text ? 'file.read' : 'file.store';
+}
+
+function attachmentQualityLabel(attachment: ChatAttachment) {
+  if (attachment.status !== 'ready') return attachment.status;
+  const readable = attachmentInsight(attachment, 'readable');
+  const pages = attachmentInsight(attachment, 'pageEstimate');
+  const words = attachmentInsight(attachment, 'wordCount');
+  if (typeof pages === 'number' && pages > 0) return `${pages} page${pages === 1 ? '' : 's'}`;
+  if (typeof words === 'number' && words > 0) return `${words} words`;
+  if (readable === true || attachment.text) return 'readable';
+  return 'ready';
+}
+
+function attachmentTopicLabel(attachment: ChatAttachment) {
+  const topics = attachmentInsight(attachment, 'detectedTopics');
+  if (!Array.isArray(topics) || !topics.length) return '';
+  return topics.slice(0, 2).map(String).join(' + ');
+}
+
+function attachmentReportPrompt(attachments: ChatAttachment[]) {
+  const names = attachments.map((attachment) => attachment.name).join(', ');
+  const workers = Array.from(new Set(attachments.map(attachmentWorkerLabel))).join(', ');
+  return [
+    `Read the attached file(s): ${names}.`,
+    'Use the uploaded attachment content as the source. Do not ask for a file path.',
+    `Route through the best available file/document worker (${workers}) when execution is needed.`,
+    'Return a practical report with executive summary, key findings, risks/issues, action items, evidence, and recommended next steps.',
+    'If the report is useful, prepare export options for DOCX, PDF, Markdown, HTML, and JSON.',
+  ].join(' ');
+}
+
+function DeliveryStatusCard({ result }: { result: any }) {
+  const delivery = result?.chat?.deliveryStatus || result?.networkSignals?.deliveryStatus;
+  const bundle = result?.chat?.exportBundle || result?.networkSignals?.exportBundle;
+  const files = Array.isArray(delivery?.files) && delivery.files.length
+    ? delivery.files
+    : Array.isArray(bundle?.files)
+      ? bundle.files
+      : [];
+  if (!delivery && !files.length) return null;
+  const stages = Array.isArray(delivery?.stages) ? delivery.stages : [];
+  return (
+    <div className="run-delivery-status-card">
+      <div className="run-delivery-head">
+        <span>Delivery</span>
+        <strong>{friendlyStatus(delivery?.status || (files.length ? 'export_ready' : 'ready'))}</strong>
+      </div>
+      {stages.length ? (
+        <div className="run-delivery-stages">
+          {stages.map((stage: any) => (
+            <small key={stage.key || stage.title} className={`stage-${stage.status}`}>
+              <b>{stage.title}</b>
+              <em>{friendlyStatus(stage.status || 'ready')}</em>
+            </small>
+          ))}
+        </div>
+      ) : null}
+      {files.length ? (
+        <div className="run-export-files">
+          {files.map((file: any) => (
+            <a
+              key={`${file.format}-${file.path || file.filename}`}
+              href={`/api/theone/report/export/file?path=${encodeURIComponent(file.path || '')}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <span>{String(file.format || 'file').toUpperCase()}</span>
+              <strong>{file.filename || 'report'}</strong>
+              <em>{formatFileSize(file.size)}</em>
+            </a>
+          ))}
+        </div>
+      ) : null}
+      {delivery?.nextAction ? <p>{delivery.nextAction}</p> : null}
+    </div>
+  );
+}
+
+function ReportStudioCard({
+  result,
+  busy,
+  onAction,
+}: {
+  result: any;
+  busy: boolean;
+  onAction: (prompt: string) => void;
+}) {
+  const documentRuntime = result?.chat?.documentRuntime;
+  const artifact = result?.chat?.reportArtifact || result?.networkSignals?.reportArtifact || result?.appResult?.reportArtifact;
+  const delivery = result?.chat?.deliveryStatus || result?.networkSignals?.deliveryStatus;
+  if (!documentRuntime && !artifact && !delivery) return null;
+  const sourceCount = Array.isArray(documentRuntime?.attachments)
+    ? documentRuntime.attachments.length
+    : Array.isArray(artifact?.sourceFiles)
+      ? artifact.sourceFiles.length
+      : 0;
+  const quality = delivery?.quality?.sourceCoverage || documentRuntime?.sourceQuality || 'ready';
+  const actions = [
+    {
+      label: 'Executive brief',
+      prompt: 'Rewrite this document result as a concise executive brief with decision points and evidence.',
+    },
+    {
+      label: 'Risk register',
+      prompt: 'Extract a risk register from this document with severity, evidence, owner, and recommended action.',
+    },
+    {
+      label: 'Action plan',
+      prompt: 'Turn this document result into an action plan with owners, priorities, dates, and evidence.',
+    },
+    {
+      label: 'Export package',
+      prompt: 'Export this report as DOCX, PDF, Markdown, HTML, and JSON files.',
+    },
+  ];
+  return (
+    <div className="run-report-studio-card">
+      <div className="run-report-studio-head">
+        <span>Report Studio</span>
+        <strong>{friendlyStatus(quality)}</strong>
+      </div>
+      <div className="run-report-studio-grid">
+        <div>
+          <span>Sources</span>
+          <strong>{sourceCount}</strong>
+        </div>
+        <div>
+          <span>Sections</span>
+          <strong>{Array.isArray(documentRuntime?.reportSections) ? documentRuntime.reportSections.length : artifact ? 5 : 0}</strong>
+        </div>
+        <div>
+          <span>Files</span>
+          <strong>{Array.isArray(delivery?.files) ? delivery.files.length : 0}</strong>
+        </div>
+      </div>
+      <div className="run-report-studio-actions">
+        {actions.map((action) => (
+          <button key={action.label} type="button" disabled={busy} onClick={() => onAction(action.prompt)}>
+            {action.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ObjectiveAssessmentCard({ result }: { result: any }) {
+  const assessment = result?.chat?.objectiveAssessment;
+  if (!assessment) return null;
+  return (
+    <div className="run-objective-assessment">
+      <div>
+        <span>Outcome</span>
+        <strong>{friendlyStatus(assessment.status || 'ready')}</strong>
+      </div>
+      <p>{assessment.outcome}</p>
+      {Array.isArray(assessment.gaps) && assessment.gaps.length ? (
+        <small>Gap: {assessment.gaps.slice(0, 2).join(' ')}</small>
+      ) : null}
+      {assessment.nextAction ? <em>{assessment.nextAction}</em> : null}
+    </div>
+  );
+}
+
 function pendingApprovals(result: any) {
   const approvals = result?.approvals || [];
   return Array.isArray(approvals)
     ? approvals.filter((approval: any) => approval?.required && approval?.status === 'pending')
     : [];
+}
+
+function compactApprovalValue(value: any, limit = 140) {
+  if (value === null || value === undefined) return '';
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  return normalized.length > limit ? `${normalized.slice(0, limit - 1)}…` : normalized;
+}
+
+function approvalInputPreview(input: Record<string, any>) {
+  const priority = ['content', 'text', 'body', 'message', 'url', 'repo', 'path', 'app', 'command', 'query'];
+  const entries = [
+    ...priority.filter((key) => input[key] !== undefined).map((key) => [key, input[key]] as const),
+    ...Object.entries(input).filter(([key]) => !priority.includes(key)).slice(0, 4),
+  ];
+  return entries
+    .map(([key, value]) => ({ key, value: compactApprovalValue(value) }))
+    .filter((item) => item.value)
+    .slice(0, 5);
+}
+
+function actionRiskLabel(action: string, result: any) {
+  if (/social\.post|email\.send|message\.send|payment|transfer|delete|desktop\.(click|type|hotkey)/i.test(action)) {
+    return 'External write';
+  }
+  if (/file\.write|document\.generate|spreadsheet\.write|database\.write/i.test(action)) return 'Creates output';
+  if (result?.chat?.workerCoordination?.approvalGated) return 'Approval gated';
+  return 'Managed';
 }
 
 function coordinationWorkers(result: any) {
@@ -520,10 +944,17 @@ function missionQuickCommand(content: string, result: any) {
 
 function approvalDecisionMessage(decision: 'approve' | 'reject', result: any) {
   if (decision === 'reject') return 'Rejected. I kept the external worker from running.';
-  const oneclaw = [...(result?.executions || [])].reverse().find((execution: any) => execution.provider === 'oneclaw');
+  const oneclaw = latestOneClawExecution(result);
+  const receipt = normalizedReceiptFromExecution(oneclaw);
   const pending = pendingApprovals(result).length;
   if (oneclaw?.status === 'failed') {
-    return `Approved, but OneClaw failed to execute: ${oneclaw.summary || 'No worker receipt was returned.'}`;
+    const reason = receipt?.error || oneclaw.summary || 'No worker receipt was returned.';
+    const next = Array.isArray(receipt?.nextActions) && receipt.nextActions.length
+      ? `\n\nNext: ${receipt.nextActions.join(' ')}`
+      : isContentLengthFailure(result)
+        ? '\n\nNext: use Shorten + retry so the post fits X\'s 280 character limit.'
+        : '';
+    return `Approved, but OneClaw failed to execute.\n\nReason: ${reason}${next}`;
   }
   if (oneclaw?.externalId || ['success', 'submitted', 'running', 'mock'].includes(String(oneclaw?.status || '').toLowerCase())) {
     return plainResult(result);
@@ -629,6 +1060,12 @@ function ApprovalCard({
   if (!approvals.length) return null;
   const task = result?.pendingOneClawTask || result?.chat?.workerCoordination?.oneclawTask;
   const first = approvals[0];
+  const firstStep = task?.steps?.[0] || {};
+  const action = firstStep.action || first.action || 'worker.execute';
+  const input = firstStep.input || first.input || {};
+  const preview = approvalInputPreview(input);
+  const content = compactApprovalValue(input.content || input.text || input.body || input.message, 400);
+  const contentLength = content ? Array.from(content).length : 0;
 
   return (
     <div className="run-approval-card">
@@ -637,6 +1074,36 @@ function ApprovalCard({
         <strong>{task?.taskName || first.action || 'Worker task waiting'}</strong>
         <p>{first.reason || 'TheOne policy needs your decision before OneClaw executes this worker.'}</p>
       </div>
+      <div className="run-approval-impact" aria-label="Approval impact">
+        <div>
+          <span>Action</span>
+          <strong>{action}</strong>
+        </div>
+        <div>
+          <span>Mode</span>
+          <strong>{task?.approvalMode || result?.approvalMode || 'manual'}</strong>
+        </div>
+        <div>
+          <span>Risk</span>
+          <strong>{actionRiskLabel(action, result)}</strong>
+        </div>
+      </div>
+      {preview.length ? (
+        <div className="run-approval-preview">
+          <span>Input preview</span>
+          {preview.map((item) => (
+            <small key={item.key}>
+              <b>{item.key}</b>
+              {item.value}
+            </small>
+          ))}
+          {action === 'social.post' && content ? (
+            <em className={contentLength > 280 ? 'warning' : ''}>
+              X length: {contentLength}/280
+            </em>
+          ) : null}
+        </div>
+      ) : null}
       <div className="approval-actions">
         <button className="mini-action primary" type="button" disabled={busy} onClick={() => onDecision('approve', first.id)}>Approve</button>
         <button className="mini-action" type="button" disabled={busy} onClick={() => onDecision('reject', first.id)}>Reject</button>
@@ -746,6 +1213,7 @@ function WorkerCallCards({ result }: { result: any }) {
         const status = friendlyStatus(execution.status || 'ready');
         const taskName = execution.taskName || execution.action || execution.provider || 'worker.call';
         const receipt = execution.receipt || execution.raw?.receipt || execution.raw?.normalizedReceipt || execution.raw;
+        const normalizedReceipt = normalizedReceiptFromExecution(execution);
         return (
           <details key={execution.id || `${taskName}_${index}`} className="run-worker-call-card">
             <summary>
@@ -755,6 +1223,7 @@ function WorkerCallCards({ result }: { result: any }) {
             </summary>
             <div>
               <p>{execution.summary || 'The worker returned a receipt for this mission.'}</p>
+              <WorkerReceiptSummary receipt={normalizedReceipt} />
               <div className="run-worker-lifecycle">
                 {workerLifecycle(result, execution).map((item, itemIndex) => (
                   <div key={item.key} className={`timeline-${item.status}`}>
@@ -785,7 +1254,7 @@ function StreamEventList({ events }: { events: StreamEvent[] }) {
   }[event] || event.replace(/_/g, ' '));
 
   return (
-    <details className="run-side-details" open>
+    <details className="run-side-details">
       <summary>
         <span>Live events</span>
         <strong>{events.length}</strong>
@@ -841,6 +1310,8 @@ function RunPageContent() {
   const currentSteps = activeWorkflowSteps(latestResult);
   const title = conversationTitle(latestResult, messages);
   const hasUserMessages = messages.some((message) => message.role === 'user');
+  const attachmentUploading = attachments.some((attachment) => attachment.status === 'uploading');
+  const readyAttachmentCount = attachments.filter((attachment) => attachment.status === 'ready').length;
   const commands = [...templateCommands(), ...workerCommands];
   const filteredPrompts = commands.filter((item) => {
     const query = commandQuery.trim().toLowerCase();
@@ -931,6 +1402,20 @@ function RunPageContent() {
   async function sendMessage(text?: string) {
     const content = (text ?? input).trim();
     if (!content || loading) return;
+    const readyAttachments = attachments.filter((attachment) => attachment.status === 'ready');
+    const uploadInProgress = attachments.some((attachment) => attachment.status === 'uploading');
+    if (uploadInProgress) {
+      setMessages((current) => ([
+        ...current,
+        {
+          id: createId('assistant_attachment_wait'),
+          role: 'assistant',
+          content: 'The attachment is still uploading. I will be able to read it as soon as it is ready.',
+          createdAt: new Date().toISOString(),
+        },
+      ]));
+      return;
+    }
 
     const userMessage: ConversationMessage = {
       id: createId('user'),
@@ -975,7 +1460,7 @@ function RunPageContent() {
             id: createId(`assistant_${command}`),
             role: 'assistant',
             content: command === 'approve'
-              ? 'Approved. I continued the mission and refreshed the worker status.'
+              ? approvalDecisionMessage('approve', resolved)
               : command === 'reject'
                 ? 'Rejected. I kept the external worker from running.'
                 : command === 'resume'
@@ -997,6 +1482,10 @@ function RunPageContent() {
           mission: latestResult.chat.mission,
           workerRuntime: latestResult.chat.workerRuntime,
           missionState: latestResult.chat.missionState || latestResult.chat.workerRuntime?.missionState,
+          documentRuntime: latestResult.chat.documentRuntime,
+          reportArtifact: latestResult.chat.reportArtifact,
+          exportBundle: latestResult.chat.exportBundle,
+          deliveryStatus: latestResult.chat.deliveryStatus,
           continuity: latestResult.chat.continuity,
           pendingOneClawTask: latestResult.pendingOneClawTask,
           approvals: latestResult.approvals,
@@ -1005,7 +1494,7 @@ function RunPageContent() {
         } : undefined,
         messages: nextMessages.map((message) => ({ role: message.role, content: message.content })),
         sessionId: chatSessionId || undefined,
-        attachments,
+        attachments: readyAttachments,
         selectedWorker: selectedWorker ? {
           key: selectedWorker.key,
           label: selectedWorker.label,
@@ -1081,7 +1570,7 @@ function RunPageContent() {
         setChatSessionId(data.chat.conversation.sessionId);
         window.localStorage.setItem('theone.chatSessionId', data.chat.conversation.sessionId);
       }
-      setAttachments([]);
+      setAttachments((current) => current.filter((attachment) => attachment.status !== 'ready'));
       setSelectedWorker(null);
     } catch (error) {
       const failure = { ok: false, error: error instanceof Error ? error.message : 'TheOne could not start this run.' };
@@ -1119,15 +1608,17 @@ function RunPageContent() {
         body: JSON.stringify(payload),
       }).then((res) => res.json());
       if (data.ok === false) throw new Error(data.error || 'Approval decision failed.');
-      setResult(data);
+      const synced = decision === 'approve' ? await refreshRunResult(runId).catch(() => null) : null;
+      const resolved = synced || data;
+      setResult(resolved);
       setMessages((current) => ([
         ...current,
         {
           id: createId(`assistant_${decision}`),
           role: 'assistant',
-          content: approvalDecisionMessage(decision, data),
+          content: approvalDecisionMessage(decision, resolved),
           createdAt: new Date().toISOString(),
-          result: data,
+          result: resolved,
         },
       ]));
     } catch (error) {
@@ -1263,14 +1754,21 @@ function RunPageContent() {
                 </div>
                 <p>{message.content}</p>
                 {message.role === 'assistant' && message.result ? <WorkStatusLine result={message.result} /> : null}
+                {message.role === 'assistant' && message.result ? <DocumentRuntimeCard result={message.result} /> : null}
+                {message.role === 'assistant' && message.result ? <ReportArtifactCard result={message.result} /> : null}
+                {message.role === 'assistant' && message.result ? <DeliveryStatusCard result={message.result} /> : null}
+                {message.role === 'assistant' && message.result ? (
+                  <ReportStudioCard result={message.result} busy={loading} onAction={(prompt) => sendMessage(prompt)} />
+                ) : null}
+                {message.role === 'assistant' && message.result ? <ObjectiveAssessmentCard result={message.result} /> : null}
                 {message.result?.appRoute ? (
                   <div className="run-message-route">
                     <span>{message.result.appRoute.title}</span>
                     <strong>{message.result.appRoute.action}</strong>
                   </div>
                 ) : null}
-                {message.role === 'assistant' && message.result ? <ToolTrace result={message.result} /> : null}
-                {message.role === 'assistant' && message.result ? <WorkerCallCards result={message.result} /> : null}
+                {inspectorOpen && message.role === 'assistant' && message.result ? <ToolTrace result={message.result} /> : null}
+                {inspectorOpen && message.role === 'assistant' && message.result ? <WorkerCallCards result={message.result} /> : null}
                 {message.role === 'assistant' && message.result ? (
                   <ApprovalCard result={message.result} busy={loading} onDecision={decideApproval} />
                 ) : null}
@@ -1364,18 +1862,32 @@ function RunPageContent() {
                 ))}
               </div>
               <span>Cmd/Ctrl + Enter</span>
-              <button className="run-button" type="button" onClick={() => sendMessage()} disabled={loading || !input.trim()}>
-                {loading ? 'Working...' : 'Send'}
+              <button className="run-button" type="button" onClick={() => sendMessage()} disabled={loading || attachmentUploading || !input.trim()}>
+                {loading ? 'Working...' : attachmentUploading ? 'Uploading...' : 'Send'}
               </button>
             </div>
             {attachments.length ? (
               <div className="run-attachment-strip">
                 {attachments.map((attachment) => (
                   <span key={attachment.id} className={`attachment-${attachment.status}`}>
-                    {attachment.name}
-                    <small>{attachment.status === 'ready' ? 'ready' : attachment.status}</small>
+                    <strong>{attachment.name}</strong>
+                    <small>
+                      {attachmentQualityLabel(attachment)}
+                      {' · '}
+                      {attachmentWorkerLabel(attachment)}
+                      {attachmentTopicLabel(attachment) ? ` · ${attachmentTopicLabel(attachment)}` : ''}
+                    </small>
                   </span>
                 ))}
+                {readyAttachmentCount ? (
+                  <button
+                    type="button"
+                    onClick={() => setInput(attachmentReportPrompt(attachments.filter((attachment) => attachment.status === 'ready')))}
+                    disabled={loading}
+                  >
+                    Read + report
+                  </button>
+                ) : null}
                 <button type="button" onClick={() => setAttachments([])}>Clear</button>
               </div>
             ) : null}
@@ -1436,7 +1948,14 @@ function RunPageContent() {
             <div className="run-mission-card">
               <span className="product-card-kicker">Now</span>
               <strong>{workerRuntime.current?.title || friendlyStatus(workerRuntime.status)}</strong>
-              <p className="panel-subtitle">{workerRuntime.current?.detail || workerRuntime.diagnostics?.userReadable}</p>
+            <p className="panel-subtitle">{workerRuntime.current?.detail || workerRuntime.diagnostics?.userReadable}</p>
+              {latestResult?.chat?.documentRuntime ? <DocumentRuntimeCard result={latestResult} /> : null}
+              {latestResult?.chat?.reportArtifact ? <ReportArtifactCard result={latestResult} /> : null}
+              {latestResult?.chat?.deliveryStatus || latestResult?.chat?.exportBundle ? <DeliveryStatusCard result={latestResult} /> : null}
+              {latestResult?.chat?.documentRuntime || latestResult?.chat?.reportArtifact || latestResult?.chat?.deliveryStatus ? (
+                <ReportStudioCard result={latestResult} busy={loading} onAction={(prompt) => sendMessage(prompt)} />
+              ) : null}
+              {latestResult?.chat?.objectiveAssessment ? <ObjectiveAssessmentCard result={latestResult} /> : null}
               {missionState ? (
                 <div className="run-state-strip">
                   <span>{friendlyStatus(missionState.state)}</span>

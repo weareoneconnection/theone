@@ -11,9 +11,15 @@ export async function POST(req: Request) {
       format: String(body.format || 'Brief'),
       mode: (body.mode || 'assist') as TheOneMode,
       language: String(body.language || 'en'),
+      sourceFiles: Array.isArray(body.sourceFiles) ? body.sourceFiles : undefined,
     });
     const stored = await saveRunResult(result);
-    return Response.json({ ...stored, appResult: result.appResult, appMemoryPack: result.appMemoryPack }, { status: stored.ok ? 200 : 500 });
+    return Response.json({
+      ...stored,
+      appResult: result.appResult,
+      appMemoryPack: result.appMemoryPack,
+      reportArtifact: result.appResult.reportArtifact,
+    }, { status: stored.ok ? 200 : 500 });
   } catch (error) {
     return Response.json({ ok: false, appResult: null, error: error instanceof Error ? error.message : 'Report workflow failed' }, { status: 500 });
   }

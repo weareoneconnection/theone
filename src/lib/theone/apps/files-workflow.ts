@@ -7,7 +7,7 @@ import type { ClassifiedIntent, ExecutionPlan, PlanStep, ProofRecord, TheOneMode
 
 export type FilesWorkflowInput = {
   path: string;
-  operation: 'list' | 'exists' | 'read' | 'write' | 'append';
+  operation: 'list' | 'exists' | 'read' | 'write' | 'append' | 'document_parse' | 'spreadsheet_read';
   content?: string;
   mode?: TheOneMode;
 };
@@ -17,6 +17,8 @@ function fileAction(operation: FilesWorkflowInput['operation']) {
   if (operation === 'read') return 'file.read';
   if (operation === 'write') return 'file.write';
   if (operation === 'append') return 'file.append';
+  if (operation === 'document_parse') return 'document.parse';
+  if (operation === 'spreadsheet_read') return 'spreadsheet.read';
   return 'file.list';
 }
 
@@ -66,6 +68,7 @@ export async function runFilesWorkflowApp(input: FilesWorkflowInput): Promise<Th
   const operation = input.operation || 'list';
   const action = fileAction(operation);
   const writeLike = operation === 'write' || operation === 'append';
+  const readLike = operation === 'read' || operation === 'document_parse' || operation === 'spreadsheet_read';
   const mode = input.mode || 'assist';
   const runId = createRunId();
   const startedAt = new Date().toISOString();
@@ -90,12 +93,14 @@ export async function runFilesWorkflowApp(input: FilesWorkflowInput): Promise<Th
   const output = firstStepOutput(task);
   const summary = writeLike && currentStepStatus === 'blocked'
     ? `${operation} for ${path} is prepared and waiting for approval.`
-    : `${operation} for ${path} returned ${status || 'submitted'}.`;
+    : readLike
+      ? `${action} read ${path} and returned ${status || 'submitted'}.`
+      : `${operation} for ${path} returned ${status || 'submitted'}.`;
   const intent: ClassifiedIntent = {
     type: 'automation',
     objective: `Use Files App to ${operation} ${path}`,
     entities: [path],
-    constraints: [writeLike ? 'file write requires approval' : 'read-only file operation', 'record proof'],
+    constraints: [writeLike ? 'file write requires approval' : 'read-only file or document operation', 'record proof'],
     priority: 'normal',
     confidence: 0.94,
     requiresApproval: writeLike,
@@ -111,7 +116,7 @@ export async function runFilesWorkflowApp(input: FilesWorkflowInput): Promise<Th
     },
     {
       id: 'files_action',
-      title: `Run ${action}`,
+      title: readLike ? `Read source with ${action}` : `Run ${action}`,
       action: 'oneclaw.execute',
       status: currentStepStatus,
       input: { action, ...actionInput },
@@ -143,7 +148,7 @@ export async function runFilesWorkflowApp(input: FilesWorkflowInput): Promise<Th
       apps: [],
       connectors: [],
       risk: writeLike ? 'medium' : 'low',
-      summary: 'Files App routed a filesystem operation through OneClaw with write approval gates.',
+      summary: 'Files App routed the source to the safest OneClaw file, document, or spreadsheet worker.',
     },
   };
   const approvals = writeLike ? [{
