@@ -845,6 +845,13 @@ export async function syncRunExecution(input: { runId: string }) {
       mock: Boolean(latest.mock),
       raw: latest,
     }, 'oneclaw.task.get');
+    const latestRun: OneClawTaskRun = {
+      id: oneclawExecution.externalId,
+      status,
+      taskName: oneclawExecution.taskName,
+      mock: Boolean(latest.mock),
+      raw: latest,
+    };
     const normalizedReceipt = normalizeWorkerReceipt({
       provider: 'oneclaw',
       taskName: oneclawExecution.taskName,
@@ -900,6 +907,41 @@ export async function syncRunExecution(input: { runId: string }) {
         : `Task ${oneclawExecution.externalId} is ${status}.`,
       payload: { latest, receipt: latestReceipt },
     });
+
+    if (['success', 'completed', 'complete', 'failed', 'error', 'rejected', 'mock'].includes(status.toLowerCase())) {
+      const workerSummary = await summarizeApprovedWorkerResult({
+        objective: stored.result.intent.objective,
+        taskName: oneclawExecution.taskName,
+        oneclawRun: latestRun,
+        normalizedReceipt,
+      });
+
+      if (workerSummary) {
+        stored.result.summary = workerSummary.summary;
+        stored.result.executions = [
+          ...(stored.result.executions || []),
+          createExecutionRecord({
+            provider: 'oneai',
+            status: workerSummary.oneAiResult && typeof workerSummary.oneAiResult === 'object' && (workerSummary.oneAiResult as any).success === false ? 'failed' : 'success',
+            summary: 'OneAI summarized the synced worker result.',
+            taskName: 'oneai.sync.finalize',
+            raw: workerSummary.oneAiResult,
+          }),
+        ];
+        appendProof(stored.result, {
+          type: 'system',
+          title: 'Synced worker result summarized',
+          value: workerSummary.summary,
+          timestamp: now(),
+          metadata: {
+            provider: 'oneai',
+            taskName: oneclawExecution.taskName,
+            oneclawTaskId: oneclawExecution.externalId,
+            evidence: workerSummary.evidence.slice(0, 1200),
+          },
+        });
+      }
+    }
   });
 }
 

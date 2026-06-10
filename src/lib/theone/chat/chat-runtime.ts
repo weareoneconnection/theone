@@ -6,7 +6,7 @@ import { createRunId, createPlanId } from '../runtime';
 import { createExecutionRecord, createWorkflowTrace, markApprovalBlockedSteps } from '../runtime/workflow-runtime';
 import { getTheOneKernelStatus } from '../kernel/status';
 import { extractOneAIData, runOneAI } from '../providers/oneai';
-import { getOneClawBridgeStatus, getOneClawCapabilityManifest, runOneClawTask } from '../providers/oneclaw';
+import { getOneClawBridgeStatus, getOneClawCapabilityManifest, getOneClawTask, runOneClawTask } from '../providers/oneclaw';
 import { normalizeWorkerReceipt } from '../providers/receipts';
 import { listEnabledAppRuntimePackages, selectAppRuntimePackagesFromCatalog } from '../apps/runtime-packages';
 import { resolveTheOneModel } from '../models/model-router';
@@ -19,6 +19,7 @@ import type {
   ApprovalGate,
   ClassifiedIntent,
   ExecutionPlan,
+  ExecutionRecord,
   OneClawTask,
   OneClawTaskRun,
   PlanStep,
@@ -45,16 +46,76 @@ function normalizeMode(value: unknown): TheOneMode {
   return value === 'manual' || value === 'auto' || value === 'assist' ? value : 'assist';
 }
 
-function executionStatus(raw: OneClawTaskRun | null, blocked: boolean): 'submitted' | 'blocked' | 'failed' | 'mock' | 'planned' {
+function executionStatus(raw: OneClawTaskRun | null, blocked: boolean): ExecutionRecord['status'] {
   if (raw?.mock) return 'mock';
   if (raw?.status && /fail|error|rejected/i.test(raw.status)) return 'failed';
-  if (raw?.status && /success|complete|submitted|running|queued|awaiting/i.test(raw.status)) return 'submitted';
+  if (raw?.status && /success|complete/i.test(raw.status)) return 'success';
+  if (raw?.status && /submitted|running|queued|awaiting|pending/i.test(raw.status)) return 'running';
   if (blocked) return 'blocked';
   return 'planned';
 }
 
 function oneClawRunFailed(run: OneClawTaskRun | null) {
   return Boolean(run?.status && /fail|error|rejected/i.test(run.status));
+}
+
+function oneClawRunSettled(run: OneClawTaskRun | null) {
+  if (!run) return false;
+  if (run.mock) return true;
+  return /^(success|completed|complete|failed|error|rejected)$/i.test(run.status);
+}
+
+function oneClawRunInFlight(run: OneClawTaskRun | null) {
+  if (!run) return false;
+  return /^(submitted|queued|pending|running|awaiting_approval)$/i.test(run.status);
+}
+
+function oneClawRunId(run: OneClawTaskRun | null) {
+  if (run?.id) return run.id;
+  const raw = isRecord(run?.raw) ? run.raw : null;
+  return typeof raw?.id === 'string' && raw.id.trim() ? raw.id.trim() : null;
+}
+
+function asOneClawTaskRun(latest: unknown, fallback: OneClawTaskRun): OneClawTaskRun {
+  const raw = isRecord(latest) ? latest : {};
+  return {
+    id: typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : fallback.id,
+    status: String(raw.status || raw.state || fallback.status || 'running'),
+    taskName: typeof raw.taskName === 'string' ? raw.taskName : fallback.taskName,
+    mock: Boolean(raw.mock || fallback.mock),
+    raw: latest,
+  };
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForOneClawCompletion(run: OneClawTaskRun, task: OneClawTask) {
+  const taskId = oneClawRunId(run);
+  if (!taskId || run.mock) return run;
+
+  let current = run;
+  const delays = oneClawRunSettled(current) && extractWorkerResultText(current).trim()
+    ? [250]
+    : [400, 800, 1200, 1600, 2000];
+
+  for (const waitMs of delays) {
+    await delay(waitMs);
+    try {
+      const latest = await getOneClawTask<unknown>(taskId);
+      current = asOneClawTaskRun(latest, {
+        ...current,
+        id: taskId,
+        taskName: current.taskName || task.taskName,
+      });
+      if (oneClawRunSettled(current)) break;
+    } catch {
+      return current;
+    }
+  }
+
+  return current;
 }
 
 function mapApprovalsForAutomation(input: {
@@ -673,6 +734,16 @@ function buildUnfinishedExecutionSummary(input: {
     ].filter(Boolean).join('\n\n');
   }
 
+  if (input.oneclawRun && oneClawRunInFlight(input.oneclawRun)) {
+    const taskId = oneClawRunId(input.oneclawRun);
+    return [
+      `I submitted the ${label} worker, but the result is not ready yet.`,
+      taskId ? `OneClaw task: ${taskId}` : '',
+      action ? `Worker: ${action}` : '',
+      'Next: press Continue so I can sync the receipt and finish the answer.',
+    ].filter(Boolean).join('\n\n');
+  }
+
   if (input.oneclawRun && input.workerResultText.trim()) {
     return [
       `The ${label} worker returned data, but the final summary pass did not produce a finished answer.`,
@@ -1181,7 +1252,7 @@ function describeWorkerRuntime(input: {
       key: 'worker_dispatch',
       title: 'Worker dispatch',
       status: input.oneclawRun
-        ? 'completed'
+        ? oneClawRunSettled(input.oneclawRun) ? 'completed' : 'running'
         : input.oneclawError
           ? 'failed'
           : input.blocked
@@ -1192,7 +1263,9 @@ function describeWorkerRuntime(input: {
                 ? 'running'
                 : 'prepared',
       detail: input.oneclawRun
-        ? 'OneClaw returned a worker receipt.'
+        ? oneClawRunSettled(input.oneclawRun)
+          ? 'OneClaw returned a final worker receipt.'
+          : 'OneClaw accepted the task and is still running it.'
         : input.oneclawError
           ? input.oneclawError
           : input.approvalGated
@@ -1230,10 +1303,12 @@ function describeWorkerRuntime(input: {
       ? 'failed'
       : input.blocked
         ? 'blocked'
-        : input.approvalGated
-          ? 'awaiting_approval'
-          : input.oneclawRun || input.finalSummary
+          : input.approvalGated
+            ? 'awaiting_approval'
+          : input.finalSummary || (input.oneclawRun && oneClawRunSettled(input.oneclawRun))
             ? 'completed'
+            : input.oneclawRun
+              ? 'running'
             : input.oneclawTask
               ? 'prepared'
               : 'answered',
@@ -1247,7 +1322,9 @@ function describeWorkerRuntime(input: {
           : input.blocked
             ? input.automationPolicy.reasons?.join(' ') || 'TheOne blocked this workflow during policy validation.'
             : input.oneclawRun
-              ? 'Worker execution completed and returned a receipt.'
+              ? oneClawRunSettled(input.oneclawRun)
+                ? 'Worker execution completed and returned a receipt.'
+                : 'Worker execution was submitted and is still waiting for a final receipt.'
               : input.oneclawTask
                 ? 'Worker task is prepared and safe to track.'
                 : 'No external worker was needed for this response.',
@@ -1279,6 +1356,8 @@ function buildMissionState(input: {
       ? 'blocked'
       : input.approvalGated
         ? 'waiting_approval'
+        : input.oneclawRun && oneClawRunInFlight(input.oneclawRun)
+          ? 'executing'
         : input.oneclawRun && !(input.finalSummary || input.workerResultText)
           ? 'summarizing'
           : input.finalSummary || input.workerResultText || !input.oneclawTask
@@ -2051,16 +2130,20 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
   if (canSubmit && oneclawTask) {
     try {
       oneclawRun = await runOneClawTask<OneClawTaskRun>(oneclawTask);
+      oneclawRun = await waitForOneClawCompletion(oneclawRun, oneclawTask);
       normalizedWorkerReceipt = normalizeOneClawRunForChat(oneclawRun, oneclawTask);
-      const finalized = await summarizeWorkerResult({
-        rawRequest: raw,
-        workflowSummary,
-        oneclawRun,
-        normalizedReceipt: normalizedWorkerReceipt,
-      });
-      finalOneAiResult = finalized.finalOneAiResult;
-      finalSummary = finalized.finalSummary;
-      workerResultText = finalized.workerResultText;
+      workerResultText = extractWorkerResultText(oneclawRun);
+      if (oneClawRunSettled(oneclawRun) || (workerResultText.trim() && !oneClawRunInFlight(oneclawRun))) {
+        const finalized = await summarizeWorkerResult({
+          rawRequest: raw,
+          workflowSummary,
+          oneclawRun,
+          normalizedReceipt: normalizedWorkerReceipt,
+        });
+        finalOneAiResult = finalized.finalOneAiResult;
+        finalSummary = finalized.finalSummary;
+        workerResultText = finalized.workerResultText || workerResultText;
+      }
     } catch (error) {
       oneclawError = error instanceof Error ? error.message : 'OneClaw task submission failed.';
     }
@@ -2075,7 +2158,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
   const dispatchStatus: PlanStep['status'] = !oneclawTask
     ? 'skipped'
     : oneclawRun
-      ? workerReturnedFailure ? 'failed' : 'completed'
+      ? workerReturnedFailure ? 'failed' : oneClawRunSettled(oneclawRun) ? 'completed' : 'running'
     : blocked
       ? 'failed'
       : approvalGated
@@ -2224,7 +2307,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     workerRuntime,
     workflowSteps: plannedWorkflowSteps.map((step) => ({
       ...step,
-      status: step.worker === 'oneai' || finalSummary ? 'completed' : oneclawRun ? 'running' : blocked ? 'blocked' : 'pending',
+      status: step.worker === 'oneai' || finalSummary ? 'completed' : oneclawRun ? oneClawRunSettled(oneclawRun) ? 'completed' : 'running' : blocked ? 'blocked' : 'pending',
     })),
     executions,
     approvals,
@@ -2326,7 +2409,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     proof: proofRecords,
     approvals,
     executions,
-    pendingOneClawTask: oneclawTask && !oneclawRun ? oneclawTask : null,
+    pendingOneClawTask: oneclawTask && (!oneclawRun || oneClawRunInFlight(oneclawRun)) ? oneclawTask : null,
     preflight,
     os: {
       ...kernel,
