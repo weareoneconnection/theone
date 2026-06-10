@@ -7,7 +7,7 @@ import type { ClassifiedIntent, ExecutionPlan, PlanStep, ProofRecord, TheOneMode
 
 export type FilesWorkflowInput = {
   path: string;
-  operation: 'list' | 'exists' | 'read' | 'write' | 'append' | 'document_parse' | 'spreadsheet_read';
+  operation: 'list' | 'exists' | 'read' | 'write' | 'append' | 'document_parse' | 'spreadsheet_read' | 'image_extract_text' | 'image_analyze';
   content?: string;
   mode?: TheOneMode;
 };
@@ -19,6 +19,8 @@ function fileAction(operation: FilesWorkflowInput['operation']) {
   if (operation === 'append') return 'file.append';
   if (operation === 'document_parse') return 'document.parse';
   if (operation === 'spreadsheet_read') return 'spreadsheet.read';
+  if (operation === 'image_extract_text') return 'image.extractText';
+  if (operation === 'image_analyze') return 'image.analyze';
   return 'file.list';
 }
 
@@ -68,7 +70,11 @@ export async function runFilesWorkflowApp(input: FilesWorkflowInput): Promise<Th
   const operation = input.operation || 'list';
   const action = fileAction(operation);
   const writeLike = operation === 'write' || operation === 'append';
-  const readLike = operation === 'read' || operation === 'document_parse' || operation === 'spreadsheet_read';
+  const readLike = operation === 'read' ||
+    operation === 'document_parse' ||
+    operation === 'spreadsheet_read' ||
+    operation === 'image_extract_text' ||
+    operation === 'image_analyze';
   const mode = input.mode || 'assist';
   const runId = createRunId();
   const startedAt = new Date().toISOString();

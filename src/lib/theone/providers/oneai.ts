@@ -184,9 +184,14 @@ function normalizeOneClawExecuteInput(payload: OneAIGeneratePayload) {
   };
 }
 
-function firstAvailableAction(payload: OneAIGeneratePayload, fallback: string) {
+function firstAvailableAction(payload: OneAIGeneratePayload, fallback: string, preferred: string[] = []) {
   const input = isRecord(payload.input) ? payload.input : {};
   const availableActions = Array.isArray(input.availableActions) ? input.availableActions : [];
+  const normalized = availableActions.filter(isRecord);
+  for (const candidate of preferred) {
+    const match = normalized.find((item) => textValue(item.action) === candidate && textValue(item.liveMode) !== 'disabled' && textValue(item.maturity) !== 'stub');
+    if (match) return textValue(match.action) || candidate;
+  }
   const match = availableActions.find((item) => {
     if (!isRecord(item)) return false;
     const action = textValue(item.action);
@@ -221,21 +226,28 @@ function mockTheOneChatWorkflow(payload: OneAIGeneratePayload) {
   const message = textValue(input.message) || objectiveFromInput(payload.input);
   const domain = inferChatDomain(message);
   const action = domain === 'web'
-    ? firstAvailableAction(payload, 'browser.extract')
+    ? firstAvailableAction(payload, 'browser.extract', ['browser.extract', 'browser.scrape', 'browser.open'])
     : domain === 'github'
-      ? firstAvailableAction(payload, 'git.repo.get')
+      ? firstAvailableAction(payload, 'git.repo.get', ['git.repo.get', 'git.actions.runs', 'git.checks.list'])
       : domain === 'x'
-        ? firstAvailableAction(payload, 'x.searchRecentTweets')
+        ? firstAvailableAction(payload, 'x.searchRecentTweets', /post|tweet|发帖|发布/i.test(message)
+          ? ['social.post', 'x.searchRecentTweets']
+          : ['x.searchRecentTweets', 'x.getUserByUsername', 'x.getUserTweetsByUsername'])
         : domain === 'desktop'
-          ? firstAvailableAction(payload, 'desktop.app.state')
+          ? firstAvailableAction(payload, 'desktop.app.state', ['desktop.app.state', 'desktop.screenshot', 'desktop.hotkey', 'desktop.click', 'desktop.type'])
           : domain === 'files'
-            ? firstAvailableAction(payload, 'file.list')
+            ? firstAvailableAction(payload, 'file.list', ['document.parse', 'spreadsheet.read', 'image.extractText', 'file.read', 'file.list'])
             : domain === 'api'
-              ? firstAvailableAction(payload, 'api.request')
+              ? firstAvailableAction(payload, 'api.request', ['api.request', 'api.webhook'])
               : '';
   const hasExternalAction = Boolean(action);
   const actionInput = action === 'browser.extract'
     ? { url: extractUrl(message) }
+    : action === 'social.post'
+      ? {
+          channel: 'x',
+          content: Array.from(message.replace(/^.*?:\s*/i, '').replace(/\s+/g, ' ').trim() || 'TheOne is becoming an AI operating system for real-world work.').slice(0, 260).join(''),
+        }
     : action === 'git.repo.get'
       ? { repo: message.match(/[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+/)?.[0] || 'weareoneconnection/theone' }
       : action === 'x.searchRecentTweets'
@@ -273,10 +285,22 @@ function mockTheOneChatWorkflow(payload: OneAIGeneratePayload) {
     assistantReply: hasExternalAction
       ? `I prepared a ${domain} workflow and will let TheOne validate policy before any worker runs.`
       : 'I prepared a reasoning workflow. No external worker is needed yet.',
+    oneAiBrain: {
+      role: 'OneAI planning brain',
+      understanding: message,
+      selectedApp: domain,
+      workerRoute: steps.map((step) => step.action),
+      confidence: hasExternalAction ? 0.78 : 0.62,
+      responseStyle: 'direct, outcome-focused, Codex-like',
+      executionBoundary: 'OneAI only proposes the workflow; TheOne validates policy and dispatches OneClaw.',
+      reasoningSummary: hasExternalAction
+        ? `The message maps to the ${domain} app and ${action} worker candidate.`
+        : 'No safe external worker route was inferred, so this remains a reasoning workflow.',
+    },
     intent: {
       objective: message,
       domain,
-      risk: action.startsWith('desktop.') ? 'high' : hasExternalAction ? 'medium' : 'low',
+      risk: action.startsWith('desktop.') || action === 'social.post' ? 'high' : hasExternalAction ? 'medium' : 'low',
       requiresApproval: action.startsWith('desktop.') || action === 'social.post',
     },
     workflow: {

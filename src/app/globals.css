@@ -3425,6 +3425,34 @@ button, input, textarea { font: inherit; }
   padding-left: 18px;
 }
 
+.run-report-section {
+  background: rgba(0,0,0,0.16);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 7px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.run-report-summary {
+  border-color: rgba(98, 215, 196, 0.18);
+}
+
+.run-report-section > span {
+  display: block;
+}
+
+.run-report-section li strong {
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 999px;
+  color: rgba(255,255,255,0.82);
+  display: inline-block;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  margin-right: 8px;
+  padding: 2px 7px;
+}
+
 .run-report-artifact-grid {
   display: grid;
   gap: 8px;
@@ -4427,6 +4455,100 @@ button, input, textarea { font: inherit; }
 .run-side-details > strong {
   color: rgba(255,255,255,0.9);
   line-height: 1.45;
+}
+
+.run-brain-card {
+  background:
+    linear-gradient(135deg, rgba(98,215,196,0.1), rgba(255,255,255,0.035)),
+    rgba(255,255,255,0.04);
+  border: 1px solid rgba(98,215,196,0.2);
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.run-brain-card > strong {
+  color: rgba(255,255,255,0.92);
+  font-size: 14px;
+  line-height: 1.48;
+}
+
+.run-brain-meta {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.run-brain-meta div {
+  background: rgba(0,0,0,0.18);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+}
+
+.run-brain-meta span {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.run-brain-meta strong {
+  color: rgba(255,255,255,0.88);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.run-brain-route {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.run-brain-route span {
+  background: rgba(0,0,0,0.22);
+  border: 1px solid rgba(98,215,196,0.22);
+  border-radius: 999px;
+  color: rgba(255,255,255,0.78);
+  font-size: 11px;
+  font-weight: 800;
+  padding: 6px 8px;
+}
+
+.run-planning-brain-mini {
+  background: rgba(98,215,196,0.06);
+  border: 1px solid rgba(98,215,196,0.14);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.run-planning-brain-mini p {
+  color: rgba(255,255,255,0.78);
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.run-planning-brain-mini div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.run-planning-brain-mini small {
+  background: rgba(0,0,0,0.18);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 900;
+  padding: 5px 7px;
 }
 
 .run-state-strip {

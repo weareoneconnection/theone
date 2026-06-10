@@ -638,6 +638,14 @@ function capabilityAvailable(actions: Array<{ action: string }>, action: string)
   return actions.some((capability) => capability.action === action);
 }
 
+function chooseAvailableAction(actions: Array<{ action: string }>, candidates: string[]) {
+  return candidates.find((action) => capabilityAvailable(actions, action)) || null;
+}
+
+function isFileOrAttachmentIntent(raw: string) {
+  return /(attachment|attached|file|document|pdf|spreadsheet|image|read|summarize|summary|report|analy[sz]e|附件|文件|文档|合同|报告|总结|分析|读取|图片|表格)/i.test(raw);
+}
+
 function extractGitHubRepo(raw: string) {
   if (!/(\bgithub\b|\brepo\b|repository|仓库|代码库)/i.test(raw)) return null;
   const match = raw.match(/(?:github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/i);
@@ -692,6 +700,113 @@ function synthesizeGitHubRepoTask(input: {
       reason: 'TheOne detected a complete GitHub owner/repo shorthand in the user message.',
     },
   };
+}
+
+function extractWebUrl(raw: string) {
+  const match = raw.match(/https?:\/\/[^\s)]+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s)]*)?/i);
+  if (!match) return null;
+  const value = match[0].replace(/[.,，。]+$/g, '');
+  return /^https?:\/\//i.test(value) ? value : `https://${value}`;
+}
+
+function synthesizeWebExtractTask(input: {
+  raw: string;
+  actions: Array<{ action: string }>;
+}): OneClawTask | null {
+  if (!/(website|web page|browse|analy[sz]e|summarize|findings|网页|网站|浏览|总结|分析)/i.test(input.raw)) return null;
+  const url = extractWebUrl(input.raw);
+  if (!url) return null;
+  const action = chooseAvailableAction(input.actions, ['browser.extract', 'browser.scrape']);
+  if (!action) return null;
+
+  return {
+    taskName: `chat_web_extract_${url.replace(/^https?:\/\//i, '').replace(/[^A-Za-z0-9]+/g, '_').slice(0, 48)}`,
+    approvalMode: 'auto',
+    steps: [{
+      id: 'step_1',
+      action,
+      input: { url },
+      dependsOn: [],
+    }],
+    metadata: {
+      source: 'theone.chat_runtime.web_fallback',
+      domain: 'web',
+      routerGuard: 'web_extract',
+      url,
+      reason: 'TheOne detected a website analysis request and created a read-only browser extraction task when OneAI did not provide one.',
+    },
+  };
+}
+
+function taskContainsGitHubAction(task: OneClawTask | null | undefined) {
+  return Boolean(task?.steps?.some((step) => /^git\./i.test(step.action || '')));
+}
+
+function inferAttachmentReadAction(input: {
+  attachment: ReturnType<typeof attachmentInventory>[number];
+  actions: Array<{ action: string }>;
+}) {
+  const worker = textField(input.attachment.recommendedWorker);
+  if (worker && capabilityAvailable(input.actions, worker)) return worker;
+  const name = input.attachment.name || '';
+  const type = input.attachment.type || '';
+  if (/pdf|docx?|rtf/i.test(type) || /\.(pdf|docx?|rtf)$/i.test(name)) {
+    return chooseAvailableAction(input.actions, ['document.parse', 'file.read']);
+  }
+  if (/csv|spreadsheet|excel|sheet/i.test(type) || /\.(csv|tsv|xlsx?|xls)$/i.test(name)) {
+    return chooseAvailableAction(input.actions, ['spreadsheet.read', 'file.read']);
+  }
+  if (/^image\//i.test(type) || /\.(png|jpe?g|webp|gif|heic|tiff?)$/i.test(name)) {
+    return chooseAvailableAction(input.actions, ['image.extractText', 'image.analyze', 'file.read']);
+  }
+  return chooseAvailableAction(input.actions, ['file.read']);
+}
+
+function synthesizeAttachmentWorkerTask(input: {
+  raw: string;
+  attachmentContext: string;
+  actions: Array<{ action: string }>;
+}): OneClawTask | null {
+  if (!isFileOrAttachmentIntent(input.raw)) return null;
+  const attachments = attachmentInventory(input.attachmentContext);
+  const target = attachments.find((attachment) => attachment.path && !attachment.hasReadableText) ||
+    attachments.find((attachment) => attachment.path);
+  if (!target?.path) return null;
+  const action = inferAttachmentReadAction({ attachment: target, actions: input.actions });
+  if (!action) return null;
+
+  return {
+    taskName: `chat_attachment_read_${target.name.replace(/[^A-Za-z0-9]+/g, '_').slice(0, 48) || 'file'}`,
+    approvalMode: 'auto',
+    steps: [{
+      id: 'step_1',
+      action,
+      input: { path: target.path },
+      dependsOn: [],
+    }],
+    metadata: {
+      source: 'theone.chat_runtime.router_guard',
+      domain: 'files',
+      routerGuard: 'attachment_worker_read',
+      attachmentName: target.name,
+      attachmentType: target.type,
+      reason: 'TheOne detected an attached file/document request and routed it to the matching file worker before other fallbacks.',
+    },
+  };
+}
+
+function guardOneClawTaskRoute(input: {
+  raw: string;
+  attachmentContext: string;
+  actions: Array<{ action: string }>;
+  proposedTask: OneClawTask | null;
+}) {
+  const attachmentTask = synthesizeAttachmentWorkerTask(input);
+  if (!attachmentTask) return { task: input.proposedTask, route: null as string | null };
+  if (!input.proposedTask || taskContainsGitHubAction(input.proposedTask)) {
+    return { task: attachmentTask, route: 'attachment_worker_read' };
+  }
+  return { task: input.proposedTask, route: null as string | null };
 }
 
 function pendingTaskSummary(input: {
@@ -1446,6 +1561,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
           continuity,
           missionState,
           workerCatalogSummary: workerCatalog.summary,
+          oneAiBrain: brainOnlyOneAi?.workflow.oneAiBrain || null,
           preflight,
         },
       }),
@@ -1521,6 +1637,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         workerCatalogSummary: workerCatalog.summary,
         brainMode: brain.mode,
         conversationKind: brain.conversationKind,
+        oneAiBrain: brainOnlyOneAi?.workflow.oneAiBrain || null,
       },
       chat: {
         runtime: 'theone.chat_runtime.v2',
@@ -1530,6 +1647,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         missionState,
         continuity,
         oneAiBrainReply: brainOnlyOneAi?.workflow || null,
+        oneAiBrain: brainOnlyOneAi?.workflow.oneAiBrain || null,
         modelRoute: primaryModel,
         memoryContext: memorySummary(memoryContext),
         appPackages: brain.selectedApps.length ? brain.selectedApps : appPackages.slice(0, 4),
@@ -1545,6 +1663,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
           source: brainOnlyOneAi ? 'oneai' : 'theone.brain',
           owner: brainOnlyOneAi ? 'OneAI' : 'TheOne',
           status: 'validated',
+          planningBrain: brainOnlyOneAi?.workflow.oneAiBrain || null,
           steps: (brainOnlyOneAi?.workflow.workflow.steps || [{
             id: 'brain_understanding',
             title: 'Understand and answer',
@@ -1666,15 +1785,67 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         oneclawTask: null,
       }
     : oneAi;
-  const fallbackOneClawTask = effectiveOneAi.oneclawTask ? null : synthesizeGitHubRepoTask({
+  const attachmentFallbackTask = effectiveOneAi.oneclawTask ? null : synthesizeAttachmentWorkerTask({
+    raw,
+    attachmentContext,
+    actions: oneClawManifest.capabilities,
+  });
+  const webFallbackTask = effectiveOneAi.oneclawTask || attachmentFallbackTask ? null : synthesizeWebExtractTask({
     raw,
     actions: oneClawManifest.capabilities,
   });
-  const rawPlannedOneClawTask = effectiveOneAi.oneclawTask || fallbackOneClawTask;
-  const plannedWorkflowSteps = fallbackOneClawTask
+  const githubFallbackTask = effectiveOneAi.oneclawTask || attachmentFallbackTask || webFallbackTask ? null : synthesizeGitHubRepoTask({
+    raw,
+    actions: oneClawManifest.capabilities,
+  });
+  const fallbackOneClawTask = attachmentFallbackTask || webFallbackTask || githubFallbackTask;
+  const guardedRoute = guardOneClawTaskRoute({
+    raw,
+    attachmentContext,
+    actions: oneClawManifest.capabilities,
+    proposedTask: effectiveOneAi.oneclawTask || fallbackOneClawTask,
+  });
+  const rawPlannedOneClawTask = guardedRoute.task;
+  const fallbackRoute = guardedRoute.route ||
+    (attachmentFallbackTask ? 'attachment_worker_read' : webFallbackTask ? 'web_extract' : githubFallbackTask ? 'github_repo_shorthand' : null);
+  const plannedWorkflowSteps = rawPlannedOneClawTask && fallbackRoute === 'attachment_worker_read'
     ? [
         ...effectiveOneAi.workflow.workflow.steps,
-        ...fallbackOneClawTask.steps.map((step, index) => ({
+        ...rawPlannedOneClawTask.steps.map((step, index) => ({
+          id: step.id || `attachment_step_${index + 1}`,
+          title: step.action === 'document.parse'
+            ? 'Parse attached document'
+            : step.action === 'spreadsheet.read'
+              ? 'Read attached spreadsheet'
+              : step.action === 'image.extractText'
+                ? 'Extract text from attached image'
+                : step.action === 'image.analyze'
+                  ? 'Analyze attached image'
+                  : 'Read attached file',
+          worker: step.action.startsWith('image.') ? 'image_worker' : step.action === 'spreadsheet.read' ? 'spreadsheet_worker' : step.action === 'document.parse' ? 'document_worker' : 'file_worker',
+          action: step.action,
+          input: step.input,
+          approvalMode: 'auto' as const,
+          dependsOn: step.dependsOn || [],
+        })),
+      ]
+    : rawPlannedOneClawTask && fallbackRoute === 'web_extract'
+    ? [
+        ...effectiveOneAi.workflow.workflow.steps,
+        ...rawPlannedOneClawTask.steps.map((step, index) => ({
+          id: step.id || `web_step_${index + 1}`,
+          title: step.action === 'browser.scrape' ? 'Scrape website content' : 'Extract website content',
+          worker: 'browser_worker',
+          action: step.action,
+          input: step.input,
+          approvalMode: 'auto' as const,
+          dependsOn: step.dependsOn || [],
+        })),
+      ]
+    : rawPlannedOneClawTask && fallbackRoute === 'github_repo_shorthand'
+    ? [
+        ...effectiveOneAi.workflow.workflow.steps,
+        ...rawPlannedOneClawTask.steps.map((step, index) => ({
           id: step.id || `github_step_${index + 1}`,
           title: step.action === 'git.repo.get'
             ? 'Read GitHub repository metadata'
@@ -1691,10 +1862,20 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         })),
       ]
     : effectiveOneAi.workflow.workflow.steps;
-  const workflowSummary = fallbackOneClawTask
-    ? `Check GitHub repository ${fallbackOneClawTask.metadata?.repo || ''} and summarize attention points.`
+  const workflowSummary = fallbackRoute === 'attachment_worker_read'
+    ? 'Read the attached source with the matching file worker and prepare a report-ready result.'
+    : fallbackRoute === 'web_extract'
+      ? `Extract website content from ${rawPlannedOneClawTask?.metadata?.url || 'the requested URL'} and summarize useful findings.`
+    : fallbackRoute === 'github_repo_shorthand'
+    ? `Check GitHub repository ${rawPlannedOneClawTask?.metadata?.repo || ''} and summarize attention points.`
     : effectiveOneAi.workflow.workflow.summary;
-  const workflowDomain = fallbackOneClawTask ? 'github' : effectiveOneAi.workflow.intent.domain;
+  const workflowDomain = fallbackRoute === 'attachment_worker_read'
+    ? 'files'
+    : fallbackRoute === 'web_extract'
+      ? 'web'
+    : fallbackRoute === 'github_repo_shorthand'
+      ? 'github'
+      : effectiveOneAi.workflow.intent.domain;
 
   const intent = buildIntent({
     raw: effectiveOneAi.workflow.intent.objective || raw,
@@ -1919,6 +2100,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         agentTimeline,
         workerCatalogSummary: workerCatalog.summary,
         oneAiWorkflow: effectiveOneAi.workflow,
+        oneAiBrain: effectiveOneAi.workflow.oneAiBrain || null,
         attachmentReportMode: Boolean(attachmentReport),
         oneAiProposedDocumentWorker,
         finalOneAiResult,
@@ -2019,7 +2201,8 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       memoryContext: memorySummary(memoryContext),
       workerCatalogSummary: workerCatalog.summary,
       oneAiWorkflowId: effectiveOneAi.workflow.workflow.id,
-      fallbackRoute: fallbackOneClawTask ? 'github_repo_shorthand' : null,
+      oneAiBrain: effectiveOneAi.workflow.oneAiBrain || null,
+      fallbackRoute,
       oneClawTaskName: oneclawTask?.taskName || null,
       oneClawRunId: oneclawRun?.id || null,
     },
@@ -2051,6 +2234,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         source: 'oneai',
         owner: 'OneAI',
         status: ok ? 'validated' : blocked ? 'blocked' : 'needs_approval',
+        planningBrain: effectiveOneAi.workflow.oneAiBrain || null,
         steps: plannedWorkflowSteps.map((step) => ({
           ...step,
           owner: step.worker,
@@ -2082,7 +2266,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         ],
         oneclawTask,
         oneclawRun,
-        fallbackRoute: fallbackOneClawTask ? 'github_repo_shorthand' : null,
+        fallbackRoute,
         workerResultText,
         finalSummary,
         approvalSummary,

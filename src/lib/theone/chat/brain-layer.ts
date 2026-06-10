@@ -7,11 +7,27 @@ export type TheOneBrainMode = 'think' | 'assist' | 'act';
 export type TheOneBrainConversationKind = 'capability' | 'planning' | 'execution' | 'follow_up';
 
 export type TheOneBrainFrame = {
-  version: 'theone.brain.v1';
+  version: 'theone.brain.v2';
   mode: TheOneBrainMode;
   conversationKind: TheOneBrainConversationKind;
   objective: string;
   confidence: number;
+  brainStack: Array<{
+    key: 'theone_control_brain' | 'oneai_planning_brain' | 'oneclaw_worker_runtime';
+    title: string;
+    role: string;
+    authority: 'control' | 'planning' | 'execution';
+    status: 'active' | 'available' | 'gated';
+  }>;
+  contextReadiness: {
+    hasUrl: boolean;
+    hasRepository: boolean;
+    hasApiEndpoint: boolean;
+    hasAttachmentContext: boolean;
+    hasReadableAttachment: boolean;
+    hasStoredAttachmentPath: boolean;
+    notes: string[];
+  };
   selectedApps: Array<{
     key: string;
     title: string;
@@ -42,6 +58,13 @@ export type TheOneBrainFrame = {
     shouldExecute: boolean;
     approvalExpected: boolean;
     reason: string;
+  };
+  oneAiBrain: {
+    enabled: boolean;
+    role: string;
+    contract: string;
+    expectedOutput: string[];
+    forbiddenDecisions: string[];
   };
   safety: {
     risk: 'low' | 'medium' | 'high';
@@ -211,21 +234,47 @@ function fallbackApps(appPackages: AppRuntimePackage[], raw: string) {
 function missingInformation(raw: string, kind: TheOneBrainConversationKind) {
   const missing: string[] = [];
   if (kind === 'capability') return missing;
-  const hasAttachmentContext = /attached file context|readable attachment content|stored path/i.test(raw);
+  const readiness = buildContextReadiness(raw);
   const isDocumentRequest = /file|document|report|summary|summarize|read this|文件|文档|报告|总结/i.test(raw);
   if ((/\bgithub\b|\brepo\b|repository|仓库|代码库/i.test(raw)) && !isDocumentRequest && !/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/.test(raw)) {
     missing.push('GitHub owner/repo or repository URL');
   }
-  if (isDocumentRequest && !hasAttachmentContext && !/(\/[^\s]+|[A-Za-z]:\\[^\s]+)/.test(raw)) {
+  if (isDocumentRequest && !readiness.hasAttachmentContext && !/(\/[^\s]+|[A-Za-z]:\\[^\s]+)/.test(raw)) {
     missing.push('attached file or file path');
   }
-  if (/browse|website|网页|网站|分析网站/i.test(raw) && !/(https?:\/\/[^\s)]+|(?:[a-z0-9-]+\.)+[a-z]{2,})/i.test(raw)) {
+  if (/browse|website|网页|网站|分析网站/i.test(raw) && !readiness.hasUrl) {
     missing.push('website URL');
   }
-  if (/api|接口|webhook/i.test(raw) && !/https?:\/\/[^\s)]+/i.test(raw)) {
+  if (/api|接口|webhook/i.test(raw) && !readiness.hasApiEndpoint) {
     missing.push('API endpoint URL');
   }
   return missing;
+}
+
+function buildContextReadiness(raw: string): TheOneBrainFrame['contextReadiness'] {
+  const hasUrl = /(https?:\/\/[^\s)]+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s)]*)?)/i.test(raw);
+  const hasRepository = /(?:github\.com\/)?[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/.test(raw);
+  const hasApiEndpoint = /https?:\/\/[^\s)]+/i.test(raw) && /api|endpoint|webhook|接口|调用|request/i.test(raw);
+  const hasAttachmentContext = /attached file context|attachment:|readable attachment content|stored path|uploaded attachment/i.test(raw);
+  const hasReadableAttachment = /readable attachment content|content:\n/i.test(raw);
+  const hasStoredAttachmentPath = /stored path:\s*\S+/i.test(raw);
+  const notes = [
+    hasAttachmentContext ? 'Attachment context is present; file/document requests should not ask for a path.' : '',
+    hasReadableAttachment ? 'Readable attachment text is already available to the chat runtime.' : '',
+    hasStoredAttachmentPath && !hasReadableAttachment ? 'Attachment has a stored path; route the matching file worker if reading is required.' : '',
+    hasUrl ? 'A URL is present; web analysis can route directly to browser/search workers.' : '',
+    hasRepository ? 'A repository reference is present; GitHub workers can be considered.' : '',
+  ].filter(Boolean);
+
+  return {
+    hasUrl,
+    hasRepository,
+    hasApiEndpoint,
+    hasAttachmentContext,
+    hasReadableAttachment,
+    hasStoredAttachmentPath,
+    notes,
+  };
 }
 
 function capabilityReply(input: {
@@ -342,6 +391,7 @@ export function buildTheOneBrainFrame(input: {
   const conversationKind = inferKind(raw);
   const mode = inferBrainMode(input.mode, raw);
   const risk = inferRisk(raw);
+  const contextReadiness = buildContextReadiness(raw);
   const selected = input.selectedAppPackages?.length
     ? input.selectedAppPackages
     : fallbackApps(input.appPackages, raw);
@@ -360,13 +410,37 @@ export function buildTheOneBrainFrame(input: {
   const capabilityRoute = inferCapabilityRoute(raw);
 
   return {
-    version: 'theone.brain.v1',
+    version: 'theone.brain.v2',
     mode,
     conversationKind,
     objective: conversationKind === 'capability'
       ? 'Explain TheOne capabilities and help the user choose an outcome.'
       : raw,
     confidence: conversationKind === 'capability' ? 0.94 : missing.length ? 0.72 : 0.88,
+    brainStack: [
+      {
+        key: 'theone_control_brain',
+        title: 'TheOne Control Brain',
+        role: 'Owns intent, context readiness, policy boundaries, approval gates, proof, and final execution authority.',
+        authority: 'control',
+        status: 'active',
+      },
+      {
+        key: 'oneai_planning_brain',
+        title: 'OneAI Planning Brain',
+        role: 'Turns conversation context into natural replies, structured workflow steps, and candidate OneClaw tasks.',
+        authority: 'planning',
+        status: 'available',
+      },
+      {
+        key: 'oneclaw_worker_runtime',
+        title: 'OneClaw Worker Runtime',
+        role: 'Executes approved worker tasks and returns receipts; it never owns policy decisions.',
+        authority: 'execution',
+        status: approvalExpected ? 'gated' : 'available',
+      },
+    ],
+    contextReadiness,
     selectedApps,
     workerCapabilityMap,
     capabilityRoute,
@@ -396,6 +470,27 @@ export function buildTheOneBrainFrame(input: {
             ? 'Enough information is present to build and validate a workflow.'
             : 'TheOne should think and plan, but not execute yet.',
     },
+    oneAiBrain: {
+      enabled: true,
+      role: 'Semantic planning brain for TheOne Chat Runtime.',
+      contract: 'OneAI must produce a natural assistant reply plus a structured workflow candidate. TheOne validates all actions, policy, approvals, and proof before any worker execution.',
+      expectedOutput: [
+        'assistantReply',
+        'intent',
+        'workflow.steps',
+        'requiredWorkers',
+        'oneclawTask',
+        'safety',
+        'oneAiBrain',
+      ],
+      forbiddenDecisions: [
+        'Do not decide final execution authority.',
+        'Do not bypass TheOne policy or approval gates.',
+        'Do not invent unavailable worker actions.',
+        'Do not ask for a file path when attachment context is already present.',
+        'Do not claim external publication, sending, deletion, payment, or desktop action completed without a OneClaw receipt.',
+      ],
+    },
     safety: {
       risk,
       approvalReason: approvalExpected
@@ -423,6 +518,9 @@ export function buildTheOneBrainFrame(input: {
       'Think like a Codex-grade super-agent assistant: understand the outcome, choose apps/workers, reason about safety, and explain the path.',
       'Never force capability questions into worker execution.',
       'Keep the user-facing reply direct, useful, and non-technical unless the user asks for system details.',
+      'OneAI is the planning brain, not the final authority. TheOne keeps control of policy, approval, proof, and worker dispatch.',
+      'If contextReadiness says an attachment, URL, repository, or endpoint is present, use it instead of asking the user for the same missing detail.',
+      `Context readiness: ${JSON.stringify(contextReadiness)}`,
       `Worker catalog summary: ${JSON.stringify(input.workerCatalogSummary || {})}`,
       `Worker capability domains: ${workerCapabilityMap.map((item) => `${item.domain}:${item.status}:${item.actions.slice(0, 8).join('|')}`).join('; ')}`,
     ].join('\n'),

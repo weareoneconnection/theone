@@ -20,6 +20,16 @@ export type OneAIWorkflowStep = {
 
 export type OneAIWorkflowContract = {
   assistantReply: string;
+  oneAiBrain?: {
+    role: string;
+    understanding: string;
+    selectedApp: string;
+    workerRoute: string[];
+    confidence: number;
+    responseStyle: string;
+    executionBoundary: string;
+    reasoningSummary: string;
+  };
   intent: {
     objective: string;
     domain: string;
@@ -99,6 +109,7 @@ function taskFromWorkflow(workflow: OneAIWorkflowContract): OneClawTask | null {
 
 function normalizeWorkflow(data: unknown, raw: string): OneAIWorkflowContract {
   const record = isRecord(data) ? data : {};
+  const oneAiBrain = isRecord(record.oneAiBrain) ? record.oneAiBrain : {};
   const intent = isRecord(record.intent) ? record.intent : {};
   const workflow = isRecord(record.workflow) ? record.workflow : {};
   const rawSteps = Array.isArray(workflow.steps) ? workflow.steps : [];
@@ -107,6 +118,18 @@ function normalizeWorkflow(data: unknown, raw: string): OneAIWorkflowContract {
 
   return {
     assistantReply: textValue(record.assistantReply, textValue(record.reply, 'I prepared a governed workflow for TheOne to validate.')),
+    oneAiBrain: isRecord(record.oneAiBrain) ? {
+      role: textValue(oneAiBrain.role, 'OneAI planning brain'),
+      understanding: textValue(oneAiBrain.understanding, textValue(intent.objective, raw)),
+      selectedApp: textValue(oneAiBrain.selectedApp, textValue(intent.domain, 'general')),
+      workerRoute: Array.isArray(oneAiBrain.workerRoute)
+        ? oneAiBrain.workerRoute.map((item) => textValue(item)).filter(Boolean)
+        : [],
+      confidence: typeof oneAiBrain.confidence === 'number' ? oneAiBrain.confidence : 0.7,
+      responseStyle: textValue(oneAiBrain.responseStyle, 'direct, useful, Codex-like'),
+      executionBoundary: textValue(oneAiBrain.executionBoundary, 'TheOne validates policy before execution.'),
+      reasoningSummary: textValue(oneAiBrain.reasoningSummary, textValue(workflow.summary, 'Structured workflow candidate prepared.')),
+    } : undefined,
     intent: {
       objective: textValue(intent.objective, raw),
       domain: textValue(intent.domain, textValue(record.domain, 'general')),
@@ -137,6 +160,16 @@ function normalizeWorkflow(data: unknown, raw: string): OneAIWorkflowContract {
 function fallbackWorkflow(raw: string, mode: TheOneMode): OneAIWorkflowContract {
   return {
     assistantReply: 'OneAI did not return a complete executable workflow, so TheOne kept this as a safe planning conversation.',
+    oneAiBrain: {
+      role: 'OneAI planning brain fallback',
+      understanding: raw,
+      selectedApp: 'general',
+      workerRoute: ['oneai.generate'],
+      confidence: 0.35,
+      responseStyle: 'safe fallback',
+      executionBoundary: 'No external action was produced.',
+      reasoningSummary: 'Fallback planning kept the conversation safe.',
+    },
     intent: {
       objective: raw,
       domain: 'general',
@@ -203,6 +236,16 @@ export async function buildOneAIChatWorkflow(input: {
       brain: input.brain || null,
       responseContract: {
         assistantReply: 'string',
+        oneAiBrain: {
+          role: 'string: OneAI planning brain role in this turn',
+          understanding: 'string: what the user wants, using given context',
+          selectedApp: 'string: best TheOne app/capability package',
+          workerRoute: 'string[]: candidate workers or actions in order',
+          confidence: 'number 0..1',
+          responseStyle: 'string: how the final answer should feel',
+          executionBoundary: 'string: what OneAI is not allowed to execute by itself',
+          reasoningSummary: 'string: concise, user-safe planning rationale',
+        },
         intent: {
           objective: 'string',
           domain: 'string',
@@ -237,13 +280,20 @@ export async function buildOneAIChatWorkflow(input: {
         input.brain ? `Brain mode: ${input.brain.mode}` : '',
         input.brain ? `Brain selected apps: ${input.brain.selectedApps.map((app) => app.key).join(', ')}` : '',
         input.brain ? `Brain execution decision: ${JSON.stringify(input.brain.executionDecision)}` : '',
+        input.brain ? `Brain context readiness: ${JSON.stringify(input.brain.contextReadiness)}` : '',
+        input.brain ? `OneAI planning brain contract: ${JSON.stringify(input.brain.oneAiBrain)}` : '',
         `Use model route ${modelRoute.useCase} with preferred model alias ${modelRoute.model}.`,
-        'Act like a Codex-grade super-agent conversation planner for TheOne AI OS.',
+        'Act as the OneAI Planning Brain inside TheOne AI OS. You are an LLM-native brain for understanding, planning, and natural conversation.',
+        'TheOne Control Brain owns final authority: policy, approval, worker dispatch, proof, memory, and safety. OneAI must not override it.',
+        'Your answer should feel like ChatGPT/Codex: direct, helpful, context-aware, and outcome-focused. Do not narrate internal machinery unless the user asks.',
+        'Always return oneAiBrain so TheOne can display or audit how OneAI understood the request.',
         'The user should not need to know which App or Worker to call; infer the best App package and Worker actions from context.',
         'Use appPackages to choose the user-facing capability package and workerCatalog to choose executable actions.',
+        'If a URL, repository, API endpoint, attachment, or stored path is already visible in Brain context readiness or conversation context, use it. Do not ask the user for the same detail again.',
         'When the conversation includes attached file context, treat that attachment as the source document. If readable content is present, answer, summarize, or draft the requested report directly from that content and do not ask for a path.',
         'If an attachment has a stored path but no readable content, create a file.read, document.parse, spreadsheet.read, image.extractText, or image.analyze task only when that exact action is available and appropriate.',
         'For document/report requests, prefer oneai.generate after the file content is available; return a clear report with key points, risks, action items, and evidence when the user asks for a report.',
+        'For X/Twitter posts, generate publication-ready content under 260 characters unless the user explicitly asks for a thread.',
         'If brain.conversationKind is capability, do not create an external worker task; answer capability-level guidance.',
         'If brain.reasoning.missingInformation is not empty, ask only for the missing detail and do not invent inputs.',
         'Return structured JSON only.',

@@ -660,14 +660,20 @@ function ReportArtifactCard({ result }: { result: any }) {
   const findings = Array.isArray(artifact.keyFindings) ? artifact.keyFindings : [];
   const risks = Array.isArray(artifact.risks) ? artifact.risks : [];
   const actions = Array.isArray(artifact.actionItems) ? artifact.actionItems : [];
+  const evidence = Array.isArray(artifact.evidence) ? artifact.evidence : [];
   return (
     <div className="run-report-artifact-card">
       <div className="run-report-artifact-head">
-        <span>Report artifact</span>
+        <span>Report Studio</span>
         <strong>{artifact.format || 'structured'}</strong>
       </div>
       <h3>{artifact.title || 'Document report'}</h3>
-      {artifact.executiveSummary ? <p>{artifact.executiveSummary}</p> : null}
+      {artifact.executiveSummary ? (
+        <section className="run-report-section run-report-summary">
+          <span>Executive Summary</span>
+          <p>{artifact.executiveSummary}</p>
+        </section>
+      ) : null}
       <div className="run-report-artifact-grid">
         <div>
           <span>Findings</span>
@@ -682,6 +688,45 @@ function ReportArtifactCard({ result }: { result: any }) {
           <strong>{actions.length}</strong>
         </div>
       </div>
+      {findings.length ? (
+        <section className="run-report-section">
+          <span>Key Findings</span>
+          <ul>
+            {findings.slice(0, 5).map((item: string) => <li key={item}>{item}</li>)}
+          </ul>
+        </section>
+      ) : null}
+      {risks.length ? (
+        <section className="run-report-section">
+          <span>Risks / Issues</span>
+          <ul>
+            {risks.slice(0, 4).map((item: any, index: number) => (
+              <li key={`${item?.title || item}-${index}`}>
+                <strong>{item?.severity || 'medium'}</strong>
+                {item?.title || String(item)}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      {actions.length ? (
+        <section className="run-report-section">
+          <span>Action Items</span>
+          <ul>
+            {actions.slice(0, 4).map((item: any, index: number) => (
+              <li key={`${item?.task || item}-${index}`}>{item?.task || String(item)}</li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      {evidence.length ? (
+        <section className="run-report-section">
+          <span>Evidence</span>
+          <ul>
+            {evidence.slice(0, 4).map((item: string) => <li key={item}>{item}</li>)}
+          </ul>
+        </section>
+      ) : null}
       {sourceFiles.length ? (
         <div className="run-report-source-list">
           {sourceFiles.slice(0, 3).map((file: any) => (
@@ -691,11 +736,6 @@ function ReportArtifactCard({ result }: { result: any }) {
             </small>
           ))}
         </div>
-      ) : null}
-      {findings.length ? (
-        <ul>
-          {findings.slice(0, 3).map((item: string) => <li key={item}>{item}</li>)}
-        </ul>
       ) : null}
     </div>
   );
@@ -1122,6 +1162,7 @@ function ToolTrace({ result }: { result: any }) {
   if (!result?.chat) return null;
 
   const workflow = result.chat.oneAiWorkflow;
+  const planningBrain = planningBrainFromResult(result);
   const coordination = result.chat.workerCoordination;
   const workers = coordinationWorkers(result);
   const steps = workflowSteps(result);
@@ -1152,6 +1193,16 @@ function ToolTrace({ result }: { result: any }) {
         <div className="run-tool-section">
           <span>OneAI plan</span>
           <strong>{workflow?.summary || 'TheOne asked OneAI to decide the workflow.'}</strong>
+          {planningBrain ? (
+            <div className="run-planning-brain-mini">
+              <p>{planningBrain.reasoningSummary || planningBrain.understanding || 'OneAI prepared the planning frame for TheOne.'}</p>
+              <div>
+                {planningBrain.selectedApp ? <small>{planningBrain.selectedApp}</small> : null}
+                {planningBrain.confidence ? <small>{Math.round(Number(planningBrain.confidence) * 100)}% confidence</small> : null}
+                {planningBrain.executionBoundary ? <small>{planningBrain.executionBoundary}</small> : null}
+              </div>
+            </div>
+          ) : null}
           {steps.length ? (
             <div className="run-tool-steps">
               {steps.map((step: any, index: number) => (
@@ -1200,6 +1251,48 @@ function ToolTrace({ result }: { result: any }) {
         ) : null}
       </div>
     </details>
+  );
+}
+
+function planningBrainFromResult(result: any) {
+  return result?.chat?.oneAiBrain || result?.chat?.oneAiWorkflow?.planningBrain || null;
+}
+
+function PlanningBrainCard({ result }: { result: any }) {
+  const planningBrain = planningBrainFromResult(result);
+  if (!planningBrain) return null;
+
+  const route = Array.isArray(planningBrain.workerRoute)
+    ? planningBrain.workerRoute.filter(Boolean)
+    : [];
+  const confidence = Number(planningBrain.confidence);
+  const confidenceLabel = Number.isFinite(confidence) ? `${Math.round(confidence * 100)}%` : 'ready';
+
+  return (
+    <div className="run-brain-card">
+      <span className="product-card-kicker">Planning brain</span>
+      <strong>{planningBrain.understanding || planningBrain.reasoningSummary || 'OneAI prepared the workflow plan.'}</strong>
+      <div className="run-brain-meta">
+        <div>
+          <span>App</span>
+          <strong>{planningBrain.selectedApp || 'TheOne chooses route'}</strong>
+        </div>
+        <div>
+          <span>Confidence</span>
+          <strong>{confidenceLabel}</strong>
+        </div>
+      </div>
+      {route.length ? (
+        <div className="run-brain-route">
+          {route.slice(0, 6).map((item: string) => <span key={item}>{item}</span>)}
+        </div>
+      ) : null}
+      {planningBrain.executionBoundary || planningBrain.reasoningSummary ? (
+        <p className="panel-subtitle">
+          {planningBrain.reasoningSummary || planningBrain.executionBoundary}
+        </p>
+      ) : null}
+    </div>
   );
 }
 
@@ -1303,6 +1396,7 @@ function RunPageContent() {
   const workerCatalog = result?.chat?.workerCatalog;
   const workerCapabilityMap = brain?.workerCapabilityMap || [];
   const latestResult = latestAssistantResult(messages) || result;
+  const planningBrain = planningBrainFromResult(latestResult || result);
   const mission = latestResult?.chat?.mission || result?.chat?.mission;
   const workerRuntime = latestResult?.chat?.workerRuntime || result?.chat?.workerRuntime;
   const missionState = latestResult?.chat?.missionState || workerRuntime?.missionState || result?.chat?.missionState;
@@ -1905,7 +1999,7 @@ function RunPageContent() {
 
           <div className="run-mission-card">
             <span className="product-card-kicker">Current goal</span>
-            <strong>{mission?.title || brain?.objective || 'Understand the user outcome before routing workers.'}</strong>
+            <strong>{mission?.title || brain?.objective || planningBrain?.understanding || 'Understand the user outcome before routing workers.'}</strong>
             <div className="run-explain-grid">
               <div>
                 <span>Mode</span>
@@ -1925,6 +2019,8 @@ function RunPageContent() {
               <p className="panel-subtitle">{brain.reasoning.strategy}</p>
             ) : null}
           </div>
+
+          <PlanningBrainCard result={latestResult || result} />
 
           <MissionTimeline result={latestResult} loading={loading} stage={progressStage} />
           <StreamEventList events={streamEvents} />

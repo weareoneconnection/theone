@@ -62,6 +62,7 @@ function readActionForPath(value: string) {
   const ext = pathExtension(value);
   if (['pdf', 'doc', 'docx', 'rtf'].includes(ext)) return 'document.parse';
   if (['csv', 'tsv', 'xls', 'xlsx'].includes(ext)) return 'spreadsheet.read';
+  if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'heic', 'tif', 'tiff'].includes(ext)) return 'image.extractText';
   return 'file.read';
 }
 
@@ -247,6 +248,8 @@ export function routeRunToApp(raw: string): AppRoute | null {
           ? `Parse document ${path}.`
           : action === 'spreadsheet.read'
             ? `Read spreadsheet ${path}.`
+            : action === 'image.extractText'
+              ? `Extract text from image ${path}.`
             : `Read file ${path}.`,
       };
     }
@@ -379,11 +382,15 @@ export async function runUnifiedAppRoute(input: {
           ? 'document_parse'
           : action === 'spreadsheet.read'
             ? 'spreadsheet_read'
-            : action === 'file.write'
-              ? 'write'
-              : action === 'file.append'
-                ? 'append'
-                : 'list';
+            : action === 'image.extractText'
+              ? 'image_extract_text'
+              : action === 'image.analyze'
+                ? 'image_analyze'
+                : action === 'file.write'
+                  ? 'write'
+                  : action === 'file.append'
+                    ? 'append'
+                    : 'list';
     return runFilesWorkflowApp({
       path: String(input.route.input.path || '/tmp'),
       operation,
