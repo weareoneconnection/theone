@@ -209,7 +209,16 @@ async function uploadChatAttachments(files: FileList | null): Promise<ChatAttach
 
 function plainResult(result: any) {
   const assistant = result?.chat?.assistant?.content;
-  if (assistant) return assistant;
+  const placeholder = typeof assistant === 'string' &&
+    /(please hold|while i gather|i'?ll extract|i will extract|i will gather|let me gather|gather the data|收集数据|正在收集|请稍等)/i.test(assistant);
+  if (assistant && !placeholder) return assistant;
+  if (placeholder) {
+    const diagnostic = result?.chat?.workerRuntime?.diagnostics?.userReadable;
+    const assessment = result?.chat?.objectiveAssessment?.outcome;
+    const nextAction = result?.chat?.objectiveAssessment?.nextAction || result?.chat?.nextActions?.[0];
+    const fallback = [assessment, diagnostic, nextAction ? `Next: ${nextAction}` : ''].filter(Boolean).join('\n\n');
+    if (fallback) return fallback;
+  }
   const error = String(result?.error || '');
   if (error) return error.replace(/Invalid `prisma[^`]+` invocation:[\s\S]*/i, 'TheOne switched to safe mode because the memory database is temporarily unavailable.');
   if (result?.appResult?.summary) return result.appResult.summary;

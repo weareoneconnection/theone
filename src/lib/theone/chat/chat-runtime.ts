@@ -595,6 +595,116 @@ function buildObjectiveAssessment(input: {
   };
 }
 
+function isProcessPlaceholderReply(value: string) {
+  return /(please hold|while i gather|i'?ll extract|i will extract|i will gather|let me gather|i need to extract|proceed with browsing|gather the data|收集数据|正在收集|请稍等)/i.test(value);
+}
+
+function objectiveNeedsWorkerResult(raw: string, task: OneClawTask | null) {
+  if (!task) return false;
+  const action = firstTaskAction(task);
+  if (/^(browser\.|git\.|file\.|document\.|spreadsheet\.|image\.|api\.|x\.|social\.)/.test(action)) return true;
+  return /(analy[sz]e|summarize|summary|findings|browse|website|web page|inspect|check|read|report|extract|list|分析|总结|浏览|网站|检查|读取|报告|提取)/i.test(raw);
+}
+
+function taskOutcomeLabel(task: OneClawTask | null) {
+  const action = firstTaskAction(task);
+  if (action === 'browser.extract' || action === 'browser.scrape' || action === 'browser.open') return 'website analysis';
+  if (action.startsWith('git.')) return 'GitHub check';
+  if (action.startsWith('document.') || action.startsWith('file.') || action.startsWith('spreadsheet.') || action.startsWith('image.')) return 'file reading';
+  if (action === 'social.post') return 'X publishing';
+  if (action.startsWith('api.')) return 'API call';
+  return action || 'worker task';
+}
+
+function firstBlockedCheck(preflight: unknown) {
+  if (!isRecord(preflight)) return '';
+  const checks = Array.isArray(preflight.checks) ? preflight.checks : [];
+  const failed = checks.find((check) => isRecord(check) && /fail|block|error/i.test(String(check.status || '')));
+  if (!isRecord(failed)) return '';
+  return textField(failed.detail) || textField(failed.message) || textField(failed.title) || textField(failed.label);
+}
+
+function buildUnfinishedExecutionSummary(input: {
+  raw: string;
+  oneclawTask: OneClawTask | null;
+  oneclawRun: OneClawTaskRun | null;
+  runtimeError: string | null;
+  approvalGated: boolean;
+  blocked: boolean;
+  canSubmit: boolean;
+  workerResultText: string;
+  preflight: unknown;
+  automationPolicy: { blocked?: boolean; canAutoRun?: boolean; requiresHumanApproval?: boolean; reasons?: string[] };
+  approvals: ApprovalGate[];
+}) {
+  const label = taskOutcomeLabel(input.oneclawTask);
+  const action = firstTaskAction(input.oneclawTask);
+  const approval = input.approvals.find((item) => item.required && item.status === 'pending');
+  const policyReason = input.automationPolicy.reasons?.filter(Boolean).join(' ');
+  const blockedCheck = firstBlockedCheck(input.preflight);
+  const reason = input.runtimeError || approval?.reason || policyReason || blockedCheck;
+
+  if (!input.oneclawTask) {
+    return 'I understood the request, but I did not get a valid worker route yet. Ask me to retry, or provide the missing target such as a URL, file, repository, or API endpoint.';
+  }
+
+  if (input.runtimeError) {
+    return [
+      `I could not finish the ${label}.`,
+      `Reason: ${input.runtimeError}`,
+      action ? `Worker: ${action}` : '',
+      'Next: retry after fixing the connector issue, or ask me to rebuild the workflow with a different route.',
+    ].filter(Boolean).join('\n\n');
+  }
+
+  if (input.blocked || input.automationPolicy.blocked) {
+    return [
+      `I prepared the ${label}, but TheOne blocked it before execution.`,
+      reason ? `Reason: ${reason}` : 'Reason: policy or preflight did not clear the task.',
+      'Next: revise the request or policy, then retry.',
+    ].join('\n\n');
+  }
+
+  if (input.approvalGated) {
+    return [
+      `I prepared the ${label}, but it has not run yet because approval is required.`,
+      reason ? `Approval reason: ${reason}` : '',
+      'Next: approve it, reject it, or ask me to revise the worker task first.',
+    ].filter(Boolean).join('\n\n');
+  }
+
+  if (input.oneclawRun && input.workerResultText.trim()) {
+    return [
+      `The ${label} worker returned data, but the final summary pass did not produce a finished answer.`,
+      'Readable worker evidence:',
+      input.workerResultText.trim().slice(0, 1800),
+      'Next: press Continue or Report and I will turn this evidence into a polished summary.',
+    ].join('\n\n');
+  }
+
+  if (input.oneclawRun) {
+    return [
+      `The ${label} worker returned a receipt, but I did not receive enough readable content to produce the final answer.`,
+      reason ? `Detail: ${reason}` : '',
+      'Next: open the run receipt, retry the worker, or ask me to summarize the raw receipt.',
+    ].filter(Boolean).join('\n\n');
+  }
+
+  if (input.canSubmit || input.automationPolicy.canAutoRun) {
+    return [
+      `The ${label} is auto-cleared, but I have not received the OneClaw execution receipt yet.`,
+      action ? `Worker: ${action}` : '',
+      'Next: press Continue or Retry so I can fetch the receipt and finish the answer.',
+    ].filter(Boolean).join('\n\n');
+  }
+
+  return [
+    `I prepared the ${label}, but it did not execute.`,
+    reason ? `Reason: ${reason}` : 'Reason: TheOne did not get an executable state from policy or preflight.',
+    'Next: press Retry, or ask me to rebuild the workflow.',
+  ].join('\n\n');
+}
+
 async function generateAttachmentReport(input: {
   raw: string;
   attachmentContext: string;
@@ -2012,7 +2122,37 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         automationReason: automationPolicy.reasons?.join(' '),
       })
     : null;
-  const summary = finalSummary || approvalSummary || effectiveOneAi.workflow.assistantReply;
+  const unfinishedExecutionSummary = !finalSummary && !approvalSummary && objectiveNeedsWorkerResult(raw, oneclawTask)
+    ? buildUnfinishedExecutionSummary({
+        raw,
+        oneclawTask,
+        oneclawRun,
+        runtimeError,
+        approvalGated,
+        blocked,
+        canSubmit,
+        workerResultText,
+        preflight,
+        automationPolicy,
+        approvals,
+      })
+    : null;
+  const candidateSummary = finalSummary || approvalSummary || unfinishedExecutionSummary || effectiveOneAi.workflow.assistantReply;
+  const summary = isProcessPlaceholderReply(candidateSummary) && objectiveNeedsWorkerResult(raw, oneclawTask)
+    ? buildUnfinishedExecutionSummary({
+        raw,
+        oneclawTask,
+        oneclawRun,
+        runtimeError,
+        approvalGated,
+        blocked,
+        canSubmit,
+        workerResultText,
+        preflight,
+        automationPolicy,
+        approvals,
+      })
+    : candidateSummary;
   const generatedReportArtifact = attachmentReport
     ? buildReportArtifactFromSummary({
         raw,
@@ -2106,6 +2246,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         finalOneAiResult,
         finalSummary,
         approvalSummary,
+        unfinishedExecutionSummary,
         workerResultText,
         normalizedWorkerReceipt,
         preflight,
