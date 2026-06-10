@@ -322,7 +322,9 @@ export async function POST(req: Request) {
             ? 'The worker route is prepared or running.'
             : result?.chat?.documentRuntime
               ? 'The document answer is being shaped into a useful report.'
-              : 'No external worker was needed for this answer.',
+              : typeof (result?.chat as any)?.workerRuntime?.diagnostics?.userReadable === 'string'
+                ? (result.chat as any).workerRuntime.diagnostics.userReadable
+                : 'TheOne is checking whether this can be answered directly or needs a worker.',
         });
         send(controller, 'stage', {
           index: 4,

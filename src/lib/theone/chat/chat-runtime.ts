@@ -848,6 +848,11 @@ function synthesizeWebExtractTask(input: {
   };
 }
 
+function isExplicitWebWorkerRequest(raw: string) {
+  return Boolean(extractWebUrl(raw)) &&
+    /(website|web page|browse|analy[sz]e|summarize|summary|findings|inspect|extract|网页|网站|浏览|总结|分析|提取)/i.test(raw);
+}
+
 function taskContainsGitHubAction(task: OneClawTask | null | undefined) {
   return Boolean(task?.steps?.some((step) => /^git\./i.test(step.action || '')));
 }
@@ -1900,20 +1905,29 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     attachmentContext,
     actions: oneClawManifest.capabilities,
   });
-  const webFallbackTask = effectiveOneAi.oneclawTask || attachmentFallbackTask ? null : synthesizeWebExtractTask({
-    raw,
-    actions: oneClawManifest.capabilities,
-  });
+  const forcedWebFallbackTask = !attachmentFallbackTask && isExplicitWebWorkerRequest(raw)
+    ? synthesizeWebExtractTask({
+        raw,
+        actions: oneClawManifest.capabilities,
+      })
+    : null;
+  const webFallbackTask = attachmentFallbackTask
+    ? null
+    : forcedWebFallbackTask || (!effectiveOneAi.oneclawTask ? synthesizeWebExtractTask({
+        raw,
+        actions: oneClawManifest.capabilities,
+      }) : null);
   const githubFallbackTask = effectiveOneAi.oneclawTask || attachmentFallbackTask || webFallbackTask ? null : synthesizeGitHubRepoTask({
     raw,
     actions: oneClawManifest.capabilities,
   });
   const fallbackOneClawTask = attachmentFallbackTask || webFallbackTask || githubFallbackTask;
+  const proposedOneClawTask = forcedWebFallbackTask || effectiveOneAi.oneclawTask || fallbackOneClawTask;
   const guardedRoute = guardOneClawTaskRoute({
     raw,
     attachmentContext,
     actions: oneClawManifest.capabilities,
-    proposedTask: effectiveOneAi.oneclawTask || fallbackOneClawTask,
+    proposedTask: proposedOneClawTask,
   });
   const rawPlannedOneClawTask = guardedRoute.task;
   const fallbackRoute = guardedRoute.route ||
