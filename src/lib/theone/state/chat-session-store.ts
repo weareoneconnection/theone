@@ -10,6 +10,8 @@ export type TheOneChatAttachment = {
   textPreview?: string;
   summary?: string;
   insights?: Record<string, unknown>;
+  status?: 'uploading' | 'ready' | 'failed';
+  error?: string;
 };
 
 export type TheOneChatSessionMessage = {

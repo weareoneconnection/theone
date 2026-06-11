@@ -370,6 +370,8 @@ function attachmentInventory(context: string) {
       const type = block.match(/Type:\s*(.+)/i)?.[1]?.trim() || 'file';
       const size = Number(block.match(/Size:\s*(\d+)/i)?.[1] || 0);
       const path = block.match(/Stored path:\s*(.+)/i)?.[1]?.trim() || '';
+      const status = block.match(/Status:\s*(.+)/i)?.[1]?.trim().toLowerCase() || '';
+      const uploadError = block.match(/Upload error:\s*(.+)/i)?.[1]?.trim() || '';
       const summary = block.match(/Summary:\s*([\s\S]*?)(?:\nContent:|$)/i)?.[1]?.trim() || '';
       const insightsText = block.match(/Attachment insights:\s*(\{[\s\S]*?\})(?:\nSummary:|\nContent:|$)/i)?.[1]?.trim() || '';
       let insights: Record<string, unknown> | null = null;
@@ -387,6 +389,8 @@ function attachmentInventory(context: string) {
         type,
         size,
         path,
+        status,
+        uploadError,
         summary: summary.slice(0, 800),
         hasReadableText,
         insights,
@@ -399,6 +403,37 @@ function attachmentInventory(context: string) {
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item));
+}
+
+function buildUnavailableAttachmentReport(input: {
+  raw: string;
+  attachmentContext: string;
+}) {
+  const attachments = attachmentInventory(input.attachmentContext);
+  const names = attachments.map((attachment) => attachment.name).filter(Boolean).join(', ') || 'the attached file';
+  const reasons = attachments
+    .map((attachment) => attachment.uploadError || attachment.summary)
+    .filter(Boolean)
+    .slice(0, 3);
+  const summary = [
+    `I can see the attachment request for ${names}, but TheOne does not have readable content or a reliable stored file path for it yet.`,
+    '',
+    reasons.length ? `What happened: ${reasons.join(' ')}` : 'What happened: the attachment is marked as failed before a document worker could read it.',
+    '',
+    'Next step: re-upload the file and wait until the attachment chip shows ready. If it still fails, provide a local file path or use the Files app route so TheOne can send it through document.parse.',
+  ].join('\n');
+
+  return {
+    result: {
+      success: true,
+      mock: true,
+      data: {
+        assistantReply: summary,
+        source: 'theone.attachment_unavailable_guard',
+      },
+    },
+    summary,
+  };
 }
 
 function isFailedDocumentSummary(summary: string, runtimeError?: string | null) {
@@ -1900,6 +1935,10 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
   const attachmentItems = attachmentInventory(attachmentContext);
   const attachmentRequest = isAttachmentReportRequest(raw, contextualMessages);
   const attachmentHasReadableText = attachmentItems.some((attachment) => attachment.hasReadableText);
+  const attachmentUnavailable = attachmentRequest &&
+    attachmentItems.length > 0 &&
+    attachmentItems.every((attachment) => !attachment.hasReadableText && !attachment.path) &&
+    attachmentItems.some((attachment) => /failed|error|missing/i.test(`${attachment.status} ${attachment.uploadError} ${attachment.summary}`));
   const previousReportArtifact = parsePreviousReportArtifact(contextualMessages);
   const directReportExport = Boolean(previousReportArtifact && asksForFileArtifact(raw));
   const directAttachmentReport = attachmentRequest && attachmentHasReadableText &&
@@ -2133,7 +2172,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     };
   }
 
-  const attachmentReport = directAttachmentReport
+  const attachmentReport = attachmentUnavailable
+    ? buildUnavailableAttachmentReport({ raw, attachmentContext })
+    : directAttachmentReport
     ? await generateAttachmentReport({ raw, attachmentContext, mode }).catch((error) => generateLocalAttachmentReport({
         raw,
         attachmentContext,

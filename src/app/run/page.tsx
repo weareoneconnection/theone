@@ -36,6 +36,7 @@ type ChatAttachment = {
   textPreview?: string;
   summary?: string;
   insights?: Record<string, unknown>;
+  error?: string;
   status: 'uploading' | 'ready' | 'failed';
 };
 
@@ -203,6 +204,7 @@ async function uploadChatAttachments(files: FileList | null): Promise<ChatAttach
     textPreview: typeof attachment.textPreview === 'string' ? attachment.textPreview : undefined,
     summary: typeof attachment.summary === 'string' ? attachment.summary : undefined,
     insights: attachment.insights && typeof attachment.insights === 'object' ? attachment.insights : undefined,
+    error: typeof attachment.error === 'string' ? attachment.error : undefined,
     status: 'ready' as const,
   }));
 }
@@ -1535,7 +1537,7 @@ function RunPageContent() {
   async function sendMessage(text?: string) {
     const content = (text ?? input).trim();
     if (!content || loading) return;
-    const readyAttachments = attachments.filter((attachment) => attachment.status === 'ready');
+    const activeAttachments = attachments.filter((attachment) => attachment.status !== 'uploading');
     const uploadInProgress = attachments.some((attachment) => attachment.status === 'uploading');
     if (uploadInProgress) {
       setMessages((current) => ([
@@ -1627,7 +1629,7 @@ function RunPageContent() {
         } : undefined,
         messages: nextMessages.map((message) => ({ role: message.role, content: message.content })),
         sessionId: chatSessionId || undefined,
-        attachments: readyAttachments,
+        attachments: activeAttachments,
         selectedWorker: selectedWorker ? {
           key: selectedWorker.key,
           label: selectedWorker.label,
@@ -1703,7 +1705,7 @@ function RunPageContent() {
         setChatSessionId(data.chat.conversation.sessionId);
         window.localStorage.setItem('theone.chatSessionId', data.chat.conversation.sessionId);
       }
-      setAttachments((current) => current.filter((attachment) => attachment.status !== 'ready'));
+      setAttachments((current) => current.filter((attachment) => attachment.status === 'uploading'));
       setSelectedWorker(null);
     } catch (error) {
       const failure = { ok: false, error: error instanceof Error ? error.message : 'TheOne could not start this run.' };
@@ -1796,10 +1798,10 @@ function RunPageContent() {
         ...current.filter((item) => !pending.some((pendingItem) => pendingItem.id === item.id)),
         ...uploaded,
       ].slice(-12));
-    } catch {
+    } catch (error) {
       setAttachments((current) => current.map((item) => (
         pending.some((pendingItem) => pendingItem.id === item.id)
-          ? { ...item, status: 'failed' as const, summary: 'Upload failed.' }
+          ? { ...item, status: 'failed' as const, summary: 'Upload failed.', error: error instanceof Error ? error.message : 'Upload failed.' }
           : item
       )));
     }

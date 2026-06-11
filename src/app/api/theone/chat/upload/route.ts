@@ -280,7 +280,14 @@ export async function POST(req: Request) {
         path: storedPath,
       };
 
-      const text = extractReadableContent(file.name, file.type || '', bytes);
+      let text = '';
+      let extractionError = '';
+      try {
+        text = extractReadableContent(file.name, file.type || '', bytes);
+      } catch (error) {
+        extractionError = error instanceof Error ? error.message : 'Upload-time text extraction failed.';
+      }
+
       item.insights = buildAttachmentInsights({
         name: file.name,
         type: file.type || 'application/octet-stream',
@@ -288,13 +295,19 @@ export async function POST(req: Request) {
         text,
         buffer: bytes,
       });
+      if (extractionError) {
+        item.insights.extractionError = extractionError;
+        item.insights.extraction = 'stored_file_extraction_failed';
+      }
       if (text.trim()) {
         item.text = text;
         item.textPreview = text.slice(0, 4000);
         item.summary = summarizeText(text);
       } else {
         const worker = typeof item.insights.recommendedWorker === 'string' ? item.insights.recommendedWorker : recommendedWorker(file.name, file.type || '');
-        item.summary = `Attachment uploaded and stored. Recommended worker: ${worker}. TheOne should use the stored attachment path instead of asking the user for a new path.`;
+        item.summary = extractionError
+          ? `Attachment uploaded and stored, but upload-time text extraction failed: ${extractionError}. Recommended worker: ${worker}. TheOne should use the stored attachment path instead of asking the user for a new path.`
+          : `Attachment uploaded and stored. Recommended worker: ${worker}. TheOne should use the stored attachment path instead of asking the user for a new path.`;
       }
 
       attachments.push(item);
