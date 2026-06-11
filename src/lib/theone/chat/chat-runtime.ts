@@ -401,12 +401,18 @@ function attachmentInventory(context: string) {
     .filter((item): item is NonNullable<typeof item> => Boolean(item));
 }
 
+function isFailedDocumentSummary(summary: string, runtimeError?: string | null) {
+  const value = `${runtimeError || ''}\n${summary || ''}`;
+  return /(ENOENT|no such file|could not be found|unable to read|file is not accessible|missing file|not accessible|failed because the specified file|无法读取|找不到文件|文件不存在|文件不可访问|缺少文件)/i.test(value);
+}
+
 function buildDocumentRuntime(input: {
   raw: string;
   attachmentContext: string;
   attachmentReport: { summary: string } | null;
   summary: string;
   reportArtifact?: ChatReportArtifact | null;
+  runtimeError?: string | null;
 }) {
   const attachments = attachmentInventory(input.attachmentContext);
   if (!attachments.length && !input.attachmentReport) return null;
@@ -414,27 +420,30 @@ function buildDocumentRuntime(input: {
   const workerHints = attachments.map((attachment) => attachment.recommendedWorker).filter(Boolean);
   const topicHints = Array.from(new Set(attachments.flatMap((attachment) => attachment.detectedTopics)));
   const reportSections = Array.from(new Set(attachments.flatMap((attachment) => attachment.reportSections)));
-  const reportReady = Boolean(input.attachmentReport || input.summary);
-  const artifactReady = Boolean(input.reportArtifact);
+  const failed = isFailedDocumentSummary(input.summary, input.runtimeError);
+  const reportReady = !failed && Boolean(input.attachmentReport || input.summary);
+  const artifactReady = !failed && Boolean(input.reportArtifact);
   const wantsReport = /report|报告|总结|summary|summarize|分析|analy[sz]e/i.test(input.raw);
+  const failureReason = input.runtimeError || (failed ? 'The document source could not be read.' : null);
 
   return {
     schemaVersion: 'theone.document_runtime.v1',
-    status: artifactReady ? 'artifact_ready' : reportReady ? 'report_ready' : readable ? 'read_ready' : 'needs_worker_read',
+    status: failed ? 'failed' : artifactReady ? 'artifact_ready' : reportReady ? 'report_ready' : readable ? 'read_ready' : 'needs_worker_read',
     objective: input.raw,
     attachments,
     readableCount: readable,
-    sourceQuality: readable ? 'upload_text_ready' : 'worker_read_needed',
+    sourceQuality: failed ? 'source_unavailable' : readable ? 'upload_text_ready' : 'worker_read_needed',
+    failureReason,
     recommendedWorkers: workerHints,
     detectedTopics: topicHints,
     reportSections,
     stages: [
       { key: 'uploaded', title: 'File attached', status: attachments.length ? 'completed' : 'pending' },
       { key: 'classify', title: topicHints.length ? `Classified: ${topicHints.slice(0, 3).join(', ')}` : 'Classify source', status: attachments.length ? 'completed' : 'pending' },
-      { key: 'read', title: readable ? 'Readable text extracted' : 'File worker read needed', status: readable ? 'completed' : 'pending' },
-      { key: 'analyze', title: 'Evidence analyzed', status: reportReady ? 'completed' : readable ? 'active' : 'pending' },
-      { key: 'report', title: wantsReport ? 'Report prepared' : 'Summary prepared', status: reportReady ? 'completed' : 'pending' },
-      { key: 'export', title: artifactReady ? 'Export package ready' : 'Export on request', status: artifactReady ? 'available' : 'pending' },
+      { key: 'read', title: failed ? 'Source file unavailable' : readable ? 'Readable text extracted' : 'File worker read needed', status: failed ? 'failed' : readable ? 'completed' : 'pending' },
+      { key: 'analyze', title: failed ? 'Analysis blocked by missing source' : 'Evidence analyzed', status: failed ? 'blocked' : reportReady ? 'completed' : readable ? 'active' : 'pending' },
+      { key: 'report', title: failed ? 'Report not generated' : wantsReport ? 'Report prepared' : 'Summary prepared', status: failed ? 'blocked' : reportReady ? 'completed' : 'pending' },
+      { key: 'export', title: failed ? 'Export unavailable' : artifactReady ? 'Export package ready' : 'Export on request', status: failed ? 'blocked' : artifactReady ? 'available' : 'pending' },
     ],
     report: reportReady ? {
       available: true,
@@ -442,11 +451,17 @@ function buildDocumentRuntime(input: {
       summary: input.summary.slice(0, 1200),
       artifactId: input.reportArtifact?.id || null,
     } : null,
-    nextActions: [
-      'Turn this into a formal report.',
-      'Extract risk register and action items.',
-      'Export as DOCX or PDF when needed.',
-    ],
+    nextActions: failed
+      ? [
+          'Re-upload the file so TheOne receives a fresh stored source.',
+          'Retry the report after the attachment is visible in the composer.',
+          'Use attached readable content directly when available.',
+        ]
+      : [
+          'Turn this into a formal report.',
+          'Extract risk register and action items.',
+          'Export as DOCX or PDF when needed.',
+        ],
   };
 }
 
@@ -587,9 +602,10 @@ function buildDeliveryStatus(input: {
   approvals: ApprovalGate[];
 }) {
   if (!input.documentRuntime && !input.reportArtifact && !input.exportBundle) return null;
+  const documentFailed = input.documentRuntime?.status === 'failed';
   return {
     schemaVersion: 'theone.delivery_status.v1',
-    status: input.exportBundle ? 'export_ready' : input.reportArtifact ? 'report_ready' : 'in_progress',
+    status: documentFailed ? 'needs_source' : input.exportBundle ? 'export_ready' : input.reportArtifact ? 'report_ready' : 'in_progress',
     quality: {
       sourceCoverage: input.documentRuntime?.sourceQuality || 'unknown',
       readableFiles: input.documentRuntime?.readableCount || 0,
@@ -597,13 +613,15 @@ function buildDeliveryStatus(input: {
       reportSections: input.documentRuntime?.reportSections || [],
     },
     stages: [
-      { key: 'read', title: 'Read source', status: input.documentRuntime ? 'completed' : 'pending' },
-      { key: 'report', title: 'Build report', status: input.reportArtifact ? 'completed' : 'pending' },
-      { key: 'export', title: 'Export files', status: input.exportBundle ? 'completed' : 'available' },
+      { key: 'read', title: 'Read source', status: documentFailed ? 'failed' : input.documentRuntime ? 'completed' : 'pending' },
+      { key: 'report', title: 'Build report', status: documentFailed ? 'blocked' : input.reportArtifact ? 'completed' : 'pending' },
+      { key: 'export', title: 'Export files', status: documentFailed ? 'blocked' : input.exportBundle ? 'completed' : 'available' },
       { key: 'approval', title: 'Approval gates', status: input.approvals.some((approval) => approval.status === 'pending') ? 'waiting' : 'clear' },
     ],
     files: input.exportBundle?.files || [],
-    nextAction: input.exportBundle
+    nextAction: documentFailed
+      ? 'Re-upload the file and retry the document report.'
+      : input.exportBundle
       ? 'Open or download the exported report files.'
       : input.reportArtifact
         ? 'Ask TheOne to export as PDF, DOCX, Markdown, HTML, or JSON.'
@@ -620,19 +638,22 @@ function buildObjectiveAssessment(input: {
   oneclawTask: OneClawTask | null;
 }) {
   const hasAnswer = Boolean(input.summary.trim());
-  const documentDone = input.documentRuntime?.status === 'report_ready' || input.documentRuntime?.status === 'artifact_ready';
+  const documentFailed = input.documentRuntime?.status === 'failed';
+  const documentDone = !documentFailed && (input.documentRuntime?.status === 'report_ready' || input.documentRuntime?.status === 'artifact_ready');
   const workerDone = Boolean(input.oneclawRun && !input.runtimeError);
   const directAnswer = !input.oneclawTask && hasAnswer;
-  const satisfied = Boolean(!input.runtimeError && !input.approvalGated && (documentDone || workerDone || directAnswer));
+  const satisfied = Boolean(!documentFailed && !input.runtimeError && !input.approvalGated && (documentDone || workerDone || directAnswer));
 
   return {
     schemaVersion: 'theone.objective_assessment.v1',
-    status: satisfied ? 'satisfied' : input.approvalGated ? 'waiting_approval' : input.runtimeError ? 'needs_fix' : 'in_progress',
+    status: satisfied ? 'satisfied' : input.approvalGated ? 'waiting_approval' : documentFailed || input.runtimeError ? 'needs_fix' : 'in_progress',
     satisfied,
     outcome: satisfied
       ? 'The requested outcome has a usable answer or worker result.'
       : input.approvalGated
         ? 'The workflow is prepared, but a human approval is required before execution.'
+        : documentFailed
+          ? `The document source is not available: ${input.documentRuntime?.failureReason || 'source file could not be read.'}`
         : input.runtimeError
           ? `The workflow needs a fix before it can complete: ${input.runtimeError}`
           : 'The workflow has not reached a final worker result yet.',
@@ -643,6 +664,7 @@ function buildObjectiveAssessment(input: {
     ].filter(Boolean),
     gaps: [
       input.approvalGated ? 'Approval is still waiting.' : null,
+      documentFailed ? input.documentRuntime?.failureReason || 'The document source could not be read.' : null,
       input.runtimeError ? input.runtimeError : null,
       !hasAnswer ? 'No final readable answer was produced yet.' : null,
     ].filter(Boolean),
@@ -650,6 +672,8 @@ function buildObjectiveAssessment(input: {
       ? 'Use the result, ask a follow-up, save it, or export it.'
       : input.approvalGated
         ? 'Approve, reject, or ask TheOne to revise the task.'
+        : documentFailed
+          ? 'Re-upload the file and retry the report.'
         : input.runtimeError
           ? 'Retry with the suggested fix or ask TheOne for an alternate route.'
           : 'Continue the mission.',
@@ -2474,23 +2498,25 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         approvals,
       })
     : candidateSummary;
-  const generatedReportArtifact = attachmentReport
+  const failedDocumentSummary = isFailedDocumentSummary(summary, runtimeError);
+  const generatedReportArtifact = attachmentReport && !failedDocumentSummary
     ? buildReportArtifactFromSummary({
         raw,
         summary,
         attachmentContext,
       })
     : null;
-  const reportArtifact = generatedReportArtifact || (directReportExport ? previousReportArtifact : null);
-  const exportBundle = reportArtifact && (directReportExport || attachmentReport)
+  const reportArtifact = generatedReportArtifact || (!failedDocumentSummary && directReportExport ? previousReportArtifact : null);
+  const exportBundle = reportArtifact && !failedDocumentSummary && (directReportExport || attachmentReport)
     ? await exportReportArtifact(reportArtifact).catch(() => null)
     : null;
   const documentRuntime = buildDocumentRuntime({
     raw,
     attachmentContext,
-    attachmentReport: attachmentReport ? { summary: attachmentReport.summary } : null,
+    attachmentReport: attachmentReport && !failedDocumentSummary ? { summary: attachmentReport.summary } : null,
     summary,
     reportArtifact,
+    runtimeError,
   });
   const deliveryStatus = buildDeliveryStatus({
     documentRuntime,

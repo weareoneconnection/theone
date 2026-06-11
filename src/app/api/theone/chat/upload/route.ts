@@ -1,6 +1,5 @@
 import type { TheOneChatAttachment } from '@/lib/theone/state/chat-session-store';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { inflateSync } from 'node:zlib';
 
@@ -263,7 +262,7 @@ export async function POST(req: Request) {
   try {
     const form = await req.formData();
     const files = form.getAll('files').filter((item): item is File => item instanceof File).slice(0, MAX_FILES);
-    const uploadDir = path.join(tmpdir(), 'theone-chat-uploads');
+    const uploadDir = path.join(process.cwd(), '.next', 'cache', 'theone-chat-uploads');
     await mkdir(uploadDir, { recursive: true });
 
     const attachments: TheOneChatAttachment[] = [];
