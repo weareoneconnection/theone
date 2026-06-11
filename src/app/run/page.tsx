@@ -209,6 +209,12 @@ async function uploadChatAttachments(files: FileList | null): Promise<ChatAttach
 
 function plainResult(result: any) {
   const assistant = result?.chat?.assistant?.content;
+  const error = String(result?.error || '');
+  const genericStartupFailure = typeof assistant === 'string' &&
+    /could not start the intelligent chat workflow/i.test(assistant);
+  if (error && (!assistant || genericStartupFailure)) {
+    return `TheOne could not start this workflow.\n\nReason: ${error}`;
+  }
   const objective = String(result?.intent?.objective || result?.chat?.mission?.objective || '');
   const websiteWorkerExpected = /(https?:\/\/|(?:[a-z0-9-]+\.)+[a-z]{2,})/i.test(objective) &&
     /(website|web page|browse|analy[sz]e|summarize|summary|findings|inspect|extract|网页|网站|浏览|总结|分析|提取)/i.test(objective);
@@ -220,7 +226,7 @@ function plainResult(result: any) {
   }
   const placeholder = typeof assistant === 'string' &&
     /(please hold|while i gather|i'?ll extract|i will extract|i will gather|let me gather|gather the data|收集数据|正在收集|请稍等)/i.test(assistant);
-  if (assistant && !placeholder) return assistant;
+  if (assistant && !placeholder) return websiteWorkerExpected ? formatWebsiteAnswer(assistant) : assistant;
   if (placeholder) {
     const diagnostic = result?.chat?.workerRuntime?.diagnostics?.userReadable;
     const assessment = result?.chat?.objectiveAssessment?.outcome;
@@ -228,7 +234,6 @@ function plainResult(result: any) {
     const fallback = [assessment, diagnostic, nextAction ? `Next: ${nextAction}` : ''].filter(Boolean).join('\n\n');
     if (fallback) return fallback;
   }
-  const error = String(result?.error || '');
   if (error) return error.replace(/Invalid `prisma[^`]+` invocation:[\s\S]*/i, 'TheOne switched to safe mode because the memory database is temporarily unavailable.');
   if (result?.appResult?.summary) return result.appResult.summary;
   if (result?.appRoute?.summary) return result.appRoute.summary;
@@ -236,6 +241,22 @@ function plainResult(result: any) {
   const oneClaw = [...(result?.executions || [])].reverse().find((execution: any) => execution.provider === 'oneclaw');
   if (oneClaw?.summary) return oneClaw.summary;
   return 'TheOne is ready to plan, check policy, execute, and record proof.';
+}
+
+function formatWebsiteAnswer(value: string) {
+  const compact = value.replace(/[ \t]+/g, ' ').trim();
+  const labelMatches = compact.match(/\b(Outcome|Key findings|Positioning|Useful opportunities|Risks or gaps|Recommended next move)\b/gi) || [];
+  if (labelMatches.length < 2) return value.trim();
+
+  return compact
+    .replace(/\s*Outcome:\s*/i, 'Outcome\n')
+    .replace(/\s*Key findings(?:\s+indicate\s+that)?[:\s]+/i, '\n\nKey findings\n')
+    .replace(/\s*Positioning:\s*/i, '\n\nPositioning\n')
+    .replace(/\s*Useful opportunities(?:\s+include)?[:\s]+/i, '\n\nUseful opportunities\n')
+    .replace(/\s*Risks or gaps:\s*/i, '\n\nRisks / gaps\n')
+    .replace(/\s*Recommended next move:\s*/i, '\n\nRecommended next move\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function latestOneClawExecution(result: any) {

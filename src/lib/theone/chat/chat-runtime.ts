@@ -815,6 +815,181 @@ async function generateAttachmentReport(input: {
   };
 }
 
+function generateLocalAttachmentReport(input: {
+  raw: string;
+  attachmentContext: string;
+  error?: string;
+}) {
+  const attachments = attachmentInventory(input.attachmentContext);
+  const sourceLines = attachments.map((attachment) => [
+    `${attachment.name}${attachment.pageEstimate ? ` (${attachment.pageEstimate} estimated pages)` : ''}`,
+    attachment.summary ? `Summary: ${attachment.summary}` : '',
+    attachment.detectedTopics.length ? `Detected topics: ${attachment.detectedTopics.join(', ')}` : '',
+    attachment.evidencePreview.length ? `Evidence preview:\n- ${attachment.evidencePreview.join('\n- ')}` : '',
+    !attachment.hasReadableText && attachment.path ? `Stored path is available for worker reading: ${attachment.path}` : '',
+  ].filter(Boolean).join('\n')).filter(Boolean);
+
+  const needsWorkerRead = attachments.some((attachment) => !attachment.hasReadableText && attachment.path);
+  const summary = [
+    needsWorkerRead
+      ? 'I found the uploaded attachment, but the upload did not expose enough readable text for a full report yet.'
+      : 'I read the uploaded attachment context and prepared a first-pass report.',
+    '',
+    'Executive summary',
+    sourceLines.length
+      ? sourceLines.join('\n\n')
+      : 'The attachment metadata is present, but no readable preview was available in the chat context.',
+    '',
+    'Risks / issues',
+    needsWorkerRead
+      ? '- The file needs a document/file worker parse before TheOne can produce a reliable full report.'
+      : '- This is based on the upload-time text preview, so long documents may need deeper parsing before final decisions.',
+    input.error ? `- OneAI report generation was unavailable: ${input.error}` : '',
+    '',
+    'Action items',
+    needsWorkerRead
+      ? '- Retry or continue so TheOne can route the stored file through document.parse or file.read.'
+      : '- Ask TheOne to expand this into a formal report, risk register, or action list.',
+    '- Export to DOCX, PDF, Markdown, HTML, or JSON after the report is finalized.',
+  ].filter((line) => line !== '').join('\n');
+
+  return {
+    result: {
+      success: true,
+      mock: true,
+      attempts: 0,
+      data: { assistantReply: summary },
+      usage: null,
+      usageTotal: null,
+      raw: {
+        provider: 'theone',
+        fallback: 'local_attachment_report',
+        error: input.error || null,
+      },
+    },
+    summary,
+  };
+}
+
+function buildAttachmentReportPlannerResult(input: {
+  raw: string;
+  attachmentReport: { result: unknown; summary: string };
+}) {
+  return {
+    workflow: {
+      assistantReply: input.attachmentReport.summary,
+      oneAiBrain: {
+        role: 'Attachment report planner',
+        understanding: 'The user wants TheOne to read the uploaded attachment and return a practical report.',
+        selectedApp: 'files',
+        workerRoute: ['oneai.generate', 'theone.report'],
+        confidence: 0.9,
+        responseStyle: 'clear report with evidence and next actions',
+        executionBoundary: 'No external execution is needed when readable attachment content is already present.',
+        reasoningSummary: 'Use uploaded attachment context as the source and produce a chat report before offering exports.',
+      },
+      intent: {
+        objective: input.raw,
+        domain: 'files',
+        risk: 'medium' as const,
+        requiresApproval: false,
+      },
+      workflow: {
+        id: `attachment_report_${Date.now()}`,
+        summary: 'Read the attached document and produce a practical report.',
+        steps: [{
+          id: 'attachment_report',
+          title: 'Read attachment and write report',
+          worker: 'oneai',
+          action: 'oneai.generate',
+          input: { objective: input.raw, source: 'attached_file_context' },
+          approvalMode: 'auto' as const,
+          dependsOn: [],
+        }],
+      },
+      requiredWorkers: ['oneai', 'theone'],
+      oneclawTask: null,
+      safety: {
+        requiresApproval: false,
+        reason: 'Reading an uploaded attachment and writing a chat report does not require external execution.',
+      },
+    },
+    oneAiResult: input.attachmentReport.result as Awaited<ReturnType<typeof runOneAI>>,
+    oneclawTask: null,
+  };
+}
+
+function buildAttachmentReadPlannerResult(input: {
+  raw: string;
+  oneclawTask: OneClawTask;
+}) {
+  return {
+    workflow: {
+      assistantReply: 'I found the uploaded attachment and prepared the document worker to read it before writing the report.',
+      oneAiBrain: {
+        role: 'Attachment read planner',
+        understanding: 'The user wants a report from an uploaded attachment that needs worker parsing first.',
+        selectedApp: 'files',
+        workerRoute: input.oneclawTask.steps.map((step) => step.action),
+        confidence: 0.9,
+        responseStyle: 'worker-first document reading with a final report after receipt',
+        executionBoundary: 'TheOne must wait for the file/document worker receipt before claiming the document was read.',
+        reasoningSummary: 'The attachment has a stored path, so route it to the best file/document worker instead of asking for a path.',
+      },
+      intent: {
+        objective: input.raw,
+        domain: 'files',
+        risk: 'medium' as const,
+        requiresApproval: false,
+      },
+      workflow: {
+        id: `attachment_read_${Date.now()}`,
+        summary: 'Read the uploaded attachment through a file/document worker, then summarize the result.',
+        steps: input.oneclawTask.steps.map((step, index) => ({
+          id: step.id || `attachment_step_${index + 1}`,
+          title: step.action === 'document.parse'
+            ? 'Parse uploaded document'
+            : step.action === 'spreadsheet.read'
+              ? 'Read uploaded spreadsheet'
+              : step.action === 'image.extractText'
+                ? 'Extract text from uploaded image'
+                : 'Read uploaded file',
+          worker: step.action === 'document.parse'
+            ? 'document_worker'
+            : step.action === 'spreadsheet.read'
+              ? 'spreadsheet_worker'
+              : step.action.startsWith('image.')
+                ? 'image_worker'
+                : 'file_worker',
+          action: step.action,
+          input: step.input,
+          approvalMode: 'auto' as const,
+          dependsOn: step.dependsOn || [],
+        })),
+      },
+      requiredWorkers: ['oneclaw', 'theone'],
+      oneclawTask: input.oneclawTask,
+      safety: {
+        requiresApproval: false,
+        reason: 'Reading an uploaded attachment is a governed read-only file/document action.',
+      },
+    },
+    oneAiResult: {
+      success: true,
+      mock: true,
+      attempts: 0,
+      data: { assistantReply: 'Prepared attachment read workflow.' },
+      usage: null,
+      usageTotal: null,
+      raw: {
+        provider: 'theone',
+        fallback: 'attachment_read_planner',
+      },
+    } as Awaited<ReturnType<typeof runOneAI>>,
+    oneclawTask: input.oneclawTask,
+  };
+}
+
 function capabilityAvailable(actions: Array<{ action: string }>, action: string) {
   return actions.some((capability) => capability.action === action);
 }
@@ -1502,14 +1677,16 @@ async function summarizeWorkerResult(input: {
 
   const finalMessage = [
     'You are finalizing a TheOne chat workflow after OneClaw executed a worker task.',
-    'Return a polished user-facing answer. Use the worker evidence directly. Do not ask for approval or another URL if evidence is present.',
+    'Return the final user-facing answer, not a status update. Use the worker evidence directly. Do not ask for approval or another URL if evidence is present.',
     'If the worker failed, start with the exact reason, then give the fastest fix. Do not say the task completed.',
     'Always judge whether the original user objective is satisfied. If not, say what is missing and the next safest action.',
-    'Use this answer shape when useful: Outcome, Evidence, Gaps or risks, Next action.',
-    'For website analysis, use these sections when possible: Key findings, Positioning, Useful opportunities, Risks or gaps, Recommended next move.',
+    'Use short plain-text sections with blank lines between them. Do not use Markdown formatting.',
+    'Default answer shape: Outcome, Evidence, Gaps / risks, Recommended next move.',
+    'For website analysis, use this exact shape when evidence supports it: Outcome, Key findings, Positioning, Useful opportunities, Risks / gaps, Recommended next move.',
     'For API, file, GitHub, desktop, or browser work, explain what happened, what evidence supports it, and what the user can do next.',
     'For X/social publishing failures, mention character limits, approval state, or provider restrictions when present.',
     'Do not expose raw JSON unless it is the only useful evidence.',
+    'Keep the answer concise but useful. Prefer 4-7 short sections or bullets over one dense paragraph.',
     `Original user request: ${input.rawRequest}`,
     `Workflow summary: ${input.workflowSummary}`,
     `Worker evidence:\n${evidence}`,
@@ -1531,21 +1708,49 @@ async function summarizeWorkerResult(input: {
       },
     });
     const data = extractOneAIData<Record<string, unknown>>(finalOneAiResult);
-    const finalSummary = typeof data?.assistantReply === 'string' && data.assistantReply.trim()
+    const rawSummary = typeof data?.assistantReply === 'string' && data.assistantReply.trim()
       ? data.assistantReply.trim()
       : evidence.slice(0, 1800);
+    const finalSummary = polishWorkerAnswer(rawSummary, input.rawRequest);
 
     return { finalOneAiResult, finalSummary, workerResultText };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'OneAI final summary failed.';
     return {
       finalOneAiResult: { success: false, error: message },
-      finalSummary: workerResultText
+      finalSummary: polishWorkerAnswer(workerResultText
         ? `OneClaw returned worker data, but the final OneAI summary pass failed: ${message}\n\n${workerResultText.slice(0, 1800)}`
-        : `OneClaw returned a receipt, but the final OneAI summary pass failed: ${message}`,
+        : `OneClaw returned a receipt, but the final OneAI summary pass failed: ${message}`, input.rawRequest),
       workerResultText,
     };
   }
+}
+
+function polishWorkerAnswer(value: string, rawRequest: string) {
+  const text = value.trim();
+  if (!text) return text;
+
+  const websiteRequest = /(website|web page|browse|analy[sz]e|summarize|summary|findings|inspect|extract|网页|网站|浏览|总结|分析|提取)/i.test(rawRequest) &&
+    /(https?:\/\/|(?:[a-z0-9-]+\.)+[a-z]{2,})/i.test(rawRequest);
+  if (!websiteRequest) return text;
+
+  return formatLabeledWebsiteAnswer(text);
+}
+
+function formatLabeledWebsiteAnswer(value: string) {
+  const compact = value.replace(/[ \t]+/g, ' ').trim();
+  const labelMatches = compact.match(/\b(Outcome|Key findings|Positioning|Useful opportunities|Risks or gaps|Recommended next move)\b/gi) || [];
+  if (labelMatches.length < 2) return value.trim();
+
+  return compact
+    .replace(/\s*Outcome:\s*/i, 'Outcome\n')
+    .replace(/\s*Key findings(?:\s+indicate\s+that)?[:\s]+/i, '\n\nKey findings\n')
+    .replace(/\s*Positioning:\s*/i, '\n\nPositioning\n')
+    .replace(/\s*Useful opportunities(?:\s+include)?[:\s]+/i, '\n\nUseful opportunities\n')
+    .replace(/\s*Risks or gaps:\s*/i, '\n\nRisks / gaps\n')
+    .replace(/\s*Recommended next move:\s*/i, '\n\nRecommended next move\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function buildIntent(input: {
@@ -1668,11 +1873,16 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
   const memoryContextMessage = buildMemoryContextMessage(memoryContext);
   const contextualMessages = memoryContextMessage ? [memoryContextMessage, ...messages] : messages;
   const attachmentContext = attachmentContextText(contextualMessages);
+  const attachmentItems = attachmentInventory(attachmentContext);
+  const attachmentRequest = isAttachmentReportRequest(raw, contextualMessages);
+  const attachmentHasReadableText = attachmentItems.some((attachment) => attachment.hasReadableText);
   const previousReportArtifact = parsePreviousReportArtifact(contextualMessages);
   const directReportExport = Boolean(previousReportArtifact && asksForFileArtifact(raw));
+  const directAttachmentReport = attachmentRequest && attachmentHasReadableText &&
+    (!asksForFileArtifact(raw) || wantsChatReport(raw));
   const explicitExternalWorkerRequest = isExplicitWebWorkerRequest(raw) || Boolean(extractGitHubRepo(raw));
 
-  if (!directReportExport && !explicitExternalWorkerRequest && (!brain.executionDecision.shouldPlan || brain.reasoning.missingInformation.length > 0)) {
+  if (!directReportExport && !attachmentRequest && !explicitExternalWorkerRequest && (!brain.executionDecision.shouldPlan || brain.reasoning.missingInformation.length > 0)) {
     let brainOnlyOneAi: Awaited<ReturnType<typeof buildOneAIChatWorkflow>> | null = null;
     let summary = buildBrainOnlyReply({ brain, appPackages });
 
@@ -1899,22 +2109,35 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     };
   }
 
-  const oneAi = await buildOneAIChatWorkflow({
-    raw,
-    mode,
-    messages: contextualMessages,
-    capabilities: oneClawManifest.capabilities,
-    workerCatalog,
-    appPackages,
-    brain,
-  });
-  const directAttachmentReport = isAttachmentReportRequest(raw, contextualMessages) &&
-    (!asksForFileArtifact(raw) || wantsChatReport(raw));
+  const attachmentReport = directAttachmentReport
+    ? await generateAttachmentReport({ raw, attachmentContext, mode }).catch((error) => generateLocalAttachmentReport({
+        raw,
+        attachmentContext,
+        error: error instanceof Error ? error.message : 'OneAI attachment report failed.',
+      }))
+    : null;
+  const attachmentReadTask = !attachmentReport && attachmentRequest
+    ? synthesizeAttachmentWorkerTask({
+        raw,
+        attachmentContext,
+        actions: oneClawManifest.capabilities,
+      })
+    : null;
+  const oneAi = attachmentReport
+    ? buildAttachmentReportPlannerResult({ raw, attachmentReport })
+    : attachmentReadTask
+      ? buildAttachmentReadPlannerResult({ raw, oneclawTask: attachmentReadTask })
+    : await buildOneAIChatWorkflow({
+        raw,
+        mode,
+        messages: contextualMessages,
+        capabilities: oneClawManifest.capabilities,
+        workerCatalog,
+        appPackages,
+        brain,
+      });
   const oneAiProposedDocumentWorker = taskIncludesAction(oneAi.oneclawTask, 'document.generate') ||
     oneAi.workflow.workflow.steps.some((step) => step.action === 'document.generate');
-  const attachmentReport = directAttachmentReport
-    ? await generateAttachmentReport({ raw, attachmentContext, mode }).catch(() => null)
-    : null;
   const directExportSummary = directReportExport
     ? 'I exported the current report artifact into downloadable files: Markdown, HTML, JSON, PDF, and DOCX.'
     : null;
