@@ -209,6 +209,15 @@ async function uploadChatAttachments(files: FileList | null): Promise<ChatAttach
 
 function plainResult(result: any) {
   const assistant = result?.chat?.assistant?.content;
+  const objective = String(result?.intent?.objective || result?.chat?.mission?.objective || '');
+  const websiteWorkerExpected = /(https?:\/\/|(?:[a-z0-9-]+\.)+[a-z]{2,})/i.test(objective) &&
+    /(website|web page|browse|analy[sz]e|summarize|summary|findings|inspect|extract|网页|网站|浏览|总结|分析|提取)/i.test(objective);
+  const misleadingNoWorker = typeof assistant === 'string' &&
+    /no external worker was needed/i.test(assistant) &&
+    websiteWorkerExpected;
+  if (misleadingNoWorker) {
+    return 'This website analysis needs the browser worker. Retry the mission so TheOne can route it through OneClaw browser extraction and return the findings.';
+  }
   const placeholder = typeof assistant === 'string' &&
     /(please hold|while i gather|i'?ll extract|i will extract|i will gather|let me gather|gather the data|收集数据|正在收集|请稍等)/i.test(assistant);
   if (assistant && !placeholder) return assistant;

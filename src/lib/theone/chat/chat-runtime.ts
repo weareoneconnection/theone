@@ -1670,8 +1670,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
   const attachmentContext = attachmentContextText(contextualMessages);
   const previousReportArtifact = parsePreviousReportArtifact(contextualMessages);
   const directReportExport = Boolean(previousReportArtifact && asksForFileArtifact(raw));
+  const explicitExternalWorkerRequest = isExplicitWebWorkerRequest(raw) || Boolean(extractGitHubRepo(raw));
 
-  if (!directReportExport && (!brain.executionDecision.shouldPlan || brain.reasoning.missingInformation.length > 0)) {
+  if (!directReportExport && !explicitExternalWorkerRequest && (!brain.executionDecision.shouldPlan || brain.reasoning.missingInformation.length > 0)) {
     let brainOnlyOneAi: Awaited<ReturnType<typeof buildOneAIChatWorkflow>> | null = null;
     let summary = buildBrainOnlyReply({ brain, appPackages });
 
