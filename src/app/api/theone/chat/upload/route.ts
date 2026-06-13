@@ -3,6 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { inflateSync } from 'node:zlib';
 
 const TEXT_EXTENSIONS = new Set(['txt', 'md', 'markdown', 'json', 'csv', 'tsv', 'log', 'xml', 'html', 'css', 'js', 'ts', 'tsx', 'jsx', 'py', 'sql', 'yaml', 'yml']);
@@ -24,6 +25,10 @@ function extension(name: string) {
 
 function safeFilename(name: string) {
   return name.replace(/[/\\?%*:|"<>]/g, '_').slice(0, 120) || 'attachment';
+}
+
+function uploadDirectory() {
+  return process.env.THEONE_UPLOAD_DIR || path.join(tmpdir(), 'theone-chat-uploads');
 }
 
 function isTextLike(name: string, type: string) {
@@ -332,7 +337,7 @@ export async function POST(req: Request) {
   try {
     const form = await req.formData();
     const files = form.getAll('files').filter((item): item is File => item instanceof File).slice(0, MAX_FILES);
-    const uploadDir = path.join(process.cwd(), '.next', 'cache', 'theone-chat-uploads');
+    const uploadDir = uploadDirectory();
     await mkdir(uploadDir, { recursive: true });
 
     const attachments: TheOneChatAttachment[] = [];
