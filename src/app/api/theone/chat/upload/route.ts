@@ -31,6 +31,14 @@ function uploadDirectory() {
   return process.env.THEONE_UPLOAD_DIR || path.join(tmpdir(), 'theone-chat-uploads');
 }
 
+function hasPersistentUploadStorage() {
+  return Boolean(process.env.THEONE_UPLOAD_DIR);
+}
+
+function isServerlessRuntime() {
+  return Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.cwd().startsWith('/var/task'));
+}
+
 function isTextLike(name: string, type: string) {
   return type.startsWith('text/') ||
     type.includes('json') ||
@@ -383,11 +391,24 @@ export async function POST(req: Request) {
         item.summary = summarizeText(readableText);
       } else {
         const worker = typeof item.insights.recommendedWorker === 'string' ? item.insights.recommendedWorker : recommendedWorker(file.name, file.type || '');
-        item.summary = extractionError
-          ? `Attachment uploaded and stored, but upload-time text extraction failed: ${extractionError}. Recommended worker: ${worker}. TheOne should use the stored attachment path instead of asking the user for a new path.`
+        const reason = extractionError
+          ? `Upload-time text extraction failed: ${extractionError}.`
           : text.trim() && !quality.ok
-            ? `Attachment uploaded and stored, but upload-time text was not reliable: ${quality.reason}. Recommended worker: ${worker}. TheOne should use the stored attachment path instead of asking the user for a new path.`
-            : `Attachment uploaded and stored. Recommended worker: ${worker}. TheOne should use the stored attachment path instead of asking the user for a new path.`;
+            ? `Upload-time text was not reliable: ${quality.reason}.`
+            : 'No readable text was extracted during upload.';
+        if (isServerlessRuntime() && !hasPersistentUploadStorage()) {
+          delete item.path;
+          item.status = 'failed';
+          item.error = `${reason} Serverless temporary file paths cannot be reused across chat requests. Configure THEONE_UPLOAD_DIR with persistent storage or enable upload-time parsing for this file type.`;
+          item.summary = item.error;
+          item.insights.extraction = 'upload_text_unavailable_serverless';
+          item.insights.limitations = [
+            ...(Array.isArray(item.insights.limitations) ? item.insights.limitations : []),
+            'Serverless temporary file path is not a durable source.',
+          ];
+        } else {
+          item.summary = `${reason} Recommended worker: ${worker}. TheOne should use the stored attachment path instead of asking the user for a new path.`;
+        }
       }
 
       attachments.push(item);

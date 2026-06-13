@@ -205,7 +205,7 @@ async function uploadChatAttachments(files: FileList | null): Promise<ChatAttach
     summary: typeof attachment.summary === 'string' ? attachment.summary : undefined,
     insights: attachment.insights && typeof attachment.insights === 'object' ? attachment.insights : undefined,
     error: typeof attachment.error === 'string' ? attachment.error : undefined,
-    status: 'ready' as const,
+    status: attachment.status === 'failed' ? 'failed' as const : 'ready' as const,
   }));
 }
 
