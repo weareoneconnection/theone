@@ -1,5 +1,7 @@
 import type { TheOneChatAttachment } from '@/lib/theone/state/chat-session-store';
 import { mkdir, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { inflateSync } from 'node:zlib';
 
@@ -34,6 +36,32 @@ function isTextLike(name: string, type: string) {
 function summarizeText(value: string) {
   const compact = value.replace(/\s+/g, ' ').trim();
   return compact.slice(0, 500);
+}
+
+function readableTextQuality(value: string) {
+  const compact = value.replace(/\s+/g, '');
+  if (compact.length < 40) return { ok: false, reason: 'No meaningful readable text was extracted.' };
+
+  let printable = 0;
+  let signal = 0;
+  let control = 0;
+  for (const char of compact) {
+    const code = char.charCodeAt(0);
+    if ((code >= 32 && code <= 126) || code >= 0x4e00) printable += 1;
+    if (/[A-Za-z0-9\u4e00-\u9fff]/.test(char)) signal += 1;
+    if (code < 32 && code !== 9 && code !== 10 && code !== 13) control += 1;
+  }
+
+  const printableRatio = printable / compact.length;
+  const signalRatio = signal / compact.length;
+  const controlRatio = control / compact.length;
+  const ok = printableRatio >= 0.75 && signalRatio >= 0.28 && controlRatio <= 0.03;
+  return {
+    ok,
+    reason: ok
+      ? ''
+      : `Upload-time text looked unreadable or binary-like (printable ${(printableRatio * 100).toFixed(0)}%, signal ${(signalRatio * 100).toFixed(0)}%).`,
+  };
 }
 
 function fileKind(name: string, type: string) {
@@ -100,6 +128,7 @@ function buildAttachmentInsights(input: {
   size: number;
   text: string;
   buffer: Buffer;
+  qualityWarning?: string;
 }) {
   const kind = fileKind(input.name, input.type);
   const lines = input.text ? input.text.split(/\r?\n/) : [];
@@ -108,6 +137,7 @@ function buildAttachmentInsights(input: {
   const readable = Boolean(input.text.trim());
   const limitations = [
     readable ? '' : 'No readable text was extracted during upload; TheOne should route a worker for deeper reading.',
+    input.qualityWarning || '',
     kind === 'pdf' && readable && input.text.length >= MAX_EXTRACTED_TEXT ? 'PDF text was truncated to the upload extraction limit.' : '',
   ].filter(Boolean);
 
@@ -186,6 +216,44 @@ function extractPdfText(buffer: Buffer) {
     .slice(0, MAX_EXTRACTED_TEXT);
 }
 
+function pythonCandidates() {
+  return [
+    process.env.THEONE_PYTHON_BIN,
+    process.env.PYTHON_BIN,
+    '/Users/maqing/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3',
+    'python3',
+  ].filter((candidate): candidate is string => Boolean(candidate));
+}
+
+function extractPdfTextWithPython(filePath: string) {
+  if (!existsSync(filePath)) return '';
+  const script = [
+    'import sys',
+    'from pypdf import PdfReader',
+    'reader = PdfReader(sys.argv[1])',
+    'parts = []',
+    'for page in reader.pages[:200]:',
+    '    text = page.extract_text() or ""',
+    '    if text.strip():',
+    '        parts.append(text)',
+    `sys.stdout.write("\\n\\n".join(parts)[:${MAX_EXTRACTED_TEXT}])`,
+  ].join('\n');
+
+  for (const python of pythonCandidates()) {
+    try {
+      const output = execFileSync(python, ['-c', script, filePath], {
+        encoding: 'utf8',
+        maxBuffer: MAX_EXTRACTED_TEXT * 4,
+        timeout: 12_000,
+      });
+      if (output.trim()) return output.slice(0, MAX_EXTRACTED_TEXT);
+    } catch {
+      continue;
+    }
+  }
+  return '';
+}
+
 function readZipEntry(buffer: Buffer, wanted: RegExp) {
   let offset = 0;
   while (offset + 30 < buffer.length) {
@@ -247,12 +315,14 @@ function extractSpreadsheetText(buffer: Buffer) {
   ).slice(0, MAX_EXTRACTED_TEXT);
 }
 
-function extractReadableContent(name: string, type: string, buffer: Buffer) {
+function extractReadableContent(name: string, type: string, buffer: Buffer, storedPath?: string) {
   const ext = extension(name);
   if (isTextLike(name, type)) {
     return new TextDecoder('utf-8', { fatal: false }).decode(buffer.subarray(0, MAX_TEXT_BYTES));
   }
-  if (ext === 'pdf' || type === 'application/pdf') return extractPdfText(buffer);
+  if (ext === 'pdf' || type === 'application/pdf') {
+    return (storedPath ? extractPdfTextWithPython(storedPath) : '') || extractPdfText(buffer);
+  }
   if (ext === 'docx') return extractDocxText(buffer);
   if (ext === 'xlsx') return extractSpreadsheetText(buffer);
   return '';
@@ -283,31 +353,36 @@ export async function POST(req: Request) {
       let text = '';
       let extractionError = '';
       try {
-        text = extractReadableContent(file.name, file.type || '', bytes);
+        text = extractReadableContent(file.name, file.type || '', bytes, storedPath);
       } catch (error) {
         extractionError = error instanceof Error ? error.message : 'Upload-time text extraction failed.';
       }
+      const quality = readableTextQuality(text);
+      const readableText = quality.ok ? text : '';
 
       item.insights = buildAttachmentInsights({
         name: file.name,
         type: file.type || 'application/octet-stream',
         size: file.size,
-        text,
+        text: readableText,
         buffer: bytes,
+        qualityWarning: text.trim() && !quality.ok ? quality.reason : undefined,
       });
       if (extractionError) {
         item.insights.extractionError = extractionError;
         item.insights.extraction = 'stored_file_extraction_failed';
       }
-      if (text.trim()) {
-        item.text = text;
-        item.textPreview = text.slice(0, 4000);
-        item.summary = summarizeText(text);
+      if (readableText.trim()) {
+        item.text = readableText;
+        item.textPreview = readableText.slice(0, 4000);
+        item.summary = summarizeText(readableText);
       } else {
         const worker = typeof item.insights.recommendedWorker === 'string' ? item.insights.recommendedWorker : recommendedWorker(file.name, file.type || '');
         item.summary = extractionError
           ? `Attachment uploaded and stored, but upload-time text extraction failed: ${extractionError}. Recommended worker: ${worker}. TheOne should use the stored attachment path instead of asking the user for a new path.`
-          : `Attachment uploaded and stored. Recommended worker: ${worker}. TheOne should use the stored attachment path instead of asking the user for a new path.`;
+          : text.trim() && !quality.ok
+            ? `Attachment uploaded and stored, but upload-time text was not reliable: ${quality.reason}. Recommended worker: ${worker}. TheOne should use the stored attachment path instead of asking the user for a new path.`
+            : `Attachment uploaded and stored. Recommended worker: ${worker}. TheOne should use the stored attachment path instead of asking the user for a new path.`;
       }
 
       attachments.push(item);

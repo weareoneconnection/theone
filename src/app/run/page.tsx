@@ -185,7 +185,7 @@ async function uploadChatAttachments(files: FileList | null): Promise<ChatAttach
 
   const form = new FormData();
   selected.forEach((file) => form.append('files', file));
-  const response = await fetch('/api/theone/chat/upload', {
+  const response = await fetch('/api/theone/chat-upload', {
     method: 'POST',
     body: form,
   });
@@ -832,6 +832,23 @@ function attachmentReportPrompt(attachments: ChatAttachment[]) {
     'Return a practical report with executive summary, key findings, risks/issues, action items, evidence, and recommended next steps.',
     'If the report is useful, prepare export options for DOCX, PDF, Markdown, HTML, and JSON.',
   ].join(' ');
+}
+
+function isAttachmentReadRequest(value: string) {
+  return /(attach|attached|attachment|file|document|pdf|read|report|summarize|summary|analy[sz]e|附件|文件|文档|合同|读取|阅读|报告|总结|分析)/i.test(value);
+}
+
+function failedAttachmentMessage(attachments: ChatAttachment[]) {
+  const names = attachments.map((attachment) => attachment.name).filter(Boolean).join(', ') || 'the attachment';
+  const reasons = attachments
+    .map((attachment) => attachment.error || attachment.summary)
+    .filter(Boolean)
+    .join(' ');
+  return [
+    `I can see ${names}, but it is not readable yet.`,
+    reasons ? `What happened: ${reasons}` : 'What happened: the upload or document parsing step failed.',
+    'Please clear the failed chip, attach the file again, and wait until it shows ready/readable before sending the request.',
+  ].join('\n\n');
 }
 
 function DeliveryStatusCard({ result }: { result: any }) {
@@ -1537,7 +1554,8 @@ function RunPageContent() {
   async function sendMessage(text?: string) {
     const content = (text ?? input).trim();
     if (!content || loading) return;
-    const activeAttachments = attachments.filter((attachment) => attachment.status !== 'uploading');
+    const readyAttachments = attachments.filter((attachment) => attachment.status === 'ready');
+    const failedAttachments = attachments.filter((attachment) => attachment.status === 'failed');
     const uploadInProgress = attachments.some((attachment) => attachment.status === 'uploading');
     if (uploadInProgress) {
       setMessages((current) => ([
@@ -1549,6 +1567,26 @@ function RunPageContent() {
           createdAt: new Date().toISOString(),
         },
       ]));
+      return;
+    }
+    if (!readyAttachments.length && failedAttachments.length && isAttachmentReadRequest(content)) {
+      const userMessage: ConversationMessage = {
+        id: createId('user'),
+        role: 'user',
+        content,
+        createdAt: new Date().toISOString(),
+      };
+      setMessages((current) => ([
+        ...current,
+        userMessage,
+        {
+          id: createId('assistant_attachment_failed'),
+          role: 'assistant',
+          content: failedAttachmentMessage(failedAttachments),
+          createdAt: new Date().toISOString(),
+        },
+      ]));
+      setInput('');
       return;
     }
 
@@ -1629,7 +1667,7 @@ function RunPageContent() {
         } : undefined,
         messages: nextMessages.map((message) => ({ role: message.role, content: message.content })),
         sessionId: chatSessionId || undefined,
-        attachments: activeAttachments,
+        attachments: readyAttachments,
         selectedWorker: selectedWorker ? {
           key: selectedWorker.key,
           label: selectedWorker.label,

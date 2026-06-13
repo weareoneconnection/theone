@@ -134,6 +134,8 @@ function normalizeAttachments(value: unknown): TheOneChatAttachment[] {
       type: typeof record.type === 'string' ? record.type : 'application/octet-stream',
       size: typeof record.size === 'number' ? record.size : 0,
     };
+    if (record.status === 'uploading' || record.status === 'ready' || record.status === 'failed') attachment.status = record.status;
+    if (typeof record.error === 'string') attachment.error = record.error.slice(0, 1000);
     if (typeof record.path === 'string') attachment.path = record.path.slice(0, 1000);
     if (typeof record.text === 'string') attachment.text = record.text.slice(0, 12000);
     if (typeof record.textPreview === 'string') attachment.textPreview = record.textPreview.slice(0, 6000);
@@ -154,6 +156,8 @@ function normalizeAttachmentMessage(value: unknown) {
       'If readable attachment content is present below, answer from it directly and do not ask the user for a path. If only an attachment path is present, route a safe file/document worker when possible. Ask for a path only when no attachment, URL, or stored path exists.',
       ...attachments.map((attachment) => [
         `Attachment: ${attachment.name}`,
+        attachment.status ? `Status: ${attachment.status}` : '',
+        attachment.error ? `Upload error: ${attachment.error}` : '',
         `Type: ${attachment.type}`,
         `Size: ${attachment.size} bytes`,
         attachment.path ? `Stored path: ${attachment.path}` : '',
@@ -169,8 +173,12 @@ function attachmentInputHint(value: unknown) {
   const attachments = normalizeAttachments(value);
   if (!attachments.length) return '';
   const readable = attachments.filter((attachment) => attachment.text || attachment.textPreview);
+  const failed = attachments.filter((attachment) => attachment.status === 'failed');
   return [
     `Attached file context: ${attachments.map((attachment) => attachment.name).join(', ')}.`,
+    failed.length
+      ? `Some attachments failed before TheOne could read them: ${failed.map((attachment) => `${attachment.name}${attachment.error ? ` (${attachment.error})` : ''}`).join('; ')}. Do not ask for a URL; explain that the attachment must be re-uploaded or supplied through a readable path.`
+      : '',
     attachments.some((attachment) => attachment.insights)
       ? `Attachment worker hints: ${attachments.map((attachment) => {
         const worker = typeof attachment.insights?.recommendedWorker === 'string' ? attachment.insights.recommendedWorker : 'file.read';
@@ -179,7 +187,9 @@ function attachmentInputHint(value: unknown) {
       : '',
     readable.length
       ? 'Readable attachment content is already available in system context; do not ask for a file path.'
-      : 'The uploaded attachment has a stored path; route file/document workers if the request requires reading it.',
+      : failed.length
+        ? 'The attachment is present in the UI but failed upload or parsing, so there is no readable content or reliable stored path for the worker yet.'
+        : 'The uploaded attachment has a stored path; route file/document workers if the request requires reading it.',
   ].filter(Boolean).join(' ');
 }
 
