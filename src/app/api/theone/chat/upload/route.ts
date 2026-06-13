@@ -267,6 +267,54 @@ function extractPdfTextWithPython(filePath: string) {
   return '';
 }
 
+async function importPdfJs() {
+  const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
+  const candidates = [
+    process.env.THEONE_PDFJS_MODULE,
+    'pdfjs-dist/legacy/build/pdf.mjs',
+    '/Users/maqing/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/pdfjs-dist/legacy/build/pdf.mjs',
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  for (const candidate of candidates) {
+    try {
+      return await dynamicImport(candidate);
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+async function extractPdfTextWithPdfJs(buffer: Buffer) {
+  const pdfjs = await importPdfJs();
+  if (!pdfjs?.getDocument) return '';
+
+  const task = pdfjs.getDocument({
+    data: new Uint8Array(buffer),
+    disableWorker: true,
+    useSystemFonts: true,
+  });
+  const document = await task.promise;
+  const parts: string[] = [];
+  const maxPages = Math.min(Number(document.numPages || 0), 200);
+
+  for (let pageNumber = 1; pageNumber <= maxPages; pageNumber += 1) {
+    const page = await document.getPage(pageNumber);
+    const content = await page.getTextContent();
+    const line = (content.items || [])
+      .map((item: any) => typeof item?.str === 'string' ? item.str : '')
+      .filter(Boolean)
+      .join(' ')
+      .replace(/[^\S\n]+/g, ' ')
+      .trim();
+    if (line) parts.push(line);
+    if (parts.join('\n\n').length >= MAX_EXTRACTED_TEXT) break;
+  }
+
+  return parts.join('\n\n').slice(0, MAX_EXTRACTED_TEXT);
+}
+
 function readZipEntry(buffer: Buffer, wanted: RegExp) {
   let offset = 0;
   while (offset + 30 < buffer.length) {
@@ -328,13 +376,13 @@ function extractSpreadsheetText(buffer: Buffer) {
   ).slice(0, MAX_EXTRACTED_TEXT);
 }
 
-function extractReadableContent(name: string, type: string, buffer: Buffer, storedPath?: string) {
+async function extractReadableContent(name: string, type: string, buffer: Buffer, storedPath?: string) {
   const ext = extension(name);
   if (isTextLike(name, type)) {
     return new TextDecoder('utf-8', { fatal: false }).decode(buffer.subarray(0, MAX_TEXT_BYTES));
   }
   if (ext === 'pdf' || type === 'application/pdf') {
-    return (storedPath ? extractPdfTextWithPython(storedPath) : '') || extractPdfText(buffer);
+    return (storedPath ? extractPdfTextWithPython(storedPath) : '') || await extractPdfTextWithPdfJs(buffer) || extractPdfText(buffer);
   }
   if (ext === 'docx') return extractDocxText(buffer);
   if (ext === 'xlsx') return extractSpreadsheetText(buffer);
@@ -366,7 +414,7 @@ export async function POST(req: Request) {
       let text = '';
       let extractionError = '';
       try {
-        text = extractReadableContent(file.name, file.type || '', bytes, storedPath);
+        text = await extractReadableContent(file.name, file.type || '', bytes, storedPath);
       } catch (error) {
         extractionError = error instanceof Error ? error.message : 'Upload-time text extraction failed.';
       }
