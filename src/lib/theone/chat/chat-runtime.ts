@@ -2268,24 +2268,25 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         oneclawTask: null,
       }
     : oneAi;
-  const attachmentFallbackTask = effectiveOneAi.oneclawTask ? null : synthesizeAttachmentWorkerTask({
+  const attachmentReportMode = Boolean(attachmentReport);
+  const attachmentFallbackTask = attachmentReportMode || effectiveOneAi.oneclawTask ? null : synthesizeAttachmentWorkerTask({
     raw,
     attachmentContext,
     actions: oneClawManifest.capabilities,
   });
-  const forcedWebFallbackTask = !attachmentFallbackTask && isExplicitWebWorkerRequest(raw)
+  const forcedWebFallbackTask = !attachmentReportMode && !attachmentFallbackTask && isExplicitWebWorkerRequest(raw)
     ? synthesizeWebExtractTask({
         raw,
         actions: oneClawManifest.capabilities,
       })
     : null;
-  const webFallbackTask = attachmentFallbackTask
+  const webFallbackTask = attachmentReportMode || attachmentFallbackTask
     ? null
     : forcedWebFallbackTask || (!effectiveOneAi.oneclawTask ? synthesizeWebExtractTask({
         raw,
         actions: oneClawManifest.capabilities,
       }) : null);
-  const githubFallbackTask = effectiveOneAi.oneclawTask || attachmentFallbackTask || webFallbackTask ? null : synthesizeGitHubRepoTask({
+  const githubFallbackTask = attachmentReportMode || effectiveOneAi.oneclawTask || attachmentFallbackTask || webFallbackTask ? null : synthesizeGitHubRepoTask({
     raw,
     actions: oneClawManifest.capabilities,
   });
@@ -2523,8 +2524,10 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         approvals,
       })
     : null;
-  const candidateSummary = finalSummary || approvalSummary || unfinishedExecutionSummary || effectiveOneAi.workflow.assistantReply;
-  const summary = isProcessPlaceholderReply(candidateSummary) && objectiveNeedsWorkerResult(raw, oneclawTask)
+  const candidateSummary = attachmentReport
+    ? attachmentReport.summary
+    : finalSummary || approvalSummary || unfinishedExecutionSummary || effectiveOneAi.workflow.assistantReply;
+  const summary = !attachmentReport && isProcessPlaceholderReply(candidateSummary) && objectiveNeedsWorkerResult(raw, oneclawTask)
     ? buildUnfinishedExecutionSummary({
         raw,
         oneclawTask,
@@ -2539,11 +2542,11 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         approvals,
       })
     : candidateSummary;
-  const failedDocumentSummary = isFailedDocumentSummary(summary, runtimeError);
+  const failedDocumentSummary = attachmentReport ? false : isFailedDocumentSummary(summary, runtimeError);
   const generatedReportArtifact = attachmentReport && !failedDocumentSummary
     ? buildReportArtifactFromSummary({
         raw,
-        summary,
+        summary: attachmentReport.summary,
         attachmentContext,
       })
     : null;
