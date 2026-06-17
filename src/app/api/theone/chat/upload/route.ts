@@ -2,13 +2,19 @@ import type { TheOneChatAttachment } from '@/lib/theone/state/chat-session-store
 import { mkdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { inflateSync } from 'node:zlib';
+import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
+
+export const runtime = 'nodejs';
+export const maxDuration = 30;
 
 const TEXT_EXTENSIONS = new Set(['txt', 'md', 'markdown', 'json', 'csv', 'tsv', 'log', 'xml', 'html', 'css', 'js', 'ts', 'tsx', 'jsx', 'py', 'sql', 'yaml', 'yml']);
 const MAX_TEXT_BYTES = 512 * 1024;
-const MAX_EXTRACTED_TEXT = 80_000;
+const MAX_EXTRACTED_TEXT = 160_000;
+const MAX_REPORT_CONTEXT = 48_000;
 const MAX_FILES = 8;
 
 const DOCUMENT_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'rtf']);
@@ -49,6 +55,10 @@ function isTextLike(name: string, type: string) {
 function summarizeText(value: string) {
   const compact = value.replace(/\s+/g, ' ').trim();
   return compact.slice(0, 500);
+}
+
+function hashText(value: string) {
+  return createHash('sha256').update(value).digest('hex');
 }
 
 function readableTextQuality(value: string) {
@@ -133,6 +143,30 @@ function reportSectionsFor(kind: string, topics: string[]) {
   if (kind === 'spreadsheet') return ['Executive summary', 'Data overview', 'Notable values', 'Risks or gaps', 'Action items'];
   if (kind === 'image') return ['Image summary', 'Visible text', 'Findings', 'Limitations', 'Next actions'];
   return ['Executive summary', 'Key findings', 'Risks or issues', 'Action items', 'Evidence'];
+}
+
+function buildReportContext(input: {
+  id: string;
+  name: string;
+  type: string;
+  text: string;
+  insights: Record<string, unknown>;
+}) {
+  const evidence = Array.isArray(input.insights.evidencePreview) ? input.insights.evidencePreview.map(String) : [];
+  const sections = Array.isArray(input.insights.reportSections) ? input.insights.reportSections.map(String) : [];
+  const topics = Array.isArray(input.insights.detectedTopics) ? input.insights.detectedTopics.map(String) : [];
+  return [
+    `THEONE_ATTACHMENT_SOURCE ${input.id}`,
+    `File: ${input.name}`,
+    `Type: ${input.type}`,
+    topics.length ? `Detected topics: ${topics.join(', ')}` : '',
+    typeof input.insights.wordCount === 'number' ? `Words: ${input.insights.wordCount}` : '',
+    typeof input.insights.pageEstimate === 'number' ? `Estimated pages: ${input.insights.pageEstimate}` : '',
+    sections.length ? `Recommended report sections: ${sections.join(' | ')}` : '',
+    evidence.length ? `Evidence preview:\n- ${evidence.join('\n- ')}` : '',
+    'Readable content:',
+    input.text,
+  ].filter(Boolean).join('\n\n').slice(0, MAX_REPORT_CONTEXT);
 }
 
 function buildAttachmentInsights(input: {
@@ -267,34 +301,18 @@ function extractPdfTextWithPython(filePath: string) {
   return '';
 }
 
-async function importPdfJs() {
-  const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
-  const candidates = [
-    process.env.THEONE_PDFJS_MODULE,
-    'pdfjs-dist/legacy/build/pdf.mjs',
-    '/Users/maqing/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/pdfjs-dist/legacy/build/pdf.mjs',
-  ].filter((candidate): candidate is string => Boolean(candidate));
-
-  for (const candidate of candidates) {
-    try {
-      return await dynamicImport(candidate);
-    } catch {
-      continue;
-    }
-  }
-
-  return null;
+function importPdfJs() {
+  return pdfjs;
 }
 
 async function extractPdfTextWithPdfJs(buffer: Buffer) {
-  const pdfjs = await importPdfJs();
-  if (!pdfjs?.getDocument) return '';
+  const pdfjs = importPdfJs();
 
   const task = pdfjs.getDocument({
     data: new Uint8Array(buffer),
     disableWorker: true,
     useSystemFonts: true,
-  });
+  } as any);
   const document = await task.promise;
   const parts: string[] = [];
   const maxPages = Math.min(Number(document.numPages || 0), 200);
@@ -408,6 +426,8 @@ export async function POST(req: Request) {
         name: file.name,
         type: file.type || 'application/octet-stream',
         size: file.size,
+        sourceId: id,
+        contentRef: `theone://attachment/${id}`,
         path: storedPath,
       };
 
@@ -429,14 +449,33 @@ export async function POST(req: Request) {
         buffer: bytes,
         qualityWarning: text.trim() && !quality.ok ? quality.reason : undefined,
       });
+      item.insights.sourceId = id;
+      item.insights.contentRef = item.contentRef;
+      item.insights.storage = {
+        provider: hasPersistentUploadStorage() ? 'theone_upload_dir' : isServerlessRuntime() ? 'serverless_upload_context' : 'local_tmp',
+        durable: hasPersistentUploadStorage(),
+        pathAvailable: Boolean(item.path),
+        uploadTextAvailable: Boolean(readableText.trim()),
+      };
       if (extractionError) {
         item.insights.extractionError = extractionError;
         item.insights.extraction = 'stored_file_extraction_failed';
       }
       if (readableText.trim()) {
+        item.textHash = hashText(readableText);
         item.text = readableText;
-        item.textPreview = readableText.slice(0, 4000);
+        item.textPreview = readableText.slice(0, 12000);
         item.summary = summarizeText(readableText);
+        item.reportContext = buildReportContext({
+          id,
+          name: file.name,
+          type: file.type || 'application/octet-stream',
+          text: readableText,
+          insights: item.insights,
+        });
+        item.insights.textHash = item.textHash;
+        item.insights.reportContextAvailable = true;
+        item.insights.reportReadiness = 'ready';
       } else {
         const worker = typeof item.insights.recommendedWorker === 'string' ? item.insights.recommendedWorker : recommendedWorker(file.name, file.type || '');
         const reason = extractionError
@@ -450,12 +489,16 @@ export async function POST(req: Request) {
           item.error = `${reason} Serverless temporary file paths cannot be reused across chat requests. Configure THEONE_UPLOAD_DIR with persistent storage or enable upload-time parsing for this file type.`;
           item.summary = item.error;
           item.insights.extraction = 'upload_text_unavailable_serverless';
+          item.insights.reportContextAvailable = false;
+          item.insights.reportReadiness = 'needs_source';
           item.insights.limitations = [
             ...(Array.isArray(item.insights.limitations) ? item.insights.limitations : []),
             'Serverless temporary file path is not a durable source.',
           ];
         } else {
           item.summary = `${reason} Recommended worker: ${worker}. TheOne should use the stored attachment path instead of asking the user for a new path.`;
+          item.insights.reportContextAvailable = false;
+          item.insights.reportReadiness = 'needs_worker';
         }
       }
 

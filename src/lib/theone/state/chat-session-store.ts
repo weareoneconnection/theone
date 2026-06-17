@@ -5,9 +5,13 @@ export type TheOneChatAttachment = {
   name: string;
   type: string;
   size: number;
+  sourceId?: string;
+  contentRef?: string;
+  textHash?: string;
   path?: string;
   text?: string;
   textPreview?: string;
+  reportContext?: string;
   summary?: string;
   insights?: Record<string, unknown>;
   status?: 'uploading' | 'ready' | 'failed';

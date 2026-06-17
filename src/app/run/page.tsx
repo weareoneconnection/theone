@@ -31,9 +31,13 @@ type ChatAttachment = {
   name: string;
   type: string;
   size: number;
+  sourceId?: string;
+  contentRef?: string;
+  textHash?: string;
   path?: string;
   text?: string;
   textPreview?: string;
+  reportContext?: string;
   summary?: string;
   insights?: Record<string, unknown>;
   error?: string;
@@ -199,9 +203,13 @@ async function uploadChatAttachments(files: FileList | null): Promise<ChatAttach
     name: String(attachment.name || 'attachment'),
     type: String(attachment.type || 'application/octet-stream'),
     size: Number(attachment.size || 0),
+    sourceId: typeof attachment.sourceId === 'string' ? attachment.sourceId : undefined,
+    contentRef: typeof attachment.contentRef === 'string' ? attachment.contentRef : undefined,
+    textHash: typeof attachment.textHash === 'string' ? attachment.textHash : undefined,
     path: typeof attachment.path === 'string' ? attachment.path : undefined,
     text: typeof attachment.text === 'string' ? attachment.text : undefined,
     textPreview: typeof attachment.textPreview === 'string' ? attachment.textPreview : undefined,
+    reportContext: typeof attachment.reportContext === 'string' ? attachment.reportContext : undefined,
     summary: typeof attachment.summary === 'string' ? attachment.summary : undefined,
     insights: attachment.insights && typeof attachment.insights === 'object' ? attachment.insights : undefined,
     error: typeof attachment.error === 'string' ? attachment.error : undefined,
@@ -807,6 +815,7 @@ function attachmentWorkerLabel(attachment: ChatAttachment) {
 
 function attachmentQualityLabel(attachment: ChatAttachment) {
   if (attachment.status !== 'ready') return attachment.status;
+  if (attachment.reportContext || attachmentInsight(attachment, 'reportContextAvailable') === true) return 'report-ready';
   const readable = attachmentInsight(attachment, 'readable');
   const pages = attachmentInsight(attachment, 'pageEstimate');
   const words = attachmentInsight(attachment, 'wordCount');
@@ -827,7 +836,7 @@ function attachmentReportPrompt(attachments: ChatAttachment[]) {
   const workers = Array.from(new Set(attachments.map(attachmentWorkerLabel))).join(', ');
   return [
     `Read the attached file(s): ${names}.`,
-    'Use the uploaded attachment content as the source. Do not ask for a file path.',
+    'Use the uploaded attachment content and report context as the source. Do not ask for a file path or URL.',
     `Route through the best available file/document worker (${workers}) when execution is needed.`,
     'Return a practical report with executive summary, key findings, risks/issues, action items, evidence, and recommended next steps.',
     'If the report is useful, prepare export options for DOCX, PDF, Markdown, HTML, and JSON.',

@@ -136,10 +136,14 @@ function normalizeAttachments(value: unknown): TheOneChatAttachment[] {
     };
     if (record.status === 'uploading' || record.status === 'ready' || record.status === 'failed') attachment.status = record.status;
     if (typeof record.error === 'string') attachment.error = record.error.slice(0, 1000);
+    if (typeof record.sourceId === 'string') attachment.sourceId = record.sourceId.slice(0, 200);
+    if (typeof record.contentRef === 'string') attachment.contentRef = record.contentRef.slice(0, 500);
+    if (typeof record.textHash === 'string') attachment.textHash = record.textHash.slice(0, 100);
     if (typeof record.path === 'string') attachment.path = record.path.slice(0, 1000);
-    if (typeof record.text === 'string') attachment.text = record.text.slice(0, 12000);
-    if (typeof record.textPreview === 'string') attachment.textPreview = record.textPreview.slice(0, 6000);
-    if (typeof record.summary === 'string') attachment.summary = record.summary.slice(0, 1000);
+    if (typeof record.text === 'string') attachment.text = record.text.slice(0, 80000);
+    if (typeof record.textPreview === 'string') attachment.textPreview = record.textPreview.slice(0, 12000);
+    if (typeof record.reportContext === 'string') attachment.reportContext = record.reportContext.slice(0, 50000);
+    if (typeof record.summary === 'string') attachment.summary = record.summary.slice(0, 2000);
     if (record.insights && typeof record.insights === 'object') attachment.insights = record.insights as Record<string, unknown>;
     attachments.push(attachment);
   }
@@ -160,10 +164,14 @@ function normalizeAttachmentMessage(value: unknown) {
         attachment.error ? `Upload error: ${attachment.error}` : '',
         `Type: ${attachment.type}`,
         `Size: ${attachment.size} bytes`,
+        attachment.sourceId ? `Source ID: ${attachment.sourceId}` : '',
+        attachment.contentRef ? `Content ref: ${attachment.contentRef}` : '',
+        attachment.textHash ? `Text hash: ${attachment.textHash}` : '',
         attachment.path ? `Stored path: ${attachment.path}` : '',
         attachment.insights ? `Attachment insights: ${JSON.stringify(attachment.insights)}` : '',
         attachment.summary ? `Summary: ${attachment.summary}` : '',
-        attachment.textPreview || attachment.text ? `Content:\n${attachment.textPreview || attachment.text}` : '',
+        attachment.reportContext ? `Report context:\n${attachment.reportContext}` : '',
+        attachment.text || attachment.textPreview ? `Content:\n${attachment.text || attachment.textPreview}` : '',
       ].filter(Boolean).join('\n')),
     ].join('\n\n'),
   };
@@ -172,7 +180,7 @@ function normalizeAttachmentMessage(value: unknown) {
 function attachmentInputHint(value: unknown) {
   const attachments = normalizeAttachments(value);
   if (!attachments.length) return '';
-  const readable = attachments.filter((attachment) => attachment.text || attachment.textPreview);
+  const readable = attachments.filter((attachment) => attachment.text || attachment.textPreview || attachment.reportContext);
   const failed = attachments.filter((attachment) => attachment.status === 'failed');
   return [
     `Attached file context: ${attachments.map((attachment) => attachment.name).join(', ')}.`,
@@ -186,7 +194,7 @@ function attachmentInputHint(value: unknown) {
       }).join('; ')}.`
       : '',
     readable.length
-      ? 'Readable attachment content is already available in system context; do not ask for a file path.'
+      ? 'Readable attachment report context is already available in system context; do not ask for a file path. For document/report requests, use this context as the source and produce the requested report.'
       : failed.length
         ? 'The attachment is present in the UI but failed upload or parsing, so there is no readable content or reliable stored path for the worker yet.'
       : 'The uploaded attachment has a stored path; route file/document workers if the request requires reading it.',
