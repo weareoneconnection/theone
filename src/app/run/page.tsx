@@ -189,7 +189,7 @@ async function uploadChatAttachments(files: FileList | null): Promise<ChatAttach
 
   const form = new FormData();
   selected.forEach((file) => form.append('files', file));
-  const response = await fetch('/api/theone/chat-upload', {
+  const response = await fetch('/api/theone/chat/upload', {
     method: 'POST',
     body: form,
   });
