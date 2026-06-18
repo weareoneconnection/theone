@@ -68,23 +68,30 @@ function readableTextQuality(value: string) {
   let printable = 0;
   let signal = 0;
   let control = 0;
+  let replacement = 0;
   for (const char of compact) {
     const code = char.charCodeAt(0);
-    if ((code >= 32 && code <= 126) || code >= 0x4e00) printable += 1;
-    if (/[A-Za-z0-9\u4e00-\u9fff]/.test(char)) signal += 1;
+    if (code === 0xfffd) replacement += 1;
+    if (code >= 32 && code !== 0xfffd) printable += 1;
+    if (/[\p{L}\p{N}]/u.test(char)) signal += 1;
     if (code < 32 && code !== 9 && code !== 10 && code !== 13) control += 1;
   }
 
   const printableRatio = printable / compact.length;
   const signalRatio = signal / compact.length;
   const controlRatio = control / compact.length;
-  const ok = printableRatio >= 0.75 && signalRatio >= 0.28 && controlRatio <= 0.03;
+  const replacementRatio = replacement / compact.length;
+  const ok = printableRatio >= 0.72 && signalRatio >= 0.18 && controlRatio <= 0.03 && replacementRatio <= 0.02;
   return {
     ok,
     reason: ok
       ? ''
-      : `Upload-time text looked unreadable or binary-like (printable ${(printableRatio * 100).toFixed(0)}%, signal ${(signalRatio * 100).toFixed(0)}%).`,
+      : `Upload-time text looked unreadable or binary-like (printable ${(printableRatio * 100).toFixed(0)}%, signal ${(signalRatio * 100).toFixed(0)}%, replacement ${(replacementRatio * 100).toFixed(0)}%).`,
   };
+}
+
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback;
 }
 
 function fileKind(name: string, type: string) {
@@ -400,6 +407,9 @@ async function extractReadableContent(name: string, type: string, buffer: Buffer
     return new TextDecoder('utf-8', { fatal: false }).decode(buffer.subarray(0, MAX_TEXT_BYTES));
   }
   if (ext === 'pdf' || type === 'application/pdf') {
+    if (isServerlessRuntime()) {
+      return await extractPdfTextWithPdfJs(buffer) || extractPdfText(buffer);
+    }
     return (storedPath ? extractPdfTextWithPython(storedPath) : '') || await extractPdfTextWithPdfJs(buffer) || extractPdfText(buffer);
   }
   if (ext === 'docx') return extractDocxText(buffer);
@@ -412,14 +422,27 @@ export async function POST(req: Request) {
     const form = await req.formData();
     const files = form.getAll('files').filter((item): item is File => item instanceof File).slice(0, MAX_FILES);
     const uploadDir = uploadDirectory();
-    await mkdir(uploadDir, { recursive: true });
+    let uploadDirError = '';
+    try {
+      await mkdir(uploadDir, { recursive: true });
+    } catch (error) {
+      uploadDirError = errorMessage(error, 'Upload directory could not be prepared.');
+    }
 
     const attachments: TheOneChatAttachment[] = [];
     for (const file of files) {
       const bytes = Buffer.from(await file.arrayBuffer());
       const id = createId(file.name);
-      const storedPath = path.join(uploadDir, `${id}-${safeFilename(file.name)}`);
-      await writeFile(storedPath, bytes);
+      let storedPath: string | undefined = uploadDirError ? undefined : path.join(uploadDir, `${id}-${safeFilename(file.name)}`);
+      let storageError = uploadDirError;
+      if (storedPath) {
+        try {
+          await writeFile(storedPath, bytes);
+        } catch (error) {
+          storageError = errorMessage(error, 'Attachment could not be written to upload storage.');
+          storedPath = undefined;
+        }
+      }
 
       const item: TheOneChatAttachment = {
         id,
@@ -428,7 +451,7 @@ export async function POST(req: Request) {
         size: file.size,
         sourceId: id,
         contentRef: `theone://attachment/${id}`,
-        path: storedPath,
+        ...(storedPath ? { path: storedPath } : {}),
       };
 
       let text = '';
@@ -455,8 +478,13 @@ export async function POST(req: Request) {
         provider: hasPersistentUploadStorage() ? 'theone_upload_dir' : isServerlessRuntime() ? 'serverless_upload_context' : 'local_tmp',
         durable: hasPersistentUploadStorage(),
         pathAvailable: Boolean(item.path),
+        writeAvailable: !storageError,
+        writeError: storageError || undefined,
         uploadTextAvailable: Boolean(readableText.trim()),
       };
+      if (storageError) {
+        item.insights.storageError = storageError;
+      }
       if (extractionError) {
         item.insights.extractionError = extractionError;
         item.insights.extraction = 'stored_file_extraction_failed';
@@ -478,11 +506,13 @@ export async function POST(req: Request) {
         item.insights.reportReadiness = 'ready';
       } else {
         const worker = typeof item.insights.recommendedWorker === 'string' ? item.insights.recommendedWorker : recommendedWorker(file.name, file.type || '');
-        const reason = extractionError
-          ? `Upload-time text extraction failed: ${extractionError}.`
-          : text.trim() && !quality.ok
-            ? `Upload-time text was not reliable: ${quality.reason}.`
-            : 'No readable text was extracted during upload.';
+        const reason = storageError
+          ? `Upload storage failed: ${storageError}.`
+          : extractionError
+            ? `Upload-time text extraction failed: ${extractionError}.`
+            : text.trim() && !quality.ok
+              ? `Upload-time text was not reliable: ${quality.reason}.`
+              : 'No readable text was extracted during upload.';
         if (isServerlessRuntime() && !hasPersistentUploadStorage()) {
           delete item.path;
           item.status = 'failed';

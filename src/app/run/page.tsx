@@ -2051,7 +2051,11 @@ function RunPageContent() {
             {attachments.length ? (
               <div className="run-attachment-strip">
                 {attachments.map((attachment) => (
-                  <span key={attachment.id} className={`attachment-${attachment.status}`}>
+                  <span
+                    key={attachment.id}
+                    className={`attachment-${attachment.status}`}
+                    title={attachment.error || attachment.summary || attachment.name}
+                  >
                     <strong>{attachment.name}</strong>
                     <small>
                       {attachmentQualityLabel(attachment)}
