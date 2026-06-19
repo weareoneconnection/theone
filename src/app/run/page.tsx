@@ -162,10 +162,15 @@ function buildBrowserReportContext(input: {
 
 async function extractPdfTextInBrowser(file: File) {
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  if (pdfjs.GlobalWorkerOptions && !pdfjs.GlobalWorkerOptions.workerSrc) {
+    pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+      'pdfjs-dist/legacy/build/pdf.worker.mjs',
+      import.meta.url
+    ).toString();
+  }
   const bytes = new Uint8Array(await file.arrayBuffer());
   const task = pdfjs.getDocument({
     data: bytes,
-    disableWorker: true,
     useSystemFonts: true,
   } as any);
   const document = await task.promise;
