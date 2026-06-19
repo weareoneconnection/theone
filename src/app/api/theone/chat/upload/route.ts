@@ -340,6 +340,31 @@ async function extractPdfTextWithPdfJs(buffer: Buffer) {
   return parts.join('\n\n').slice(0, MAX_EXTRACTED_TEXT);
 }
 
+async function extractPdfTextRobust(buffer: Buffer, storedPath?: string) {
+  const attempts = isServerlessRuntime()
+    ? [
+        async () => extractPdfTextWithPdfJs(buffer),
+        async () => extractPdfText(buffer),
+        async () => storedPath ? extractPdfTextWithPython(storedPath) : '',
+      ]
+    : [
+        async () => storedPath ? extractPdfTextWithPython(storedPath) : '',
+        async () => extractPdfTextWithPdfJs(buffer),
+        async () => extractPdfText(buffer),
+      ];
+
+  for (const attempt of attempts) {
+    try {
+      const text = await attempt();
+      if (text.trim()) return text.slice(0, MAX_EXTRACTED_TEXT);
+    } catch {
+      continue;
+    }
+  }
+
+  return '';
+}
+
 function readZipEntry(buffer: Buffer, wanted: RegExp) {
   let offset = 0;
   while (offset + 30 < buffer.length) {
@@ -407,10 +432,7 @@ async function extractReadableContent(name: string, type: string, buffer: Buffer
     return new TextDecoder('utf-8', { fatal: false }).decode(buffer.subarray(0, MAX_TEXT_BYTES));
   }
   if (ext === 'pdf' || type === 'application/pdf') {
-    if (isServerlessRuntime()) {
-      return await extractPdfTextWithPdfJs(buffer) || extractPdfText(buffer);
-    }
-    return (storedPath ? extractPdfTextWithPython(storedPath) : '') || await extractPdfTextWithPdfJs(buffer) || extractPdfText(buffer);
+    return extractPdfTextRobust(buffer, storedPath);
   }
   if (ext === 'docx') return extractDocxText(buffer);
   if (ext === 'xlsx') return extractSpreadsheetText(buffer);

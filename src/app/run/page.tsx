@@ -119,6 +119,161 @@ function createId(prefix: string) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
+const MAX_SERVER_ATTACHMENT_BYTES = 4 * 1024 * 1024;
+const MAX_ATTACHMENT_TEXT = 160_000;
+const MAX_ATTACHMENT_REPORT_CONTEXT = 48_000;
+
+function isPdfUpload(file: File) {
+  return file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+}
+
+function compactText(value: string) {
+  return value.replace(/[^\S\n]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+async function hashAttachmentText(value: string) {
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+    return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return undefined;
+  }
+}
+
+function buildBrowserReportContext(input: {
+  id: string;
+  name: string;
+  type: string;
+  text: string;
+  pages?: number;
+  words: number;
+}) {
+  return [
+    `THEONE_ATTACHMENT_SOURCE ${input.id}`,
+    `File: ${input.name}`,
+    `Type: ${input.type}`,
+    typeof input.pages === 'number' ? `Estimated pages: ${input.pages}` : '',
+    `Words: ${input.words}`,
+    'Recommended report sections: Executive summary | Key findings | Risks and issues | Action items | Evidence',
+    'Readable content:',
+    input.text,
+  ].filter(Boolean).join('\n\n').slice(0, MAX_ATTACHMENT_REPORT_CONTEXT);
+}
+
+async function extractPdfTextInBrowser(file: File) {
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const task = pdfjs.getDocument({
+    data: bytes,
+    disableWorker: true,
+    useSystemFonts: true,
+  } as any);
+  const document = await task.promise;
+  const parts: string[] = [];
+  const maxPages = Math.min(Number(document.numPages || 0), 200);
+
+  for (let pageNumber = 1; pageNumber <= maxPages; pageNumber += 1) {
+    const page = await document.getPage(pageNumber);
+    const content = await page.getTextContent();
+    const line = (content.items || [])
+      .map((item: any) => typeof item?.str === 'string' ? item.str : '')
+      .filter(Boolean)
+      .join(' ')
+      .replace(/[^\S\n]+/g, ' ')
+      .trim();
+    if (line) parts.push(line);
+    if (parts.join('\n\n').length >= MAX_ATTACHMENT_TEXT) break;
+  }
+
+  return {
+    pages: maxPages,
+    text: compactText(parts.join('\n\n')).slice(0, MAX_ATTACHMENT_TEXT),
+  };
+}
+
+async function buildBrowserPdfAttachment(file: File): Promise<ChatAttachment> {
+  const id = createId('attachment_pdf');
+  try {
+    const extracted = await extractPdfTextInBrowser(file);
+    const words = extracted.text ? extracted.text.split(/\s+/).filter(Boolean).length : 0;
+    if (!extracted.text || words < 20) {
+      return {
+        id,
+        name: file.name,
+        type: file.type || 'application/pdf',
+        size: file.size,
+        status: 'failed',
+        summary: 'The browser could open the PDF but did not find readable text.',
+        error: 'This PDF may be scanned/image-only. OCR is not connected in the current upload path.',
+        insights: {
+          kind: 'pdf',
+          readable: false,
+          recommendedWorker: 'document.parse',
+          reportReadiness: 'needs_ocr',
+        },
+      };
+    }
+
+    const textHash = await hashAttachmentText(extracted.text);
+    const reportContext = buildBrowserReportContext({
+      id,
+      name: file.name,
+      type: file.type || 'application/pdf',
+      text: extracted.text,
+      pages: extracted.pages,
+      words,
+    });
+    return {
+      id,
+      name: file.name,
+      type: file.type || 'application/pdf',
+      size: file.size,
+      sourceId: id,
+      contentRef: `theone://browser-attachment/${id}`,
+      textHash,
+      text: extracted.text,
+      textPreview: extracted.text.slice(0, 12000),
+      reportContext,
+      summary: compactText(extracted.text).slice(0, 500),
+      status: 'ready',
+      insights: {
+        schemaVersion: 'theone.attachment_insights.v1',
+        kind: 'pdf',
+        readable: true,
+        extraction: 'browser_pdfjs_extract',
+        recommendedWorker: 'document.parse',
+        pageEstimate: extracted.pages,
+        wordCount: words,
+        reportContextAvailable: true,
+        reportReadiness: 'ready',
+        storage: {
+          provider: 'browser_attachment_context',
+          durable: false,
+          uploadTextAvailable: true,
+          pathAvailable: false,
+        },
+      },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Browser PDF parsing failed.';
+    return {
+      id,
+      name: file.name,
+      type: file.type || 'application/pdf',
+      size: file.size,
+      status: 'failed',
+      summary: `Browser PDF parsing failed: ${message}`,
+      error: message,
+      insights: {
+        kind: 'pdf',
+        readable: false,
+        recommendedWorker: 'document.parse',
+        reportReadiness: 'failed',
+      },
+    };
+  }
+}
+
 async function postChatWithStream(
   payload: Record<string, unknown>,
   onStage: (stage: number) => void,
@@ -187,18 +342,59 @@ async function uploadChatAttachments(files: FileList | null): Promise<ChatAttach
   const selected = Array.from(files || []).slice(0, 8);
   if (!selected.length) return [];
 
+  const browserAttachments: ChatAttachment[] = [];
+  const serverFiles: File[] = [];
+
+  for (const file of selected) {
+    if (isPdfUpload(file)) {
+      browserAttachments.push(await buildBrowserPdfAttachment(file));
+      continue;
+    }
+
+    if (file.size > MAX_SERVER_ATTACHMENT_BYTES) {
+      browserAttachments.push({
+        id: createId('attachment_failed'),
+        name: file.name,
+        type: file.type || 'application/octet-stream',
+        size: file.size,
+        status: 'failed',
+        summary: 'This file is too large for the current server upload path.',
+        error: `The file is ${formatFileSize(file.size)}. The current server upload path is limited to about ${formatFileSize(MAX_SERVER_ATTACHMENT_BYTES)} on production.`,
+        insights: {
+          kind: 'file',
+          readable: false,
+          recommendedWorker: 'file.read',
+          reportReadiness: 'too_large_for_server_upload',
+        },
+      });
+      continue;
+    }
+
+    serverFiles.push(file);
+  }
+
+  if (!serverFiles.length) return browserAttachments;
+
   const form = new FormData();
-  selected.forEach((file) => form.append('files', file));
+  serverFiles.forEach((file) => form.append('files', file));
   const response = await fetch('/api/theone/chat/upload', {
     method: 'POST',
     body: form,
   });
-  const data = await response.json();
-  if (!response.ok || data?.ok === false) {
-    throw new Error(data?.error || 'Attachment upload failed.');
+
+  const raw = await response.text();
+  let data: any = {};
+  try {
+    data = raw ? JSON.parse(raw) : {};
+  } catch {
+    throw new Error(`Attachment upload failed (${response.status}). ${raw.slice(0, 180) || 'The upload endpoint did not return JSON.'}`);
   }
 
-  return (Array.isArray(data.attachments) ? data.attachments : []).map((attachment: any) => ({
+  if (!response.ok || data?.ok === false) {
+    throw new Error(data?.error || `Attachment upload failed (${response.status}).`);
+  }
+
+  const serverAttachments = (Array.isArray(data.attachments) ? data.attachments : []).map((attachment: any) => ({
     id: String(attachment.id || createId('attachment')),
     name: String(attachment.name || 'attachment'),
     type: String(attachment.type || 'application/octet-stream'),
@@ -215,6 +411,8 @@ async function uploadChatAttachments(files: FileList | null): Promise<ChatAttach
     error: typeof attachment.error === 'string' ? attachment.error : undefined,
     status: attachment.status === 'failed' ? 'failed' as const : 'ready' as const,
   }));
+
+  return [...browserAttachments, ...serverAttachments];
 }
 
 function plainResult(result: any) {
@@ -814,7 +1012,11 @@ function attachmentWorkerLabel(attachment: ChatAttachment) {
 }
 
 function attachmentQualityLabel(attachment: ChatAttachment) {
-  if (attachment.status !== 'ready') return attachment.status;
+  if (attachment.status !== 'ready') {
+    const readiness = attachmentInsight(attachment, 'reportReadiness');
+    if (typeof readiness === 'string' && readiness.trim()) return readiness.replace(/_/g, '-');
+    return attachment.status;
+  }
   if (attachment.reportContext || attachmentInsight(attachment, 'reportContextAvailable') === true) return 'report-ready';
   const readable = attachmentInsight(attachment, 'readable');
   const pages = attachmentInsight(attachment, 'pageEstimate');
@@ -2063,6 +2265,9 @@ function RunPageContent() {
                       {attachmentWorkerLabel(attachment)}
                       {attachmentTopicLabel(attachment) ? ` · ${attachmentTopicLabel(attachment)}` : ''}
                     </small>
+                    {attachment.status === 'failed' && (attachment.error || attachment.summary) ? (
+                      <em>{String(attachment.error || attachment.summary).slice(0, 150)}</em>
+                    ) : null}
                   </span>
                 ))}
                 {readyAttachmentCount ? (
