@@ -122,9 +122,32 @@ function createId(prefix: string) {
 const MAX_SERVER_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 const MAX_ATTACHMENT_TEXT = 160_000;
 const MAX_ATTACHMENT_REPORT_CONTEXT = 48_000;
+const MAX_SPREADSHEET_ROWS_PER_SHEET = 300;
+const MAX_SPREADSHEET_COLUMNS_PER_ROW = 40;
 
 function isPdfUpload(file: File) {
   return file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+}
+
+function isSpreadsheetUpload(file: File) {
+  const name = file.name.toLowerCase();
+  return /\.(xlsx|xls|csv|tsv)$/i.test(name)
+    || [
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-excel',
+      'text/csv',
+      'text/tab-separated-values',
+    ].includes(file.type);
+}
+
+function isXlsxUpload(file: File) {
+  return /\.xlsx$/i.test(file.name)
+    || file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+}
+
+function isDelimitedSpreadsheetUpload(file: File) {
+  return /\.(csv|tsv)$/i.test(file.name)
+    || ['text/csv', 'text/tab-separated-values'].includes(file.type);
 }
 
 function compactText(value: string) {
@@ -146,6 +169,9 @@ function buildBrowserReportContext(input: {
   type: string;
   text: string;
   pages?: number;
+  sheets?: number;
+  rows?: number;
+  columns?: number;
   words: number;
 }) {
   return [
@@ -153,6 +179,9 @@ function buildBrowserReportContext(input: {
     `File: ${input.name}`,
     `Type: ${input.type}`,
     typeof input.pages === 'number' ? `Estimated pages: ${input.pages}` : '',
+    typeof input.sheets === 'number' ? `Sheets: ${input.sheets}` : '',
+    typeof input.rows === 'number' ? `Rows: ${input.rows}` : '',
+    typeof input.columns === 'number' ? `Estimated columns: ${input.columns}` : '',
     `Words: ${input.words}`,
     'Recommended report sections: Executive summary | Key findings | Risks and issues | Action items | Evidence',
     'Readable content:',
@@ -279,6 +308,316 @@ async function buildBrowserPdfAttachment(file: File): Promise<ChatAttachment> {
   }
 }
 
+type BrowserZipEntry = {
+  name: string;
+  method: number;
+  compressedSize: number;
+  localHeaderOffset: number;
+};
+
+function readUInt16(view: DataView, offset: number) {
+  return view.getUint16(offset, true);
+}
+
+function readUInt32(view: DataView, offset: number) {
+  return view.getUint32(offset, true);
+}
+
+function decodeXmlEntities(value: string) {
+  return value
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)));
+}
+
+function stripXmlText(xml: string) {
+  return decodeXmlEntities(xml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
+}
+
+function findZipEntries(bytes: Uint8Array): BrowserZipEntry[] {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let eocdOffset = -1;
+  for (let offset = bytes.length - 22; offset >= Math.max(0, bytes.length - 66_000); offset -= 1) {
+    if (readUInt32(view, offset) === 0x06054b50) {
+      eocdOffset = offset;
+      break;
+    }
+  }
+  if (eocdOffset < 0) throw new Error('Spreadsheet ZIP directory was not found.');
+
+  const totalEntries = readUInt16(view, eocdOffset + 10);
+  let centralOffset = readUInt32(view, eocdOffset + 16);
+  const decoder = new TextDecoder();
+  const entries: BrowserZipEntry[] = [];
+
+  for (let index = 0; index < totalEntries; index += 1) {
+    if (centralOffset + 46 > bytes.length || readUInt32(view, centralOffset) !== 0x02014b50) break;
+    const method = readUInt16(view, centralOffset + 10);
+    const compressedSize = readUInt32(view, centralOffset + 20);
+    const nameLength = readUInt16(view, centralOffset + 28);
+    const extraLength = readUInt16(view, centralOffset + 30);
+    const commentLength = readUInt16(view, centralOffset + 32);
+    const localHeaderOffset = readUInt32(view, centralOffset + 42);
+    const nameBytes = bytes.slice(centralOffset + 46, centralOffset + 46 + nameLength);
+    entries.push({
+      name: decoder.decode(nameBytes),
+      method,
+      compressedSize,
+      localHeaderOffset,
+    });
+    centralOffset += 46 + nameLength + extraLength + commentLength;
+  }
+
+  return entries;
+}
+
+async function inflateZipEntry(bytes: Uint8Array, entry: BrowserZipEntry) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const localOffset = entry.localHeaderOffset;
+  if (localOffset + 30 > bytes.length || readUInt32(view, localOffset) !== 0x04034b50) {
+    throw new Error(`Invalid XLSX local header for ${entry.name}.`);
+  }
+  const nameLength = readUInt16(view, localOffset + 26);
+  const extraLength = readUInt16(view, localOffset + 28);
+  const dataStart = localOffset + 30 + nameLength + extraLength;
+  const compressed = bytes.slice(dataStart, dataStart + entry.compressedSize);
+
+  if (entry.method === 0) return compressed;
+  if (entry.method !== 8) throw new Error(`Unsupported XLSX compression method ${entry.method}.`);
+
+  const Decompression = (globalThis as any).DecompressionStream;
+  if (!Decompression) {
+    throw new Error('This browser does not support built-in XLSX decompression yet.');
+  }
+  const stream = new Blob([compressed]).stream().pipeThrough(new Decompression('deflate-raw'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+async function readZipEntryText(bytes: Uint8Array, entries: BrowserZipEntry[], name: string) {
+  const entry = entries.find((item) => item.name === name);
+  if (!entry) return '';
+  const inflated = await inflateZipEntry(bytes, entry);
+  return new TextDecoder().decode(inflated);
+}
+
+function parseSharedStrings(xml: string) {
+  if (!xml) return [];
+  return Array.from(xml.matchAll(/<si\b[\s\S]*?<\/si>/g)).map((match) => stripXmlText(match[0]));
+}
+
+function parseWorkbookSheets(workbookXml: string, relsXml: string, entries: BrowserZipEntry[]) {
+  const rels = new Map<string, string>();
+  for (const match of relsXml.matchAll(/<Relationship\b([^>]+)>/g)) {
+    const attrs = match[1] || '';
+    const id = attrs.match(/\bId="([^"]+)"/)?.[1];
+    const target = attrs.match(/\bTarget="([^"]+)"/)?.[1];
+    if (!id || !target) continue;
+    const normalized = target.startsWith('/')
+      ? target.replace(/^\//, '')
+      : `xl/${target}`.replace(/\/\.\//g, '/');
+    rels.set(id, normalized);
+  }
+
+  const sheets = Array.from(workbookXml.matchAll(/<sheet\b([^>]+)>/g)).map((match, index) => {
+    const attrs = match[1] || '';
+    const name = decodeXmlEntities(attrs.match(/\bname="([^"]+)"/)?.[1] || `Sheet ${index + 1}`);
+    const relId = attrs.match(/\br:id="([^"]+)"/)?.[1];
+    const path = relId ? rels.get(relId) : undefined;
+    return { name, path };
+  }).filter((sheet) => sheet.path);
+
+  if (sheets.length) return sheets as Array<{ name: string; path: string }>;
+
+  return entries
+    .filter((entry) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(entry.name))
+    .map((entry, index) => ({ name: `Sheet ${index + 1}`, path: entry.name }));
+}
+
+function parseWorksheetRows(xml: string, sharedStrings: string[]) {
+  const rows: string[][] = [];
+  for (const rowMatch of xml.matchAll(/<row\b[\s\S]*?<\/row>/g)) {
+    const cells: string[] = [];
+    const rowXml = rowMatch[0];
+    for (const cellMatch of rowXml.matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/g)) {
+      if (cells.length >= MAX_SPREADSHEET_COLUMNS_PER_ROW) break;
+      const attrs = cellMatch[1] || '';
+      const cellXml = cellMatch[2] || '';
+      const type = attrs.match(/\bt="([^"]+)"/)?.[1];
+      let value = '';
+      if (type === 's') {
+        const index = Number(cellXml.match(/<v>([\s\S]*?)<\/v>/)?.[1] || NaN);
+        value = Number.isFinite(index) ? sharedStrings[index] || '' : '';
+      } else if (type === 'inlineStr') {
+        value = stripXmlText(cellXml.match(/<is>([\s\S]*?)<\/is>/)?.[1] || cellXml);
+      } else {
+        value = decodeXmlEntities(cellXml.match(/<v>([\s\S]*?)<\/v>/)?.[1] || stripXmlText(cellXml));
+      }
+      cells.push(compactText(value));
+    }
+    if (cells.some(Boolean)) rows.push(cells);
+    if (rows.length >= MAX_SPREADSHEET_ROWS_PER_SHEET) break;
+  }
+  return rows;
+}
+
+async function extractXlsxTextInBrowser(file: File) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const entries = findZipEntries(bytes);
+  const [sharedXml, workbookXml, relsXml] = await Promise.all([
+    readZipEntryText(bytes, entries, 'xl/sharedStrings.xml'),
+    readZipEntryText(bytes, entries, 'xl/workbook.xml'),
+    readZipEntryText(bytes, entries, 'xl/_rels/workbook.xml.rels'),
+  ]);
+  const sharedStrings = parseSharedStrings(sharedXml);
+  const sheets = parseWorkbookSheets(workbookXml, relsXml, entries);
+  const parts: string[] = [];
+  let totalRows = 0;
+  let maxColumns = 0;
+
+  for (const sheet of sheets.slice(0, 20)) {
+    const sheetXml = await readZipEntryText(bytes, entries, sheet.path);
+    if (!sheetXml) continue;
+    const rows = parseWorksheetRows(sheetXml, sharedStrings);
+    totalRows += rows.length;
+    maxColumns = Math.max(maxColumns, ...rows.map((row) => row.length), 0);
+    parts.push(`## Sheet: ${sheet.name}`);
+    parts.push(rows.map((row) => row.join('\t')).join('\n'));
+    if (parts.join('\n\n').length >= MAX_ATTACHMENT_TEXT) break;
+  }
+
+  return {
+    sheets: sheets.length,
+    rows: totalRows,
+    columns: maxColumns,
+    text: compactText(parts.join('\n\n')).slice(0, MAX_ATTACHMENT_TEXT),
+  };
+}
+
+async function extractDelimitedSpreadsheetText(file: File) {
+  const raw = await file.text();
+  const delimiter = /\.tsv$/i.test(file.name) || file.type === 'text/tab-separated-values' ? '\t' : ',';
+  const lines = raw.split(/\r?\n/).filter((line) => line.trim()).slice(0, 1200);
+  const columns = lines.reduce((max, line) => Math.max(max, line.split(delimiter).length), 0);
+  return {
+    sheets: 1,
+    rows: lines.length,
+    columns,
+    text: compactText(lines.join('\n')).slice(0, MAX_ATTACHMENT_TEXT),
+  };
+}
+
+async function buildBrowserSpreadsheetAttachment(file: File): Promise<ChatAttachment> {
+  const id = createId('attachment_sheet');
+  if (!isXlsxUpload(file) && !isDelimitedSpreadsheetUpload(file)) {
+    return {
+      id,
+      name: file.name,
+      type: file.type || 'application/vnd.ms-excel',
+      size: file.size,
+      status: 'failed',
+      summary: 'Legacy spreadsheet format is not readable in the browser upload path.',
+      error: 'Please save this spreadsheet as .xlsx, .csv, or .tsv, then attach it again.',
+      insights: {
+        kind: 'spreadsheet',
+        readable: false,
+        recommendedWorker: 'spreadsheet.read',
+        reportReadiness: 'legacy_xls_not_supported_in_browser',
+      },
+    };
+  }
+
+  try {
+    const extracted = isXlsxUpload(file)
+      ? await extractXlsxTextInBrowser(file)
+      : await extractDelimitedSpreadsheetText(file);
+    const words = extracted.text ? extracted.text.split(/\s+/).filter(Boolean).length : 0;
+    if (!extracted.text || words < 3) {
+      return {
+        id,
+        name: file.name,
+        type: file.type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        size: file.size,
+        status: 'failed',
+        summary: 'The spreadsheet opened but no readable table text was found.',
+        error: 'The workbook may be empty, protected, or image-only.',
+        insights: {
+          kind: 'spreadsheet',
+          readable: false,
+          recommendedWorker: 'spreadsheet.read',
+          reportReadiness: 'no_readable_cells',
+        },
+      };
+    }
+
+    const textHash = await hashAttachmentText(extracted.text);
+    const reportContext = buildBrowserReportContext({
+      id,
+      name: file.name,
+      type: file.type || 'spreadsheet',
+      text: extracted.text,
+      sheets: extracted.sheets,
+      rows: extracted.rows,
+      columns: extracted.columns,
+      words,
+    });
+
+    return {
+      id,
+      name: file.name,
+      type: file.type || 'spreadsheet',
+      size: file.size,
+      sourceId: id,
+      contentRef: `theone://browser-attachment/${id}`,
+      textHash,
+      text: extracted.text,
+      textPreview: extracted.text.slice(0, 12000),
+      reportContext,
+      summary: compactText(extracted.text).slice(0, 500),
+      status: 'ready',
+      insights: {
+        schemaVersion: 'theone.attachment_insights.v1',
+        kind: 'spreadsheet',
+        readable: true,
+        extraction: isXlsxUpload(file) ? 'browser_xlsx_extract' : 'browser_delimited_extract',
+        recommendedWorker: 'spreadsheet.read',
+        sheetCount: extracted.sheets,
+        rowCount: extracted.rows,
+        columnEstimate: extracted.columns,
+        wordCount: words,
+        reportContextAvailable: true,
+        reportReadiness: 'ready',
+        storage: {
+          provider: 'browser_attachment_context',
+          durable: false,
+          uploadTextAvailable: true,
+          pathAvailable: false,
+        },
+      },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Browser spreadsheet parsing failed.';
+    return {
+      id,
+      name: file.name,
+      type: file.type || 'spreadsheet',
+      size: file.size,
+      status: 'failed',
+      summary: `Browser spreadsheet parsing failed: ${message}`,
+      error: message,
+      insights: {
+        kind: 'spreadsheet',
+        readable: false,
+        recommendedWorker: 'spreadsheet.read',
+        reportReadiness: 'failed',
+      },
+    };
+  }
+}
+
 async function postChatWithStream(
   payload: Record<string, unknown>,
   onStage: (stage: number) => void,
@@ -353,6 +692,11 @@ async function uploadChatAttachments(files: FileList | null): Promise<ChatAttach
   for (const file of selected) {
     if (isPdfUpload(file)) {
       browserAttachments.push(await buildBrowserPdfAttachment(file));
+      continue;
+    }
+
+    if (isSpreadsheetUpload(file)) {
+      browserAttachments.push(await buildBrowserSpreadsheetAttachment(file));
       continue;
     }
 
