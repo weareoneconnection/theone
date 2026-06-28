@@ -13,7 +13,7 @@ import { resolveTheOneModel } from '../models/model-router';
 import { buildUniversalWorkerCatalog } from '../workers/action-catalog';
 import { queryMemoryGraph } from '../state/run-store';
 import { exportReportArtifact, type ReportExportBundle, type TheOneReportArtifact } from '../report-artifacts';
-import { buildBrainOnlyReply, buildTheOneBrainFrame } from './brain-layer';
+import { buildBrainOnlyReply, buildTheOneBrainFrame, type TheOneBrainFrame } from './brain-layer';
 import { buildOneAIChatWorkflow, type TheOneChatMessage } from './oneai-workflow-builder';
 import type {
   ApprovalGate,
@@ -1881,6 +1881,127 @@ function buildPlan(input: {
   };
 }
 
+function buildL40RuntimeContract(input: {
+  raw: string;
+  mode: TheOneMode;
+  brain: TheOneBrainFrame;
+  attachmentContext: string;
+  oneclawTask: OneClawTask | null;
+  oneclawRun: OneClawTaskRun | null;
+  runtimeError: string | null;
+  blocked: boolean;
+  approvalGated: boolean;
+  canSubmit: boolean;
+  summary: string;
+  finalSummary: string | null;
+  workerRuntime: unknown;
+  documentRuntime?: unknown;
+  reportArtifact?: unknown;
+  exportBundle?: unknown;
+  deliveryStatus?: unknown;
+  objectiveAssessment?: unknown;
+  proofCount: number;
+  modelRoute: ReturnType<typeof resolveTheOneModel>;
+  oneAiCompletionContract?: unknown;
+}) {
+  const attachmentItems = attachmentInventory(input.attachmentContext);
+  const objectiveAssessment = isRecord(input.objectiveAssessment) ? input.objectiveAssessment : {};
+  const completionContract = isRecord(input.oneAiCompletionContract) ? input.oneAiCompletionContract : null;
+  const hasAttachmentIntent = attachmentItems.length > 0 ||
+    /(attach|attachment|file|document|pdf|spreadsheet|excel|read this|read and report|report|附件|文件|文档|表格|报告)/i.test(input.raw);
+  const readableAttachments = attachmentItems.filter((item) => item.hasReadableText);
+  const storedAttachments = attachmentItems.filter((item) => Boolean(item.path));
+  const failedAttachments = attachmentItems.filter((item) =>
+    /failed|error|missing|unavailable|unreadable/i.test(`${item.status || ''} ${item.uploadError || ''} ${item.summary || ''}`)
+  );
+  const sourceReady = !hasAttachmentIntent ||
+    readableAttachments.length > 0 ||
+    storedAttachments.length > 0 ||
+    Boolean(isRecord(input.documentRuntime) && input.documentRuntime.sourceReady);
+  const hasWorkerTask = Boolean(input.oneclawTask);
+  const inFlight = input.oneclawRun ? oneClawRunInFlight(input.oneclawRun) : false;
+  const settled = input.oneclawRun ? oneClawRunSettled(input.oneclawRun) : false;
+  const finalAnswerReady = Boolean(input.finalSummary && !isProcessPlaceholderReply(input.finalSummary)) ||
+    objectiveAssessment.outcome === 'satisfied' ||
+    objectiveAssessment.satisfied === true ||
+    completionContract?.finalAnswerReady === true;
+  const status = input.runtimeError
+    ? 'failed'
+    : !sourceReady
+      ? 'needs_source'
+      : input.blocked
+        ? 'blocked'
+        : input.approvalGated
+          ? 'waiting_approval'
+          : inFlight
+            ? 'running'
+            : finalAnswerReady
+              ? 'satisfied'
+              : hasWorkerTask && !settled
+                ? input.canSubmit ? 'submitting' : 'planned'
+                : hasWorkerTask
+                  ? 'awaiting_receipt'
+                  : 'answered';
+  const nextAction = status === 'needs_source'
+    ? 'Attach a readable file or provide a durable source, then retry the mission.'
+    : status === 'waiting_approval'
+      ? 'Review and approve the pending worker task before execution.'
+      : status === 'failed'
+        ? `Fix the worker or connector issue${input.runtimeError ? `: ${input.runtimeError}` : ''}.`
+        : status === 'satisfied'
+          ? 'Use the result, ask a follow-up, save it, or export it.'
+          : typeof completionContract?.nextAction === 'string'
+            ? completionContract.nextAction
+            : 'Continue the mission until the outcome is satisfied.';
+
+  return {
+    schemaVersion: 'theone.l40.runtime_contract.v1',
+    level: 'L40',
+    mode: input.mode,
+    status,
+    objective: input.brain.objective,
+    closure: {
+      finalAnswerReady,
+      proofReady: input.proofCount > 0,
+      sourceReady,
+      workerNeeded: hasWorkerTask || completionContract?.needsWorker === true,
+      approvalNeeded: input.approvalGated || completionContract?.needsApproval === true,
+      nextAction,
+      reason: typeof completionContract?.reason === 'string' ? completionContract.reason : input.summary,
+    },
+    execution: {
+      taskName: input.oneclawTask?.taskName || null,
+      firstAction: firstTaskAction(input.oneclawTask),
+      runId: oneClawRunId(input.oneclawRun),
+      canSubmit: input.canSubmit,
+      inFlight,
+      settled,
+      blocked: input.blocked,
+      runtimeError: input.runtimeError,
+    },
+    attachments: {
+      expected: hasAttachmentIntent,
+      count: attachmentItems.length,
+      readable: readableAttachments.length,
+      stored: storedAttachments.length,
+      failed: failedAttachments.length,
+      names: attachmentItems.map((item) => item.name).filter(Boolean),
+    },
+    brain: {
+      model: input.modelRoute.model,
+      provider: input.modelRoute.provider,
+      useCase: input.modelRoute.useCase,
+      conversationKind: input.brain.conversationKind,
+      selectedApps: input.brain.selectedApps,
+    },
+    safeguards: [
+      'TheOne validates source readiness before execution.',
+      'OneClaw worker receipts are required for external execution closure.',
+      'Approval-gated writes do not run without human approval.',
+    ],
+  };
+}
+
 export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promise<TheOneRunResult & {
   chat: Record<string, unknown>;
 }> {
@@ -2014,6 +2135,24 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       memoryContext,
       workerRuntime,
     });
+    const l40Runtime = buildL40RuntimeContract({
+      raw,
+      mode,
+      brain,
+      attachmentContext,
+      oneclawTask: null,
+      oneclawRun: null,
+      runtimeError: null,
+      blocked: false,
+      approvalGated: false,
+      canSubmit: false,
+      summary,
+      finalSummary: summary,
+      workerRuntime,
+      proofCount: 1,
+      modelRoute: primaryModel,
+      oneAiCompletionContract: brainOnlyOneAi?.workflow.completionContract || null,
+    });
     const proofRecords = [
       proof({
         title: 'TheOne Brain handled conversation',
@@ -2030,6 +2169,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
           missionState,
           workerCatalogSummary: workerCatalog.summary,
           oneAiBrain: brainOnlyOneAi?.workflow.oneAiBrain || null,
+          l40Runtime,
           preflight,
         },
       }),
@@ -2066,7 +2206,6 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       oneclawRun: null,
       finalSummary: summary,
     });
-
     return {
       ok: true,
       runId,
@@ -2106,6 +2245,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         brainMode: brain.mode,
         conversationKind: brain.conversationKind,
         oneAiBrain: brainOnlyOneAi?.workflow.oneAiBrain || null,
+        l40Runtime,
       },
       chat: {
         runtime: 'theone.chat_runtime.v2',
@@ -2116,6 +2256,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         continuity,
         oneAiBrainReply: brainOnlyOneAi?.workflow || null,
         oneAiBrain: brainOnlyOneAi?.workflow.oneAiBrain || null,
+        l40Runtime,
         modelRoute: primaryModel,
         memoryContext: memorySummary(memoryContext),
         appPackages: brain.selectedApps.length ? brain.selectedApps : appPackages.slice(0, 4),
@@ -2609,6 +2750,31 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     oneclawRun,
     finalSummary,
   });
+  const oneAiWorkflowRecord = effectiveOneAi.workflow as unknown as Record<string, unknown>;
+  const oneAiCompletionContract = oneAiWorkflowRecord.completionContract || null;
+  const l40Runtime = buildL40RuntimeContract({
+    raw,
+    mode,
+    brain,
+    attachmentContext,
+    oneclawTask,
+    oneclawRun,
+    runtimeError,
+    blocked,
+    approvalGated,
+    canSubmit,
+    summary,
+    finalSummary,
+    workerRuntime,
+    documentRuntime,
+    reportArtifact,
+    exportBundle,
+    deliveryStatus,
+    objectiveAssessment,
+    proofCount: 1,
+    modelRoute: primaryModel,
+    oneAiCompletionContract,
+  });
   const proofRecords = [
     proof({
       title: 'TheOne Chat Runtime handled conversation',
@@ -2629,6 +2795,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         deliveryStatus,
         objectiveAssessment,
         agentTimeline,
+        l40Runtime,
         workerCatalogSummary: workerCatalog.summary,
         oneAiWorkflow: effectiveOneAi.workflow,
         oneAiBrain: effectiveOneAi.workflow.oneAiBrain || null,
@@ -2726,6 +2893,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       objectiveAssessment,
       continuity,
       agentTimeline,
+      l40Runtime,
       brainMode: brain.mode,
       conversationKind: brain.conversationKind,
       modelRoute: primaryModel,
@@ -2751,6 +2919,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       objectiveAssessment,
       continuity,
       agentTimeline,
+      l40Runtime,
       modelRoute: primaryModel,
       memoryContext: memorySummary(memoryContext),
       appPackages: selectedAppPackages.length ? selectedAppPackages : appPackages.slice(0, 4),

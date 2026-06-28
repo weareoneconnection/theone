@@ -16,6 +16,9 @@ const MAX_TEXT_BYTES = 512 * 1024;
 const MAX_EXTRACTED_TEXT = 160_000;
 const MAX_REPORT_CONTEXT = 48_000;
 const MAX_FILES = 8;
+const MAX_SPREADSHEET_SHEETS = 12;
+const MAX_SPREADSHEET_ROWS_PER_SHEET = 300;
+const MAX_SPREADSHEET_COLUMNS_PER_ROW = 40;
 
 const DOCUMENT_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'rtf']);
 const SPREADSHEET_EXTENSIONS = new Set(['csv', 'tsv', 'xls', 'xlsx']);
@@ -398,8 +401,154 @@ function readZipEntry(buffer: Buffer, wanted: RegExp) {
   return null;
 }
 
+type ZipDirectoryEntry = {
+  name: string;
+  method: number;
+  compressedSize: number;
+  uncompressedSize: number;
+  localHeaderOffset: number;
+};
+
+function readZipEntries(buffer: Buffer) {
+  const maxCommentLength = 0xffff;
+  const searchStart = Math.max(0, buffer.length - maxCommentLength - 22);
+  let endOfCentralDirectory = -1;
+  for (let offset = buffer.length - 22; offset >= searchStart; offset -= 1) {
+    if (buffer.readUInt32LE(offset) === 0x06054b50) {
+      endOfCentralDirectory = offset;
+      break;
+    }
+  }
+  if (endOfCentralDirectory < 0) return [];
+
+  const entryCount = buffer.readUInt16LE(endOfCentralDirectory + 10);
+  const centralDirectoryOffset = buffer.readUInt32LE(endOfCentralDirectory + 16);
+  const entries: ZipDirectoryEntry[] = [];
+  let offset = centralDirectoryOffset;
+  for (let index = 0; index < entryCount && offset + 46 <= buffer.length; index += 1) {
+    if (buffer.readUInt32LE(offset) !== 0x02014b50) break;
+    const method = buffer.readUInt16LE(offset + 10);
+    const compressedSize = buffer.readUInt32LE(offset + 20);
+    const uncompressedSize = buffer.readUInt32LE(offset + 24);
+    const nameLength = buffer.readUInt16LE(offset + 28);
+    const extraLength = buffer.readUInt16LE(offset + 30);
+    const commentLength = buffer.readUInt16LE(offset + 32);
+    const localHeaderOffset = buffer.readUInt32LE(offset + 42);
+    const name = buffer.slice(offset + 46, offset + 46 + nameLength).toString('utf8');
+    entries.push({ name, method, compressedSize, uncompressedSize, localHeaderOffset });
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  return entries;
+}
+
+function readZipDirectoryEntry(buffer: Buffer, entry: ZipDirectoryEntry) {
+  const offset = entry.localHeaderOffset;
+  if (offset < 0 || offset + 30 > buffer.length || buffer.readUInt32LE(offset) !== 0x04034b50) return null;
+  const nameLength = buffer.readUInt16LE(offset + 26);
+  const extraLength = buffer.readUInt16LE(offset + 28);
+  const dataStart = offset + 30 + nameLength + extraLength;
+  const dataEnd = dataStart + entry.compressedSize;
+  if (dataEnd > buffer.length) return null;
+  const compressed = buffer.slice(dataStart, dataEnd);
+  if (entry.method === 0) return compressed;
+  if (entry.method === 8) return inflateSync(compressed);
+  return null;
+}
+
+function readZipEntryByName(buffer: Buffer, entries: ZipDirectoryEntry[], wanted: string | RegExp) {
+  const entry = entries.find((item) => typeof wanted === 'string' ? item.name === wanted : wanted.test(item.name));
+  return entry ? readZipDirectoryEntry(buffer, entry) : null;
+}
+
+function xmlToText(xml: string) {
+  return decodeXmlEntities(
+    xml
+      .replace(/<\/(?:t|si|row|p)>/g, '\n')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/[^\S\n]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+  );
+}
+
+function parseSharedStringsXml(xml: string) {
+  const strings: string[] = [];
+  for (const match of xml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/g)) {
+    const fragments = Array.from(match[1].matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)).map((fragment) => fragment[1]);
+    strings.push(xmlToText(fragments.length ? fragments.join('') : match[1]).replace(/\n+/g, ' ').trim());
+  }
+  return strings;
+}
+
+function normalizeWorkbookTarget(target: string) {
+  const clean = target.replace(/^\/+/, '');
+  if (clean.startsWith('xl/')) return clean;
+  return `xl/${clean.replace(/^\.\.\//, '')}`;
+}
+
+function parseWorkbookRelationships(xml: string) {
+  const relationships = new Map<string, string>();
+  for (const match of xml.matchAll(/<Relationship\b[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g)) {
+    relationships.set(match[1], normalizeWorkbookTarget(match[2]));
+  }
+  return relationships;
+}
+
+function parseWorkbookSheets(workbookXml: string, relationshipsXml: string) {
+  const relationships = parseWorkbookRelationships(relationshipsXml);
+  const sheets: Array<{ name: string; path: string }> = [];
+  let fallbackIndex = 1;
+  for (const match of workbookXml.matchAll(/<sheet\b([^>]+?)\/?>/g)) {
+    const attrs = match[1];
+    const name = attrs.match(/\bname="([^"]+)"/)?.[1] || `Sheet ${fallbackIndex}`;
+    const relationshipId = attrs.match(/\br:id="([^"]+)"/)?.[1] || '';
+    const path = relationships.get(relationshipId) || `xl/worksheets/sheet${fallbackIndex}.xml`;
+    sheets.push({ name: decodeXmlEntities(name), path });
+    fallbackIndex += 1;
+  }
+  return sheets;
+}
+
+function columnIndex(cellRef: string) {
+  const letters = (cellRef.match(/^[A-Z]+/i)?.[0] || '').toUpperCase();
+  if (!letters) return -1;
+  let value = 0;
+  for (const letter of letters) value = value * 26 + (letter.charCodeAt(0) - 64);
+  return value - 1;
+}
+
+function parseWorksheetRows(xml: string, sharedStrings: string[]) {
+  const rows: string[] = [];
+  for (const rowMatch of xml.matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/g)) {
+    const cells = new Map<number, string>();
+    for (const cellMatch of rowMatch[1].matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/g)) {
+      const attrs = cellMatch[1];
+      const body = cellMatch[2];
+      const ref = attrs.match(/\br="([^"]+)"/)?.[1] || '';
+      const type = attrs.match(/\bt="([^"]+)"/)?.[1] || '';
+      const index = columnIndex(ref);
+      if (index < 0 || index >= MAX_SPREADSHEET_COLUMNS_PER_ROW) continue;
+      let value = '';
+      if (type === 'inlineStr') {
+        value = xmlToText(Array.from(body.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)).map((item) => item[1]).join(' '));
+      } else {
+        const rawValue = body.match(/<v\b[^>]*>([\s\S]*?)<\/v>/)?.[1] || '';
+        value = type === 's' ? sharedStrings[Number(rawValue)] || '' : decodeXmlEntities(rawValue).trim();
+      }
+      if (value) cells.set(index, value.replace(/\s+/g, ' ').trim());
+    }
+    if (!cells.size) continue;
+    const maxIndex = Math.min(MAX_SPREADSHEET_COLUMNS_PER_ROW - 1, Math.max(...cells.keys()));
+    const values = Array.from({ length: maxIndex + 1 }, (_, index) => cells.get(index) || '').join('\t').trim();
+    if (values) rows.push(values);
+    if (rows.length >= MAX_SPREADSHEET_ROWS_PER_SHEET) break;
+  }
+  return rows;
+}
+
 function extractDocxText(buffer: Buffer) {
-  const documentXml = readZipEntry(buffer, /^word\/document\.xml$/);
+  const entries = readZipEntries(buffer);
+  const documentXml = readZipEntryByName(buffer, entries, 'word/document.xml') || readZipEntry(buffer, /^word\/document\.xml$/);
   if (!documentXml) return '';
   return decodeXmlEntities(
     documentXml
@@ -413,17 +562,31 @@ function extractDocxText(buffer: Buffer) {
 }
 
 function extractSpreadsheetText(buffer: Buffer) {
-  const sharedStrings = readZipEntry(buffer, /^xl\/sharedStrings\.xml$/);
-  if (!sharedStrings) return '';
-  return decodeXmlEntities(
-    sharedStrings
-      .toString('utf8')
-      .replace(/<\/si>/g, '\n')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/[^\S\n]+/g, ' ')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim()
-  ).slice(0, MAX_EXTRACTED_TEXT);
+  const entries = readZipEntries(buffer);
+  const sharedStringsXml = readZipEntryByName(buffer, entries, 'xl/sharedStrings.xml') || readZipEntry(buffer, /^xl\/sharedStrings\.xml$/);
+  const workbookXml = readZipEntryByName(buffer, entries, 'xl/workbook.xml');
+  const workbookRelationshipsXml = readZipEntryByName(buffer, entries, 'xl/_rels/workbook.xml.rels');
+  const sharedStrings = sharedStringsXml ? parseSharedStringsXml(sharedStringsXml.toString('utf8')) : [];
+  const workbookSheets = workbookXml
+    ? parseWorkbookSheets(workbookXml.toString('utf8'), workbookRelationshipsXml?.toString('utf8') || '')
+    : [];
+  const worksheetEntries = workbookSheets.length
+    ? workbookSheets
+    : entries
+        .filter((entry) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(entry.name))
+        .map((entry, index) => ({ name: `Sheet ${index + 1}`, path: entry.name }));
+
+  const parts: string[] = [];
+  for (const sheet of worksheetEntries.slice(0, MAX_SPREADSHEET_SHEETS)) {
+    const worksheetXml = readZipEntryByName(buffer, entries, sheet.path);
+    if (!worksheetXml) continue;
+    const rows = parseWorksheetRows(worksheetXml.toString('utf8'), sharedStrings);
+    if (rows.length) parts.push(`## Sheet: ${sheet.name}\n${rows.join('\n')}`);
+  }
+
+  if (parts.length) return parts.join('\n\n').slice(0, MAX_EXTRACTED_TEXT);
+  if (sharedStrings.length) return sharedStrings.join('\n').slice(0, MAX_EXTRACTED_TEXT);
+  return '';
 }
 
 async function extractReadableContent(name: string, type: string, buffer: Buffer, storedPath?: string) {

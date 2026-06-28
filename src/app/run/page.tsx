@@ -682,6 +682,26 @@ async function refreshRunResult(runId: string) {
   return data?.runId ? data : null;
 }
 
+function failedServerUploadAttachment(file: File, message: string): ChatAttachment {
+  const kind = isSpreadsheetUpload(file) ? 'spreadsheet' : isPdfUpload(file) ? 'document' : 'file';
+  const recommendedWorker = kind === 'spreadsheet' ? 'spreadsheet.read' : kind === 'document' ? 'document.parse' : 'file.read';
+  return {
+    id: createId('attachment_failed'),
+    name: file.name,
+    type: file.type || 'application/octet-stream',
+    size: file.size,
+    status: 'failed',
+    summary: message,
+    error: message,
+    insights: {
+      kind,
+      readable: false,
+      recommendedWorker,
+      reportReadiness: 'upload_failed',
+    },
+  };
+}
+
 async function uploadChatAttachments(files: FileList | null): Promise<ChatAttachment[]> {
   const selected = Array.from(files || []).slice(0, 8);
   if (!selected.length) return [];
@@ -736,11 +756,13 @@ async function uploadChatAttachments(files: FileList | null): Promise<ChatAttach
   try {
     data = raw ? JSON.parse(raw) : {};
   } catch {
-    throw new Error(`Attachment upload failed (${response.status}). ${raw.slice(0, 180) || 'The upload endpoint did not return JSON.'}`);
+    const message = `Attachment upload failed (${response.status}). ${raw.slice(0, 180) || 'The upload endpoint did not return JSON.'}`;
+    return [...browserAttachments, ...serverFiles.map((file) => failedServerUploadAttachment(file, message))];
   }
 
   if (!response.ok || data?.ok === false) {
-    throw new Error(data?.error || `Attachment upload failed (${response.status}).`);
+    const message = data?.error || `Attachment upload failed (${response.status}).`;
+    return [...browserAttachments, ...serverFiles.map((file) => failedServerUploadAttachment(file, message))];
   }
 
   const serverAttachments = (Array.isArray(data.attachments) ? data.attachments : []).map((attachment: any) => ({

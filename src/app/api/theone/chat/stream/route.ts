@@ -377,6 +377,8 @@ export async function POST(req: Request) {
         };
 
         emitRuntimeEvents(controller, output);
+        const l40Runtime = (output.chat as Record<string, unknown> | undefined)?.l40Runtime;
+        if (l40Runtime) send(controller, 'runtime_contract', l40Runtime);
         send(controller, 'stage', { index: 5, label: 'Writing answer', detail: 'Returning the result in plain language.' });
         streamAnswer(controller, String((withConversation.chat as any)?.assistant?.content || withConversation.summary || ''));
         send(controller, 'result', output);

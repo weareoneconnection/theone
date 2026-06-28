@@ -30,6 +30,15 @@ export type OneAIWorkflowContract = {
     executionBoundary: string;
     reasoningSummary: string;
   };
+  completionContract?: {
+    status: 'answered' | 'workflow_ready' | 'needs_approval' | 'needs_source' | 'blocked' | 'failed';
+    finalAnswerReady: boolean;
+    needsWorker: boolean;
+    needsApproval: boolean;
+    evidenceRequired: boolean;
+    nextAction: string;
+    reason: string;
+  };
   intent: {
     objective: string;
     domain: string;
@@ -49,6 +58,8 @@ export type OneAIWorkflowContract = {
   };
 };
 
+type OneAICompletionStatus = NonNullable<OneAIWorkflowContract['completionContract']>['status'];
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -60,6 +71,20 @@ function textValue(value: unknown, fallback = '') {
 function riskValue(value: unknown): 'low' | 'medium' | 'high' {
   if (value === 'high' || value === 'medium' || value === 'low') return value;
   return 'medium';
+}
+
+function completionStatusValue(value: unknown): OneAICompletionStatus {
+  if (
+    value === 'answered' ||
+    value === 'workflow_ready' ||
+    value === 'needs_approval' ||
+    value === 'needs_source' ||
+    value === 'blocked' ||
+    value === 'failed'
+  ) {
+    return value;
+  }
+  return 'workflow_ready';
 }
 
 function stepInput(value: unknown) {
@@ -130,6 +155,15 @@ function normalizeWorkflow(data: unknown, raw: string): OneAIWorkflowContract {
       executionBoundary: textValue(oneAiBrain.executionBoundary, 'TheOne validates policy before execution.'),
       reasoningSummary: textValue(oneAiBrain.reasoningSummary, textValue(workflow.summary, 'Structured workflow candidate prepared.')),
     } : undefined,
+    completionContract: isRecord(record.completionContract) ? {
+      status: completionStatusValue(record.completionContract.status),
+      finalAnswerReady: Boolean(record.completionContract.finalAnswerReady),
+      needsWorker: Boolean(record.completionContract.needsWorker),
+      needsApproval: Boolean(record.completionContract.needsApproval),
+      evidenceRequired: record.completionContract.evidenceRequired === undefined ? true : Boolean(record.completionContract.evidenceRequired),
+      nextAction: textValue(record.completionContract.nextAction, 'Let TheOne validate and continue the route.'),
+      reason: textValue(record.completionContract.reason, textValue(workflow.summary, 'Workflow candidate prepared.')),
+    } : undefined,
     intent: {
       objective: textValue(intent.objective, raw),
       domain: textValue(intent.domain, textValue(record.domain, 'general')),
@@ -192,6 +226,15 @@ function fallbackWorkflow(raw: string, mode: TheOneMode): OneAIWorkflowContract 
     },
     requiredWorkers: ['oneai', 'theone'],
     oneclawTask: null,
+    completionContract: {
+      status: 'answered',
+      finalAnswerReady: true,
+      needsWorker: false,
+      needsApproval: false,
+      evidenceRequired: false,
+      nextAction: 'Continue the conversation with a concrete outcome.',
+      reason: 'No external action was produced.',
+    },
     safety: {
       requiresApproval: false,
       reason: 'No external action was produced.',
@@ -246,6 +289,15 @@ export async function buildOneAIChatWorkflow(input: {
           executionBoundary: 'string: what OneAI is not allowed to execute by itself',
           reasoningSummary: 'string: concise, user-safe planning rationale',
         },
+        completionContract: {
+          status: 'answered|workflow_ready|needs_approval|needs_source|blocked|failed',
+          finalAnswerReady: 'boolean: true only when the user has a usable answer now',
+          needsWorker: 'boolean: true when TheOne should call OneClaw or another worker',
+          needsApproval: 'boolean: true when a human approval gate is required before execution',
+          evidenceRequired: 'boolean: true when a receipt, extracted source, or proof should be attached',
+          nextAction: 'string: one plain next move, not internal machinery',
+          reason: 'string: concise reason for this status',
+        },
         intent: {
           objective: 'string',
           domain: 'string',
@@ -286,11 +338,15 @@ export async function buildOneAIChatWorkflow(input: {
         'Act as the OneAI Planning Brain inside TheOne AI OS. You are an LLM-native brain for understanding, planning, and natural conversation.',
         'TheOne Control Brain owns final authority: policy, approval, worker dispatch, proof, memory, and safety. OneAI must not override it.',
         'Your answer should feel like ChatGPT/Codex: direct, helpful, context-aware, and outcome-focused. Do not narrate internal machinery unless the user asks.',
+        'Every turn must have a completionContract. TheOne uses it as an execution closure contract.',
+        'Do not return placeholder answers like "please hold while I gather data" as a final assistantReply. Either answer directly, return an executable workflow, ask for one missing source, or state why it is blocked.',
+        'finalAnswerReady=true only when assistantReply itself satisfies the user outcome. If a worker still must run, set needsWorker=true and finalAnswerReady=false.',
         'Always return oneAiBrain so TheOne can display or audit how OneAI understood the request.',
         'The user should not need to know which App or Worker to call; infer the best App package and Worker actions from context.',
         'Use appPackages to choose the user-facing capability package and workerCatalog to choose executable actions.',
         'If a URL, repository, API endpoint, attachment, or stored path is already visible in Brain context readiness or conversation context, use it. Do not ask the user for the same detail again.',
         'When the conversation includes attached file context, treat that attachment as the source document. If readable content is present, answer, summarize, or draft the requested report directly from that content and do not ask for a path.',
+        'When attachment upload failed or readable content is absent, set completionContract.status=needs_source and ask for re-upload or a durable source. Do not invent a file path.',
         'If an attachment has a stored path but no readable content, create a file.read, document.parse, spreadsheet.read, image.extractText, or image.analyze task only when that exact action is available and appropriate.',
         'For document/report requests, prefer oneai.generate after the file content is available; return a clear report with key points, risks, action items, and evidence when the user asks for a report.',
         'For X/Twitter posts, generate publication-ready content under 260 characters unless the user explicitly asks for a thread.',
