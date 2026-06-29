@@ -68,6 +68,68 @@ function textValue(value: unknown, fallback = '') {
   return typeof value === 'string' && value.trim() ? value.trim() : fallback;
 }
 
+function detectResponseLanguage(text: string) {
+  const source = text || '';
+  const chinese = (source.match(/[\u3400-\u9fff]/g) || []).length;
+  const japanese = (source.match(/[\u3040-\u30ff]/g) || []).length;
+  const korean = (source.match(/[\uac00-\ud7af]/g) || []).length;
+  const arabic = (source.match(/[\u0600-\u06ff]/g) || []).length;
+  const cyrillic = (source.match(/[\u0400-\u04ff]/g) || []).length;
+  const thai = (source.match(/[\u0e00-\u0e7f]/g) || []).length;
+
+  if (chinese >= 2) return 'zh-CN';
+  if (japanese >= 2) return 'ja';
+  if (korean >= 2) return 'ko';
+  if (arabic >= 2) return 'ar';
+  if (cyrillic >= 2) return 'ru';
+  if (thai >= 2) return 'th';
+  return 'en';
+}
+
+function normalizeResponseLanguage(input: {
+  language?: string;
+  raw: string;
+  messages: TheOneChatMessage[];
+}) {
+  const requested = textValue(input.language).toLowerCase();
+  if (requested && requested !== 'auto' && requested !== 'same_as_user') return input.language!.trim();
+
+  const recentUserText = input.messages
+    .filter((message) => message.role === 'user')
+    .slice(-3)
+    .map((message) => message.content)
+    .join('\n');
+  return detectResponseLanguage([input.raw, recentUserText].filter(Boolean).join('\n'));
+}
+
+function languageContract(responseLanguage: string) {
+  return {
+    responseLanguage,
+    userFacingFields: [
+      'assistantReply',
+      'oneAiBrain.understanding',
+      'oneAiBrain.reasoningSummary',
+      'oneAiBrain.stagePlan[].goal',
+      'oneAiBrain.strategy.*',
+      'oneAiBrain.executionStrategy.*',
+      'workflow.summary',
+      'workflow.steps[].title',
+      'safety.reason',
+      'completionContract.nextAction',
+      'completionContract.reason',
+    ],
+    invariantFields: [
+      'JSON keys',
+      'worker/action names',
+      'URLs',
+      'repository names',
+      'file names',
+      'code identifiers',
+    ],
+    rule: 'Write every natural-language value in responseLanguage. Keep technical identifiers in their original language.',
+  };
+}
+
 function riskValue(value: unknown): 'low' | 'medium' | 'high' {
   if (value === 'high' || value === 'medium' || value === 'low') return value;
   return 'medium';
@@ -250,6 +312,7 @@ export async function buildOneAIChatWorkflow(input: {
   workerCatalog?: unknown;
   appPackages?: unknown;
   brain?: TheOneBrainFrame;
+  language?: string;
 }): Promise<{
   workflow: OneAIWorkflowContract;
   oneAiResult: OneAIGenerateResult<unknown>;
@@ -264,6 +327,12 @@ export async function buildOneAIChatWorkflow(input: {
     maturity: capability.maturity,
   }));
   const modelRoute = resolveTheOneModel('theone.chat.primary');
+  const responseLanguage = normalizeResponseLanguage({
+    language: input.language,
+    raw: input.raw,
+    messages: input.messages,
+  });
+  const language = languageContract(responseLanguage);
 
   const oneAiResult = await runOneAI<unknown>({
     type: 'theone_chat_workflow',
@@ -271,6 +340,9 @@ export async function buildOneAIChatWorkflow(input: {
       source: 'theone.chat_runtime',
       message: input.raw,
       mode: input.mode,
+      language: responseLanguage,
+      responseLanguage,
+      languageContract: language,
       conversation: input.messages.slice(-12),
       availableActions,
       modelRoute,
@@ -278,6 +350,7 @@ export async function buildOneAIChatWorkflow(input: {
       appPackages: input.appPackages || null,
       brain: input.brain || null,
       responseContract: {
+        languageContract: language,
         assistantReply: 'string',
         oneAiBrain: {
           role: 'string: OneAI planning brain role in this turn',
@@ -335,6 +408,10 @@ export async function buildOneAIChatWorkflow(input: {
         input.brain ? `Brain context readiness: ${JSON.stringify(input.brain.contextReadiness)}` : '',
         input.brain ? `OneAI planning brain contract: ${JSON.stringify(input.brain.oneAiBrain)}` : '',
         `Use model route ${modelRoute.useCase} with preferred model alias ${modelRoute.model}.`,
+        `Response language: ${responseLanguage}.`,
+        `Language contract: ${JSON.stringify(language)}.`,
+        'All user-facing natural-language fields must be written in the response language. Keep JSON keys, action names, URLs, repo names, file names, and code identifiers unchanged.',
+        'If the user mixes languages, mirror the dominant language of the latest user message. Do not default to English when the user writes Chinese or another language.',
         'Act as the OneAI Planning Brain inside TheOne AI OS. You are an LLM-native brain for understanding, planning, and natural conversation.',
         'TheOne Control Brain owns final authority: policy, approval, worker dispatch, proof, memory, and safety. OneAI must not override it.',
         'Your answer should feel like ChatGPT/Codex: direct, helpful, context-aware, and outcome-focused. Do not narrate internal machinery unless the user asks.',

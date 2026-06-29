@@ -35,6 +35,7 @@ export type TheOneChatRuntimeInput = {
   userId?: string;
   sessionId?: string;
   contextHint?: string;
+  language?: string;
 };
 
 function latestUserMessage(messages: TheOneChatMessage[], explicit?: string) {
@@ -2079,6 +2080,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         workerCatalog,
         appPackages,
         brain,
+        language: input.language,
       });
       if (brainOnlyOneAi.workflow.assistantReply.trim()) {
         summary = brainOnlyOneAi.workflow.assistantReply.trim();
@@ -2341,6 +2343,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         workerCatalog,
         appPackages,
         brain,
+        language: input.language,
       });
   const oneAiProposedDocumentWorker = taskIncludesAction(oneAi.oneclawTask, 'document.generate') ||
     oneAi.workflow.workflow.steps.some((step) => step.action === 'document.generate');

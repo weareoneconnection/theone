@@ -2907,6 +2907,39 @@ button, input, textarea { font: inherit; }
   max-width: 720px;
 }
 
+.run-welcome-trust {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 4px auto 0;
+  max-width: 780px;
+  width: 100%;
+}
+
+.run-welcome-trust div {
+  background: rgba(0,0,0,0.24);
+  border: 1px solid rgba(98,215,196,0.18);
+  border-radius: 10px;
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+  text-align: left;
+}
+
+.run-welcome-trust small {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 950;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.run-welcome-trust strong {
+  color: rgba(255,255,255,0.78);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .run-welcome-prompts {
   display: grid;
   gap: 10px;
@@ -4823,6 +4856,45 @@ button, input, textarea { font: inherit; }
   gap: 10px;
 }
 
+.run-public-badge {
+  background: rgba(98,215,196,0.08);
+  border: 1px solid rgba(98,215,196,0.22);
+  border-radius: 999px;
+  color: rgba(206,255,247,0.88);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  padding: 8px 10px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.run-language-toggle {
+  align-items: center;
+  background: rgba(255,255,255,0.045);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 999px;
+  display: inline-flex;
+  padding: 3px;
+}
+
+.run-language-toggle button {
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: rgba(255,255,255,0.58);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 900;
+  min-width: 42px;
+  padding: 6px 9px;
+}
+
+.run-language-toggle button.active {
+  background: rgba(98,215,196,0.16);
+  color: rgba(224,255,250,0.96);
+}
+
 .run-topbar-mode {
   grid-template-columns: repeat(3, minmax(72px, 1fr));
   min-width: 230px;
@@ -4939,6 +5011,7 @@ button, input, textarea { font: inherit; }
 
   .run-product-main {
     min-height: 100vh;
+    grid-template-rows: auto minmax(0, 1fr) auto;
   }
 
   .run-product-topbar {
@@ -4950,7 +5023,9 @@ button, input, textarea { font: inherit; }
 
   .run-topbar-actions {
     align-items: stretch;
-    display: grid;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
   }
 
   .run-topbar-mode {
@@ -4959,8 +5034,23 @@ button, input, textarea { font: inherit; }
 }
 
 @media (max-width: 720px) {
+  .run-product-main {
+    background:
+      radial-gradient(circle at 50% 0%, rgba(98,215,196,0.12), transparent 34%),
+      #07090b;
+  }
+
+  .run-title-block strong {
+    font-size: 16px;
+  }
+
+  .run-public-badge {
+    display: none;
+  }
+
   .run-product-main .run-thread {
-    padding: 18px 12px;
+    gap: 14px;
+    padding: 18px 12px 14px;
   }
 
   .run-product-main .run-message,
@@ -4969,9 +5059,97 @@ button, input, textarea { font: inherit; }
     max-width: 100%;
   }
 
+  .run-product-main .run-message {
+    padding: 15px;
+  }
+
+  .run-welcome-panel {
+    align-content: center;
+    gap: 14px;
+    min-height: 52vh;
+    padding: 8px 2px;
+  }
+
+  .run-welcome-panel h1 {
+    font-size: clamp(38px, 13vw, 58px);
+    letter-spacing: 0;
+  }
+
+  .run-welcome-panel p {
+    font-size: 15px;
+    line-height: 1.55;
+  }
+
+  .run-welcome-trust {
+    grid-template-columns: 1fr;
+  }
+
+  .run-welcome-trust div {
+    padding: 10px 12px;
+  }
+
+  .run-welcome-prompts {
+    grid-template-columns: 1fr;
+  }
+
+  .run-welcome-prompts button {
+    min-height: 82px;
+  }
+
   .run-product-main .run-composer {
     margin-bottom: 12px;
+    padding: 12px;
     width: calc(100% - 24px);
+  }
+
+  .run-composer-toolbar {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .run-composer-toolbar button,
+  .run-attach-button {
+    justify-content: center;
+    min-width: 0;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .run-product-main .run-composer textarea {
+    font-size: 16px;
+    min-height: 132px;
+  }
+
+  .run-composer-actions {
+    align-items: stretch;
+    display: grid;
+    gap: 10px;
+  }
+
+  .run-composer-actions > span {
+    order: 3;
+    text-align: center;
+  }
+
+  .run-permission-menu {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .run-button {
+    min-height: 52px;
+    width: 100%;
+  }
+
+  .run-examples-popover {
+    left: 10px;
+    max-height: 64vh;
+    width: calc(100% - 20px);
+  }
+
+  .run-attachment-strip > span {
+    min-width: 0;
+    width: 100%;
   }
 }
 

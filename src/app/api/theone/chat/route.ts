@@ -26,6 +26,10 @@ function normalizeMode(value: unknown): TheOneMode {
   return value === 'manual' || value === 'auto' || value === 'assist' ? value : 'assist';
 }
 
+function normalizeLanguage(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 32) : 'auto';
+}
+
 function normalizeContextMessage(value: unknown) {
   if (!value || typeof value !== 'object') return null;
   const record = value as Record<string, unknown>;
@@ -243,6 +247,7 @@ export async function POST(req: Request) {
       userId: typeof body.userId === 'string' ? body.userId : undefined,
       sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
       contextHint: inputHint || undefined,
+      language: normalizeLanguage(body.language),
     });
     const withConversation = attachConversation(result, messages, typeof body.sessionId === 'string' ? body.sessionId : undefined);
     const stored = await saveRunResult(withConversation);

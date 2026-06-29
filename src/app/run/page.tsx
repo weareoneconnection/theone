@@ -8,6 +8,7 @@ import { friendlyStatus } from '@/components/theone/ProductNav';
 const modes = ['manual', 'assist', 'auto'] as const;
 
 type Mode = typeof modes[number];
+type Locale = 'zh' | 'en';
 
 type ConversationMessage = {
   id: string;
@@ -24,6 +25,9 @@ type CommandItem = {
   meta: string;
   source: 'template' | 'worker';
   action?: string;
+  labelZh?: string;
+  promptZh?: string;
+  metaZh?: string;
 };
 
 type ChatAttachment = {
@@ -61,49 +65,213 @@ type TimelineItem = {
 const workerPrompts = [
   {
     label: 'Web research',
+    labelZh: '网页研究',
     prompt: 'Analyze website weareoneconnection.org and summarize useful findings',
+    promptZh: '分析 weareoneconnection.org，并总结有价值发现',
   },
   {
     label: 'X growth',
+    labelZh: 'X 增长',
     prompt: 'Prepare a high-signal X post: TheOne is becoming an AI operating system for real-world work.',
+    promptZh: '准备一条高质量 X 推文：TheOne 正在成为真实世界工作的 AI 操作系统',
   },
   {
     label: 'GitHub',
+    labelZh: 'GitHub',
     prompt: 'Check GitHub repo weareoneconnection/theone and explain what needs attention',
+    promptZh: '检查 GitHub 仓库 weareoneconnection/theone，并说明需要关注的问题',
   },
   {
     label: 'Desktop',
+    labelZh: '本地电脑',
     prompt: 'Use the local desktop bridge to inspect Chrome',
+    promptZh: '使用本地桌面桥接检查 Chrome',
   },
   {
     label: 'Files',
+    labelZh: '文件',
     prompt: 'List files in /tmp',
+    promptZh: '列出 /tmp 里的文件',
   },
   {
     label: 'Report',
+    labelZh: '报告',
     prompt: 'Create a report from research and proof',
+    promptZh: '根据研究结果和证明记录生成报告',
   },
   {
     label: 'OneAI Bot',
+    labelZh: 'OneAI Bot',
     prompt: 'Check the OneAI Bot bridge status and explain how it connects to TheOne',
+    promptZh: '检查 OneAI Bot 桥接状态，并说明它如何接入 TheOne',
   },
   {
     label: 'API',
+    labelZh: 'API',
     prompt: 'Call the OneClaw health API and summarize the result',
+    promptZh: '调用 OneClaw 健康检查 API，并总结结果',
   },
 ];
 
 const sessionShortcuts = [
-  { label: 'New chat', href: '/run' },
-  { label: 'Search', href: '/runs' },
-  { label: 'Workspaces', href: '/workspaces' },
+  { label: 'New chat', labelZh: '新对话', href: '/run' },
+  { label: 'Search', labelZh: '历史', href: '/runs' },
+  { label: 'Workspaces', labelZh: '工作区', href: '/workspaces' },
 ];
 
-const starterMessage: ConversationMessage = {
-  id: 'assistant_starter',
-  role: 'assistant',
-  createdAt: new Date().toISOString(),
-  content: 'Tell me what you want finished. I can answer directly, plan a workflow, call OneClaw workers, ask for approval when needed, and return a clear result with proof.',
+const runCopy = {
+  zh: {
+    brand: 'TheOne',
+    brandMark: 'AI OS',
+    navNew: '新对话',
+    activeWork: '当前工作',
+    emptyWork: '开始一个任务，TheOne 会生成可追踪的工作线程。',
+    history: '历史',
+    settings: '设置',
+    admin: '后台',
+    topKicker: 'TheOne',
+    publicWindow: '对外窗口',
+    currentWork: '当前工作',
+    hideInspector: '隐藏检查器',
+    starter: '告诉我你想完成什么。TheOne 可以直接回答、规划工作流、调用 OneClaw workers、在需要时请求批准，并返回清晰结果和证明。',
+    welcomeKicker: 'TheOne AI OS / 智能体操作系统',
+    welcomeTitle: '把目标交给 TheOne。',
+    welcomeBody: '用普通语言描述结果。TheOne 会调用 OneAI 大脑规划，经过策略检查，再把可执行工作交给 OneClaw，并把过程、证明和结果整理成你能直接使用的答案。',
+    trustOneAI: 'OneAI 大脑',
+    trustOneAIDetail: '理解目标与生成工作流',
+    trustTheOne: 'TheOne 内核',
+    trustTheOneDetail: '策略、权限、证明、记忆',
+    trustOneClaw: 'OneClaw 执行',
+    trustOneClawDetail: 'Workers、Apps、连接器',
+    messageYou: '你',
+    messageAssistant: 'TheOne',
+    messageSystem: '系统',
+    commands: '/ 指令',
+    worker: '@ Worker',
+    attach: '上传文件',
+    commandPalette: '能力面板',
+    searchPlaceholder: '搜索 App、Worker 或动作...',
+    noCommand: '还没有匹配的指令。',
+    workerRoute: 'Worker 路由',
+    clear: '清除',
+    shortcut: 'Cmd/Ctrl + Enter',
+    placeholder: '让 TheOne 完成一个目标：读文件、分析网站、发 X、查 GitHub、控制本地电脑、生成报告...',
+    sending: '执行中...',
+    uploading: '上传中...',
+    send: '发送',
+    readReport: '读取并报告',
+    attachmentWait: '附件仍在上传。上传完成后我就可以读取它。',
+    resumeLoaded: '已载入任务',
+    resumeHint: '告诉我你想修改、重试、总结或继续。',
+    inspectorTitle: '工作检查器',
+    inspectorSubtitle: '需要时查看当前目标、策略门、证明和原始细节。',
+    currentGoal: '当前目标',
+    defaultGoal: '先理解用户目标，再选择 App 或 Worker。',
+    mode: '模式',
+    intent: '意图',
+    plan: '计划',
+    describeOutcome: '描述一个目标',
+    taskStep: '任务步骤',
+    actions: '动作',
+    details: '细节',
+    continue: '继续',
+    retry: '重试',
+    report: '报告',
+    save: '保存',
+    approveAll: '全部批准',
+    rejectAll: '全部拒绝',
+    needsDecision: '需要决定',
+    ready: '就绪',
+  },
+  en: {
+    brand: 'TheOne',
+    brandMark: 'AI OS',
+    navNew: 'New chat',
+    activeWork: 'Active Work',
+    emptyWork: 'Start a mission to build the working thread.',
+    history: 'History',
+    settings: 'Settings',
+    admin: 'Admin',
+    topKicker: 'TheOne',
+    publicWindow: 'Public window',
+    currentWork: 'Current work',
+    hideInspector: 'Hide inspector',
+    starter: 'Tell me what you want finished. I can answer directly, plan a workflow, call OneClaw workers, ask for approval when needed, and return a clear result with proof.',
+    welcomeKicker: 'TheOne AI OS',
+    welcomeTitle: 'Tell TheOne what to finish.',
+    welcomeBody: 'Describe the outcome in plain language. TheOne asks the OneAI brain to plan, checks policy, sends executable work to OneClaw, then returns a usable answer with proof.',
+    trustOneAI: 'OneAI Brain',
+    trustOneAIDetail: 'Goal reasoning and workflow design',
+    trustTheOne: 'TheOne Kernel',
+    trustTheOneDetail: 'Policy, permission, proof, memory',
+    trustOneClaw: 'OneClaw Execution',
+    trustOneClawDetail: 'Workers, apps, connectors',
+    messageYou: 'You',
+    messageAssistant: 'TheOne',
+    messageSystem: 'System',
+    commands: '/ Commands',
+    worker: '@ Worker',
+    attach: 'Attach',
+    commandPalette: 'Command palette',
+    searchPlaceholder: 'Search apps, workers, or actions...',
+    noCommand: 'No matching command yet.',
+    workerRoute: 'Worker route',
+    clear: 'Clear',
+    shortcut: 'Cmd/Ctrl + Enter',
+    placeholder: 'Ask TheOne to finish a job, read files, inspect a site, prepare an X post, check GitHub, use desktop bridge...',
+    sending: 'Working...',
+    uploading: 'Uploading...',
+    send: 'Send',
+    readReport: 'Read + report',
+    attachmentWait: 'The attachment is still uploading. I will be able to read it as soon as it is ready.',
+    resumeLoaded: 'I loaded mission',
+    resumeHint: 'Tell me what to change, retry, summarize, or continue.',
+    inspectorTitle: 'Inspector',
+    inspectorSubtitle: 'Current work, gates, proof, and raw details when needed.',
+    currentGoal: 'Current goal',
+    defaultGoal: 'Understand the user outcome before routing workers.',
+    mode: 'Mode',
+    intent: 'Intent',
+    plan: 'Plan',
+    describeOutcome: 'Describe an outcome',
+    taskStep: 'Task step',
+    actions: 'Actions',
+    details: 'Details',
+    continue: 'Continue',
+    retry: 'Retry',
+    report: 'Report',
+    save: 'Save',
+    approveAll: 'Approve all',
+    rejectAll: 'Reject all',
+    needsDecision: 'Needs decision',
+    ready: 'ready',
+  },
+} satisfies Record<Locale, Record<string, string>>;
+
+function copyFor(locale: Locale) {
+  return runCopy[locale];
+}
+
+function localizedPrompt(item: typeof workerPrompts[number], locale: Locale) {
+  return locale === 'zh' ? item.promptZh : item.prompt;
+}
+
+function localizedLabel(item: { label: string; labelZh?: string }, locale: Locale) {
+  return locale === 'zh' ? item.labelZh || item.label : item.label;
+}
+
+function starterMessageFor(locale: Locale): ConversationMessage {
+  return {
+    id: 'assistant_starter',
+    role: 'assistant',
+    createdAt: new Date().toISOString(),
+    content: copyFor(locale).starter,
+  };
+}
+
+const liveProgressStagesByLocale: Record<Locale, string[]> = {
+  zh: ['理解请求', '选择路线', '检查安全策略', '执行工作', '收集证明', '生成回答'],
+  en: ['Understanding request', 'Choosing route', 'Checking safety', 'Running work', 'Collecting proof', 'Writing answer'],
 };
 
 const liveProgressStages = [
@@ -974,8 +1142,11 @@ function templateCommands(): CommandItem[] {
   return workerPrompts.map((item) => ({
     key: `template:${item.label}`,
     label: item.label,
+    labelZh: item.labelZh,
     prompt: item.prompt,
+    promptZh: item.promptZh,
     meta: 'starter',
+    metaZh: '示例',
     source: 'template' as const,
   }));
 }
@@ -1645,15 +1816,15 @@ function approvalDecisionMessage(decision: 'approve' | 'reject', result: any) {
   return 'Approved. TheOne refreshed the mission, but no OneClaw execution receipt was returned yet.';
 }
 
-function AgentProgress({ stage }: { stage: number }) {
+function AgentProgress({ stage, stages = liveProgressStages }: { stage: number; stages?: string[] }) {
   return (
     <div className="run-agent-progress" aria-live="polite">
       <div>
-        <span>{String(Math.min(stage + 1, liveProgressStages.length)).padStart(2, '0')}</span>
-        <strong>{liveProgressStages[Math.min(stage, liveProgressStages.length - 1)]}</strong>
+        <span>{String(Math.min(stage + 1, stages.length)).padStart(2, '0')}</span>
+        <strong>{stages[Math.min(stage, stages.length - 1)]}</strong>
       </div>
       <div className="run-progress-dots">
-        {liveProgressStages.map((label, index) => (
+        {stages.map((label, index) => (
           <i key={label} className={index <= stage ? 'active' : ''} />
         ))}
       </div>
@@ -1665,17 +1836,19 @@ function MissionTimeline({
   result,
   loading,
   stage,
+  stages = liveProgressStages,
 }: {
   result: any;
   loading: boolean;
   stage: number;
+  stages?: string[];
 }) {
   const items = missionTimeline(result, loading, stage);
   return (
     <div className="run-mission-timeline">
       <div className="run-timeline-head">
         <span>Mission timeline</span>
-        <strong>{loading ? liveProgressStages[Math.min(stage, liveProgressStages.length - 1)] : activeStatus(result, loading)}</strong>
+        <strong>{loading ? stages[Math.min(stage, stages.length - 1)] : activeStatus(result, loading)}</strong>
       </div>
       {items.map((item, index) => (
         <div key={item.key} className={`run-timeline-item timeline-${item.status}`}>
@@ -1704,22 +1877,37 @@ function WorkStatusLine({ result }: { result: any }) {
 function WelcomePanel({
   busy,
   onPrompt,
+  locale,
 }: {
   busy: boolean;
   onPrompt: (prompt: string) => void;
+  locale: Locale;
 }) {
+  const labels = copyFor(locale);
   return (
     <section className="run-welcome-panel">
-      <span>TheOne AI OS</span>
-      <h1>What should TheOne finish?</h1>
-      <p>
-        Give me an outcome. I can answer, plan, call workers, request approval, and return proof without exposing the system machinery.
-      </p>
+      <span>{labels.welcomeKicker}</span>
+      <h1>{labels.welcomeTitle}</h1>
+      <p>{labels.welcomeBody}</p>
+      <div className="run-welcome-trust">
+        <div>
+          <small>{labels.trustOneAI}</small>
+          <strong>{labels.trustOneAIDetail}</strong>
+        </div>
+        <div>
+          <small>{labels.trustTheOne}</small>
+          <strong>{labels.trustTheOneDetail}</strong>
+        </div>
+        <div>
+          <small>{labels.trustOneClaw}</small>
+          <strong>{labels.trustOneClawDetail}</strong>
+        </div>
+      </div>
       <div className="run-welcome-prompts">
         {workerPrompts.slice(0, 4).map((item) => (
-          <button key={item.label} type="button" disabled={busy} onClick={() => onPrompt(item.prompt)}>
-            <small>{item.label}</small>
-            <strong>{item.prompt}</strong>
+          <button key={item.label} type="button" disabled={busy} onClick={() => onPrompt(localizedPrompt(item, locale))}>
+            <small>{localizedLabel(item, locale)}</small>
+            <strong>{localizedPrompt(item, locale)}</strong>
           </button>
         ))}
       </div>
@@ -2009,9 +2197,10 @@ function RunPageContent() {
   const searchParams = useSearchParams();
   const [input, setInput] = useState('');
   const [mode, setMode] = useState<Mode>('assist');
+  const [locale, setLocale] = useState<Locale>('zh');
   const [loading, setLoading] = useState(false);
   const [progressStage, setProgressStage] = useState(0);
-  const [messages, setMessages] = useState<ConversationMessage[]>([starterMessage]);
+  const [messages, setMessages] = useState<ConversationMessage[]>([starterMessageFor('zh')]);
   const [result, setResult] = useState<any>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [examplesOpen, setExamplesOpen] = useState(false);
@@ -2024,6 +2213,8 @@ function RunPageContent() {
   const [chatSessionId, setChatSessionId] = useState('');
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const threadRef = useRef<HTMLDivElement | null>(null);
+  const labels = copyFor(locale);
+  const progressStages = liveProgressStagesByLocale[locale];
 
   const status = activeStatus(result, loading);
   const stats = runStats(result);
@@ -2062,6 +2253,15 @@ function RunPageContent() {
     const id = stored || createId('session');
     window.localStorage.setItem('theone.chatSessionId', id);
     setChatSessionId(id);
+    const storedLocale = window.localStorage.getItem('theone.locale');
+    if (storedLocale === 'zh' || storedLocale === 'en') {
+      setLocale(storedLocale);
+      setMessages((current) => (
+        current.length === 1 && current[0]?.id === 'assistant_starter'
+          ? [starterMessageFor(storedLocale)]
+          : current
+      ));
+    }
   }, []);
 
   useEffect(() => {
@@ -2123,7 +2323,7 @@ function RunPageContent() {
             {
               id: createId('assistant_resume'),
               role: 'assistant',
-              content: `I loaded mission ${data.runId}. Tell me what to change, retry, summarize, or continue.`,
+              content: `${labels.resumeLoaded} ${data.runId}. ${labels.resumeHint}`,
               createdAt: new Date().toISOString(),
               result: data,
             },
@@ -2145,7 +2345,7 @@ function RunPageContent() {
         {
           id: createId('assistant_attachment_wait'),
           role: 'assistant',
-          content: 'The attachment is still uploading. I will be able to read it as soon as it is ready.',
+          content: labels.attachmentWait,
           createdAt: new Date().toISOString(),
         },
       ]));
@@ -2231,7 +2431,7 @@ function RunPageContent() {
       const payload = {
         input: content,
         mode,
-        language: 'en',
+        language: locale === 'zh' ? 'zh-CN' : 'en',
         context: latestResult?.chat ? {
           runId: latestResult.runId,
           mission: latestResult.chat.mission,
@@ -2431,11 +2631,7 @@ function RunPageContent() {
     const id = createId('session');
     window.localStorage.setItem('theone.chatSessionId', id);
     setChatSessionId(id);
-    setMessages([{
-      ...starterMessage,
-      id: createId('assistant_starter'),
-      createdAt: new Date().toISOString(),
-    }]);
+    setMessages([starterMessageFor(locale)]);
     setResult(null);
     setInput('');
     setAttachments([]);
@@ -2444,21 +2640,31 @@ function RunPageContent() {
     setWorkedMs(null);
   }
 
+  function changeLocale(nextLocale: Locale) {
+    setLocale(nextLocale);
+    window.localStorage.setItem('theone.locale', nextLocale);
+    setMessages((current) => (
+      current.length === 1 && current[0]?.id === 'assistant_starter'
+        ? [starterMessageFor(nextLocale)]
+        : current
+    ));
+  }
+
   return (
     <main className={inspectorOpen ? 'run-product-shell' : 'run-product-shell inspector-closed'}>
           <aside className="run-session-rail run-product-sidebar" aria-label="TheOne sessions">
             <div className="run-rail-brand">
-              <strong>TheOne</strong>
-              <span>AI OS</span>
+              <strong>{labels.brand}</strong>
+              <span>{labels.brandMark}</span>
             </div>
             <nav className="run-rail-nav">
-              <button type="button" onClick={startNewChat}>New chat</button>
+              <button type="button" onClick={startNewChat}>{labels.navNew}</button>
               {sessionShortcuts.filter((item) => item.label !== 'New chat').map((item) => (
-                <Link key={item.label} href={item.href}>{item.label}</Link>
+                <Link key={item.label} href={item.href}>{localizedLabel(item, locale)}</Link>
               ))}
             </nav>
             <div className="run-rail-projects">
-              <span>Active Work</span>
+              <span>{labels.activeWork}</span>
               {runHistory.length ? runHistory.slice(0, 7).map((run) => {
                 const id = runIdOf(run);
                 return (
@@ -2474,37 +2680,42 @@ function RunPageContent() {
                 </button>
               ))}
               {!runHistory.length && messages.filter((message) => message.role === 'user').length === 0 ? (
-                <p>Start a mission to build the working thread.</p>
+                <p>{labels.emptyWork}</p>
               ) : null}
             </div>
             <div className="run-rail-footer">
-              <Link href="/runs">History</Link>
-              <Link href="/settings">Settings</Link>
-              <Link href="/admin">Admin</Link>
+              <Link href="/runs">{labels.history}</Link>
+              <Link href="/settings">{labels.settings}</Link>
+              <Link href="/admin">{labels.admin}</Link>
             </div>
           </aside>
 
           <section className="run-product-main">
           <div className="run-product-topbar">
             <div className="run-title-block">
-              <span>TheOne</span>
+              <span>{labels.topKicker}</span>
               <strong>{title}</strong>
-              <em>{loading ? liveProgressStages[Math.min(progressStage, liveProgressStages.length - 1)] : formatDuration(workedMs)}</em>
+              <em>{loading ? progressStages[Math.min(progressStage, progressStages.length - 1)] : formatDuration(workedMs)}</em>
             </div>
             <div className="run-topbar-actions">
+              <span className="run-public-badge">{labels.publicWindow}</span>
+              <div className="run-language-toggle" aria-label="Language">
+                <button type="button" className={locale === 'zh' ? 'active' : ''} onClick={() => changeLocale('zh')}>中文</button>
+                <button type="button" className={locale === 'en' ? 'active' : ''} onClick={() => changeLocale('en')}>EN</button>
+              </div>
               <span className={`status-pill status-${status}`}>{friendlyStatus(status)}</span>
               <button type="button" className="mini-action" onClick={() => setInspectorOpen((open) => !open)}>
-                {inspectorOpen ? 'Hide inspector' : 'Current work'}
+                {inspectorOpen ? labels.hideInspector : labels.currentWork}
               </button>
             </div>
           </div>
 
           <div className={`run-thread ${!hasUserMessages ? 'run-thread-empty' : ''}`} ref={threadRef} aria-live="polite">
-            {!hasUserMessages ? <WelcomePanel busy={loading} onPrompt={(prompt) => sendMessage(prompt)} /> : null}
+            {!hasUserMessages ? <WelcomePanel busy={loading} locale={locale} onPrompt={(prompt) => sendMessage(prompt)} /> : null}
             {messages.map((message) => (
               <article key={message.id} className={`run-message run-message-${message.role}`}>
                 <div className="run-message-meta">
-                  <span>{message.role === 'user' ? 'You' : message.role === 'assistant' ? 'TheOne' : 'System'}</span>
+                  <span>{message.role === 'user' ? labels.messageYou : message.role === 'assistant' ? labels.messageAssistant : labels.messageSystem}</span>
                   <small>{new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small>
                 </div>
                 <p>{message.content}</p>
@@ -2532,18 +2743,18 @@ function RunPageContent() {
                 ) : null}
               </article>
             ))}
-            {loading ? <AgentProgress stage={progressStage} /> : null}
+            {loading ? <AgentProgress stage={progressStage} stages={progressStages} /> : null}
           </div>
 
           <div className="run-composer">
             <div className="run-composer-toolbar">
-              <button type="button" onClick={() => setExamplesOpen((open) => !open)} disabled={loading}>/ Commands</button>
+              <button type="button" onClick={() => setExamplesOpen((open) => !open)} disabled={loading}>{labels.commands}</button>
               <button type="button" onClick={() => {
                 setExamplesOpen(true);
                 setCommandQuery('worker');
-              }} disabled={loading}>@ Worker</button>
+              }} disabled={loading}>{labels.worker}</button>
               <label className="run-attach-button">
-                Attach
+                {labels.attach}
                 <input
                   type="file"
                   multiple
@@ -2557,11 +2768,11 @@ function RunPageContent() {
             {examplesOpen ? (
               <div className="run-examples-popover">
                 <div className="run-command-search">
-                  <span>Command palette</span>
+                  <span>{labels.commandPalette}</span>
                   <input
                     value={commandQuery}
                     onChange={(event) => setCommandQuery(event.target.value)}
-                    placeholder="Search apps, workers, or actions..."
+                    placeholder={labels.searchPlaceholder}
                   />
                 </div>
                 {filteredPrompts.slice(0, 24).map((item) => (
@@ -2574,14 +2785,14 @@ function RunPageContent() {
                       setInput(item.prompt);
                       setSelectedWorker(item.source === 'worker' ? item : null);
                     }}
-                    disabled={loading}
-                  >
-                    <span>{item.source === 'worker' ? 'Worker' : item.label}</span>
-                    <strong>{item.prompt}</strong>
+                  disabled={loading}
+                >
+                    <span>{item.source === 'worker' ? 'Worker' : localizedLabel(item, locale)}</span>
+                    <strong>{locale === 'zh' ? item.promptZh || item.prompt : item.prompt}</strong>
                     <small>{item.source === 'worker' ? item.meta : 'template'}</small>
                   </button>
                 ))}
-                {!filteredPrompts.length ? <p>No matching command yet.</p> : null}
+                {!filteredPrompts.length ? <p>{labels.noCommand}</p> : null}
               </div>
             ) : null}
             <textarea
@@ -2598,14 +2809,14 @@ function RunPageContent() {
                 }
               }}
               onKeyDown={handleKeyDown}
-              placeholder="Ask TheOne to finish a job, call a worker, inspect a site, prepare an X post, check GitHub, use desktop bridge..."
+              placeholder={labels.placeholder}
             />
             {selectedWorker ? (
               <div className="run-selected-worker">
-                <span>Worker route</span>
+                <span>{labels.workerRoute}</span>
                 <strong>{selectedWorker.action || selectedWorker.label}</strong>
                 <small>{selectedWorker.meta}</small>
-                <button type="button" onClick={() => setSelectedWorker(null)}>Clear</button>
+                <button type="button" onClick={() => setSelectedWorker(null)}>{labels.clear}</button>
               </div>
             ) : null}
             <div className="run-composer-actions">
@@ -2616,9 +2827,9 @@ function RunPageContent() {
                   </button>
                 ))}
               </div>
-              <span>Cmd/Ctrl + Enter</span>
+              <span>{labels.shortcut}</span>
               <button className="run-button" type="button" onClick={() => sendMessage()} disabled={loading || attachmentUploading || !input.trim()}>
-                {loading ? 'Working...' : attachmentUploading ? 'Uploading...' : 'Send'}
+                {loading ? labels.sending : attachmentUploading ? labels.uploading : labels.send}
               </button>
             </div>
             {attachments.length ? (
@@ -2647,10 +2858,10 @@ function RunPageContent() {
                     onClick={() => setInput(attachmentReportPrompt(attachments.filter((attachment) => attachment.status === 'ready')))}
                     disabled={loading}
                   >
-                    Read + report
+                    {labels.readReport}
                   </button>
                 ) : null}
-                <button type="button" onClick={() => setAttachments([])}>Clear</button>
+                <button type="button" onClick={() => setAttachments([])}>{labels.clear}</button>
               </div>
             ) : null}
           </div>
@@ -2659,23 +2870,23 @@ function RunPageContent() {
         <aside className="run-codex-side run-product-inspector">
           <div className="panel-head">
             <div>
-              <h2 className="panel-title">Inspector</h2>
-              <p className="panel-subtitle">Current work, gates, proof, and raw details when needed.</p>
+              <h2 className="panel-title">{labels.inspectorTitle}</h2>
+              <p className="panel-subtitle">{labels.inspectorSubtitle}</p>
             </div>
             <span className={`status-pill status-${status}`}>{friendlyStatus(status)}</span>
           </div>
 
           <div className="run-mission-card">
-            <span className="product-card-kicker">Current goal</span>
-            <strong>{mission?.title || brain?.objective || planningBrain?.understanding || 'Understand the user outcome before routing workers.'}</strong>
+            <span className="product-card-kicker">{labels.currentGoal}</span>
+            <strong>{mission?.title || brain?.objective || planningBrain?.understanding || labels.defaultGoal}</strong>
             <div className="run-explain-grid">
               <div>
-                <span>Mode</span>
+                <span>{labels.mode}</span>
                 <strong>{mission?.mode || brain?.mode || mode}</strong>
               </div>
               <div>
-                <span>Intent</span>
-                <strong>{mission?.conversationKind || brain?.conversationKind || 'ready'}</strong>
+                <span>{labels.intent}</span>
+                <strong>{mission?.conversationKind || brain?.conversationKind || labels.ready}</strong>
               </div>
             </div>
             {mission?.workspace ? (
@@ -2690,19 +2901,19 @@ function RunPageContent() {
 
           <PlanningBrainCard result={latestResult || result} />
 
-          <MissionTimeline result={latestResult} loading={loading} stage={progressStage} />
+          <MissionTimeline result={latestResult} loading={loading} stage={progressStage} stages={progressStages} />
           <StreamEventList events={streamEvents} />
 
           <details className="run-side-details">
             <summary>
-              <span>Plan</span>
+              <span>{labels.plan}</span>
               <strong>{currentSteps.length || 1}</strong>
             </summary>
             <div className="run-current-plan">
-              {(currentSteps.length ? currentSteps.slice(0, 6) : [{ id: 'ready', title: 'Describe an outcome', status: 'ready' }]).map((step: any, index: number) => (
+              {(currentSteps.length ? currentSteps.slice(0, 6) : [{ id: 'ready', title: labels.describeOutcome, status: 'ready' }]).map((step: any, index: number) => (
                 <div key={step.id || index}>
                   <small>{friendlyStatus(step.status || step.approvalMode || 'ready')}</small>
-                  <strong>{step.title || step.action || 'Task step'}</strong>
+                  <strong>{step.title || step.action || labels.taskStep}</strong>
                 </div>
               ))}
             </div>
@@ -2732,36 +2943,36 @@ function RunPageContent() {
 
           {pendingApprovals(latestResult).length ? (
             <div className="run-mission-card">
-              <span className="product-card-kicker">Needs decision</span>
+              <span className="product-card-kicker">{labels.needsDecision}</span>
               <strong>{pendingApprovals(latestResult)[0]?.action || 'Approval required'}</strong>
               <p className="panel-subtitle">{pendingApprovals(latestResult)[0]?.reason}</p>
               <div className="approval-actions">
-                <button className="mini-action primary" type="button" disabled={loading} onClick={() => decideApproval('approve')}>Approve all</button>
-                <button className="mini-action" type="button" disabled={loading} onClick={() => decideApproval('reject')}>Reject all</button>
+                <button className="mini-action primary" type="button" disabled={loading} onClick={() => decideApproval('approve')}>{labels.approveAll}</button>
+                <button className="mini-action" type="button" disabled={loading} onClick={() => decideApproval('reject')}>{labels.rejectAll}</button>
               </div>
             </div>
           ) : null}
 
           <details className="run-side-details" open={pendingApprovals(latestResult).length > 0}>
             <summary>
-              <span>Actions</span>
+              <span>{labels.actions}</span>
               <strong>{pendingApprovals(latestResult).length ? 'decision' : 'ready'}</strong>
             </summary>
             <div className="run-side-action-grid">
-              <button type="button" disabled={loading || !latestResult?.runId} onClick={() => sendMessage('continue')}>Continue</button>
-              <button type="button" disabled={loading || !latestResult?.runId} onClick={() => sendMessage('retry')}>Retry</button>
-              <button type="button" disabled={loading} onClick={() => sendMessage('turn the current result into a concise report')}>Report</button>
-              <button type="button" disabled={loading} onClick={() => sendMessage('save this to TheOne memory')}>Save</button>
+              <button type="button" disabled={loading || !latestResult?.runId} onClick={() => sendMessage('continue')}>{labels.continue}</button>
+              <button type="button" disabled={loading || !latestResult?.runId} onClick={() => sendMessage('retry')}>{labels.retry}</button>
+              <button type="button" disabled={loading} onClick={() => sendMessage(locale === 'zh' ? '把当前结果整理成简洁报告' : 'turn the current result into a concise report')}>{labels.report}</button>
+              <button type="button" disabled={loading} onClick={() => sendMessage(locale === 'zh' ? '保存到 TheOne 记忆' : 'save this to TheOne memory')}>{labels.save}</button>
             </div>
             <WorkerCallCards result={latestResult} />
           </details>
 
           <details className="run-side-details">
             <summary>
-              <span>Details</span>
+              <span>{labels.details}</span>
               <strong>{workflowSteps(latestResult).length || 1}</strong>
             </summary>
-            <strong>{workflow?.summary || 'Waiting for a goal.'}</strong>
+            <strong>{workflow?.summary || (locale === 'zh' ? '等待目标。' : 'Waiting for a goal.')}</strong>
             <div className="run-workflow-list">
               {(workflow?.steps || [
                 { id: 'ready', title: 'Describe an outcome', owner: 'oneai', status: 'ready' },
