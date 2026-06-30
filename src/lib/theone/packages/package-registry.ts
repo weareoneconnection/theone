@@ -96,6 +96,30 @@ function osManifest(kind: TheOnePackageKind, name: string, dependencies: string[
       sandboxProfile: sandbox,
       permissionScopes: scopes,
       installContract: installContract(kind, name, dependencies),
+      runtimeState: {
+        installable: true,
+        versioned: true,
+        composable: true,
+        enabledByDefault: kind === 'app' || kind === 'memory_pack' || kind === 'ui_schema',
+        lifecycle: ['available', 'installed', 'enabled', 'disabled', 'upgraded', 'rolled_back'],
+        healthCheck: kind === 'worker' || kind === 'connector' ? 'manifest_and_connector_preflight' : 'manifest_only',
+        activation: scopes.some((scope) => ['send_message', 'write_file', 'transact', 'submit_external'].includes(scope))
+          ? 'manual_first_run'
+          : 'auto_enable_when_installed',
+      },
+      policyBoundary: {
+        minimumScopes: scopes,
+        sandboxId: sandbox.id,
+        approvalBoundary: sandbox.approvals,
+        credentialBoundary: sandbox.credentials,
+        externalSideEffects: scopes.some((scope) => ['send_message', 'write_file', 'transact', 'submit_external'].includes(scope)),
+      },
+      upgradeContract: {
+        strategy: 'versioned_manifest',
+        compatibilityCheck: 'required_before_enable',
+        rollbackTarget: 'previous_enabled_version',
+        migrationHooks: ['preflight', 'permission_diff', 'sandbox_diff', 'receipt_schema_check'],
+      },
       composition: {
         provides: [kind, name],
         consumes: dependencies,

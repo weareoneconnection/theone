@@ -616,6 +616,7 @@ export async function POST(req: Request) {
 
     const attachments: TheOneChatAttachment[] = [];
     for (const file of files) {
+      try {
       const bytes = Buffer.from(await file.arrayBuffer());
       const id = createId(file.name);
       let storedPath: string | undefined = uploadDirError ? undefined : path.join(uploadDir, `${id}-${safeFilename(file.name)}`);
@@ -718,6 +719,38 @@ export async function POST(req: Request) {
       }
 
       attachments.push(item);
+      } catch (error) {
+        const id = createId(file.name);
+        const message = error instanceof Error ? error.message : 'Attachment upload failed.';
+        attachments.push({
+          id,
+          name: file.name,
+          type: file.type || 'application/octet-stream',
+          size: file.size,
+          sourceId: id,
+          contentRef: `theone://attachment/${id}`,
+          status: 'failed',
+          error: message,
+          summary: `Upload failed before this attachment became readable. ${message}`,
+          insights: {
+            extraction: 'upload_failed',
+            reportReadiness: 'needs_source',
+            reportContextAvailable: false,
+            limitations: [
+              'The upload route isolated this file failure so the chat session can continue.',
+              'Re-upload the file or provide a durable file source.',
+            ],
+            storage: {
+              provider: hasPersistentUploadStorage() ? 'theone_upload_dir' : isServerlessRuntime() ? 'serverless_upload_context' : 'local_tmp',
+              durable: hasPersistentUploadStorage(),
+              pathAvailable: false,
+              writeAvailable: false,
+              uploadTextAvailable: false,
+              writeError: message,
+            },
+          },
+        });
+      }
     }
 
     return Response.json({

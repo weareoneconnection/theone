@@ -76,7 +76,7 @@ export type MultiAgentRuntimeResult = {
   proof: ProofRecord[];
 };
 
-type MultiAgentInput = {
+export type MultiAgentInput = {
   runId: string;
   mode: TheOneMode;
   intent: ClassifiedIntent;

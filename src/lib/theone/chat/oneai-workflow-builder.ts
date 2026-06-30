@@ -320,12 +320,22 @@ export async function buildOneAIChatWorkflow(input: {
 }> {
   const availableActions = input.capabilities.slice(0, 120).map((capability) => ({
     action: capability.action,
+    title: capability.title,
+    domain: capability.domain,
+    connectorKey: capability.connectorKey,
     risk: capability.risk,
     approvalRequired: capability.approvalRequired,
     inputRequired: capability.inputRequired,
+    outputContract: capability.outputContract,
     liveMode: capability.liveMode,
     maturity: capability.maturity,
   }));
+  const workerDomains = Array.from(
+    input.capabilities.reduce((domains, capability) => {
+      domains.add(capability.domain);
+      return domains;
+    }, new Set<string>())
+  ).sort();
   const modelRoute = resolveTheOneModel('theone.chat.primary');
   const responseLanguage = normalizeResponseLanguage({
     language: input.language,
@@ -345,6 +355,8 @@ export async function buildOneAIChatWorkflow(input: {
       languageContract: language,
       conversation: input.messages.slice(-12),
       availableActions,
+      actionCount: input.capabilities.length,
+      workerDomains,
       modelRoute,
       workerCatalog: input.workerCatalog || null,
       appPackages: input.appPackages || null,
@@ -384,7 +396,8 @@ export async function buildOneAIChatWorkflow(input: {
             {
               id: 'string',
               title: 'string',
-              worker: 'oneai|oneclaw|browser_worker|github_worker|x_worker|desktop_worker|file_worker|report_worker',
+              worker:
+                'string: oneai, theone, oneclaw, or a concrete worker key/domain from workerCatalog, such as browser_worker, document_worker, spreadsheet_worker, github_worker, x_worker, desktop_worker, api_worker, database_worker, email_worker, calendar_worker, knowledge_worker, image_worker, audio_worker, video_worker, geo_worker, construction_worker, finance_worker, legal_worker, device_worker, iot_worker, robot_worker, payment_worker, commerce_worker',
               action: 'must be one of the available OneClaw actions or oneai.generate',
               input: 'object matching action requirements',
               approvalMode: 'auto|manual',
@@ -415,6 +428,9 @@ export async function buildOneAIChatWorkflow(input: {
         'Act as the OneAI Planning Brain inside TheOne AI OS. You are an LLM-native brain for understanding, planning, and natural conversation.',
         'TheOne Control Brain owns final authority: policy, approval, worker dispatch, proof, memory, and safety. OneAI must not override it.',
         'Your answer should feel like ChatGPT/Codex: direct, helpful, context-aware, and outcome-focused. Do not narrate internal machinery unless the user asks.',
+        'Do not limit TheOne to demo examples. Use the full worker/action catalog provided in availableActions and workerDomains.',
+        'The workflow.steps[].worker field may name any suitable worker domain from the catalog: document, spreadsheet, database, email, calendar, knowledge, image, audio, video, geo, construction, finance, legal, commerce, payment, device, IoT, robot, desktop, browser, GitHub, X, API, files, storage, identity, permissions, or secrets.',
+        'If a requested capability is visible but not live or needs setup, explain the connection gap and give the next setup step instead of pretending it executed.',
         'Every turn must have a completionContract. TheOne uses it as an execution closure contract.',
         'Do not return placeholder answers like "please hold while I gather data" as a final assistantReply. Either answer directly, return an executable workflow, ask for one missing source, or state why it is blocked.',
         'finalAnswerReady=true only when assistantReply itself satisfies the user outcome. If a worker still must run, set needsWorker=true and finalAnswerReady=false.',

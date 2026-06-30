@@ -11,6 +11,7 @@ import { normalizeWorkerReceipt } from '../providers/receipts';
 import { listEnabledAppRuntimePackages, selectAppRuntimePackagesFromCatalog } from '../apps/runtime-packages';
 import { resolveTheOneModel } from '../models/model-router';
 import { buildUniversalWorkerCatalog } from '../workers/action-catalog';
+import { runMultiAgentRuntime } from '../agents/multi-agent-runtime';
 import { queryMemoryGraph } from '../state/run-store';
 import { exportReportArtifact, type ReportExportBundle, type TheOneReportArtifact } from '../report-artifacts';
 import { buildBrainOnlyReply, buildTheOneBrainFrame, type TheOneBrainFrame } from './brain-layer';
@@ -18,10 +19,13 @@ import { buildOneAIChatWorkflow, type TheOneChatMessage } from './oneai-workflow
 import type {
   ApprovalGate,
   ClassifiedIntent,
+  ContextBusFrame,
+  ContextResource,
   ExecutionPlan,
   ExecutionRecord,
   OneClawTask,
   OneClawTaskRun,
+  PermissionDecision,
   PlanStep,
   ProofRecord,
   TheOneMode,
@@ -1882,6 +1886,156 @@ function buildPlan(input: {
   };
 }
 
+function permissionScopeForAction(action?: string): PermissionDecision['scope'] {
+  const value = String(action || '').toLowerCase();
+  if (/social|x\.|twitter|message|telegram|email|notification/.test(value)) return 'send_message';
+  if (/payment|charge|invoice|commerce\.order|web3\.transfer|wallet|trade|finance/.test(value)) return 'transact';
+  if (/desktop|shell|robot|device\.command|camera/.test(value)) return 'submit_external';
+  if (/browser/.test(value)) return 'operate_browser';
+  if (/file\.read|document\.parse|spreadsheet\.read|image\.extract|audio\.transcribe|storage\.get/.test(value)) return 'read_file';
+  if (/file\.write|file\.append|document\.generate|spreadsheet\.write|storage\.put/.test(value)) return 'write_file';
+  return 'use_connector';
+}
+
+function buildPermissionDecisionsForChat(input: {
+  runId: string;
+  mode: TheOneMode;
+  approvals: ApprovalGate[];
+  oneclawTask: OneClawTask | null;
+  risk: 'low' | 'medium' | 'high';
+  blocked: boolean;
+}): PermissionDecision[] {
+  const approvalDecisions = input.approvals.map((approval, index) => ({
+    id: `${input.runId}_approval_${index + 1}`,
+    scope: permissionScopeForAction(approval.action),
+    resourceId: approval.stepId || approval.id,
+    resourceKind: 'external_action' as const,
+    provider: 'oneclaw' as const,
+    action: approval.action,
+    status: 'requires_approval' as const,
+    risk: input.risk,
+    mode: input.mode,
+    reason: approval.reason,
+  }));
+
+  if (approvalDecisions.length || !input.oneclawTask?.steps?.length) return approvalDecisions;
+
+  return input.oneclawTask.steps.map((step, index) => ({
+    id: `${input.runId}_permission_${index + 1}`,
+    scope: permissionScopeForAction(step.action),
+    resourceId: step.id || `step_${index + 1}`,
+    resourceKind: 'external_action' as const,
+    provider: 'oneclaw' as const,
+    action: step.action,
+    status: input.blocked ? 'requires_approval' as const : 'allowed' as const,
+    risk: input.risk,
+    mode: input.mode,
+    reason: input.blocked
+      ? 'TheOne policy held this worker route before execution.'
+      : 'TheOne policy cleared this worker route for execution.',
+  }));
+}
+
+function buildChatContextFrame(input: {
+  runId: string;
+  mode: TheOneMode;
+  objective: string;
+  risk: 'low' | 'medium' | 'high';
+  brain: TheOneBrainFrame;
+  memoryContext: Awaited<ReturnType<typeof queryMemoryGraph>>;
+  approvals: ApprovalGate[];
+  executions: ExecutionRecord[];
+  permissions: PermissionDecision[];
+  oneclawTask: OneClawTask | null;
+}): ContextBusFrame {
+  const resources: ContextResource[] = [
+    {
+      id: `${input.runId}_intent`,
+      kind: 'intent',
+      title: input.objective,
+      source: 'user',
+      risk: input.risk,
+      provider: 'theone',
+      metadata: {
+        capabilityRoute: input.brain.capabilityRoute,
+        selectedApps: input.brain.selectedApps.map((app) => app.key),
+        conversationKind: input.brain.conversationKind,
+      },
+    },
+    ...input.memoryContext.map((hit, index) => ({
+      id: `${input.runId}_memory_${index + 1}`,
+      kind: 'memory' as const,
+      title: hit.title,
+      source: 'theone' as const,
+      risk: 'low' as const,
+      provider: 'theone' as const,
+      metadata: {
+        memoryId: hit.id,
+        runId: hit.runId,
+        kind: hit.kind,
+        score: hit.score,
+        matchedTerms: hit.matchedTerms,
+        createdAt: hit.createdAt,
+        summary: hit.summary,
+      },
+    })),
+    ...input.approvals.map((approval, index) => ({
+      id: `${input.runId}_approval_resource_${index + 1}`,
+      kind: 'approval' as const,
+      title: approval.action,
+      source: 'theone' as const,
+      risk: input.risk,
+      provider: 'theone' as const,
+      metadata: approval,
+    })),
+    ...input.executions.map((execution, index) => ({
+      id: `${input.runId}_execution_${index + 1}`,
+      kind: 'execution' as const,
+      title: execution.taskName || execution.summary || `${execution.provider} execution`,
+      source: execution.provider,
+      risk: input.risk,
+      provider: execution.provider,
+      metadata: execution,
+    })),
+    ...(input.oneclawTask?.steps || []).map((step, index) => ({
+      id: `${input.runId}_external_${index + 1}`,
+      kind: 'external_action' as const,
+      title: step.action,
+      source: 'oneclaw' as const,
+      risk: input.risk,
+      provider: 'oneclaw' as const,
+      metadata: step,
+    })),
+  ];
+
+  const permissionSummary = input.permissions.reduce(
+    (summary, permission) => {
+      if (permission.status === 'allowed') summary.allowed += 1;
+      if (permission.status === 'requires_approval') summary.requiresApproval += 1;
+      if (permission.status === 'denied') summary.denied += 1;
+      return summary;
+    },
+    { allowed: 0, requiresApproval: 0, denied: 0 }
+  );
+
+  return {
+    id: `${input.runId}_context`,
+    runId: input.runId,
+    mode: input.mode,
+    objective: input.objective,
+    createdAt: new Date().toISOString(),
+    resources,
+    summary: {
+      resourceCount: resources.length,
+      connectorCount: new Set(resources.map((resource) => resource.connectorKey).filter(Boolean)).size,
+      memoryHitCount: input.memoryContext.length,
+      approvalCount: input.approvals.length,
+      executionCount: input.executions.length,
+      permissionSummary,
+    },
+  };
+}
+
 function buildL40RuntimeContract(input: {
   raw: string;
   mode: TheOneMode;
@@ -2192,6 +2346,38 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         raw: { brain, preflight },
       }),
     ];
+    const permissions = buildPermissionDecisionsForChat({
+      runId,
+      mode,
+      approvals: [],
+      oneclawTask: null,
+      risk: brain.safety.risk,
+      blocked: false,
+    });
+    const contextFrame = buildChatContextFrame({
+      runId,
+      mode,
+      objective: brain.objective,
+      risk: brain.safety.risk,
+      brain,
+      memoryContext,
+      approvals: [],
+      executions,
+      permissions,
+      oneclawTask: null,
+    });
+    const multiAgentRuntime = await runMultiAgentRuntime({
+      runId,
+      mode,
+      intent,
+      plan,
+      approvals: [],
+      permissions,
+      memoryContext,
+      contextFrame,
+    });
+    const allExecutions = [...executions, ...multiAgentRuntime.executions];
+    const allProofRecords = [...proofRecords, ...multiAgentRuntime.proof];
     const agentTimeline = buildAgentTimeline({
       mode,
       workerRuntime,
@@ -2202,7 +2388,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         worker: 'oneai',
         status: 'completed',
       }],
-      executions,
+      executions: allExecutions,
       approvals: [],
       oneclawTask: null,
       oneclawRun: null,
@@ -2219,16 +2405,16 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         failedSteps: plan.steps.filter((step) => step.status === 'failed').length,
         agentResults: [],
       },
-      proof: proofRecords,
+      proof: allProofRecords,
       approvals: [],
-      executions,
+      executions: allExecutions,
       pendingOneClawTask: null,
       preflight,
       os: {
         ...kernel,
         workflow,
         approvals: [],
-        executions,
+        executions: allExecutions,
         oneClawManifest,
         oneClawBridge,
         preflight,
@@ -2248,6 +2434,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         conversationKind: brain.conversationKind,
         oneAiBrain: brainOnlyOneAi?.workflow.oneAiBrain || null,
         l40Runtime,
+        contextFrame,
+        permissions,
+        multiAgentRuntime,
       },
       chat: {
         runtime: 'theone.chat_runtime.v2',
@@ -2259,6 +2448,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         oneAiBrainReply: brainOnlyOneAi?.workflow || null,
         oneAiBrain: brainOnlyOneAi?.workflow.oneAiBrain || null,
         l40Runtime,
+        contextFrame,
+        permissions,
+        multiAgentRuntime,
         modelRoute: primaryModel,
         memoryContext: memorySummary(memoryContext),
         appPackages: brain.selectedApps.length ? brain.selectedApps : appPackages.slice(0, 4),
@@ -2645,6 +2837,37 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       raw: finalOneAiResult,
     })] : []),
   ];
+  const permissions = buildPermissionDecisionsForChat({
+    runId,
+    mode,
+    approvals,
+    oneclawTask,
+    risk: automationPolicy.risk || effectiveOneAi.workflow.intent.risk,
+    blocked,
+  });
+  const contextFrame = buildChatContextFrame({
+    runId,
+    mode,
+    objective: raw,
+    risk: automationPolicy.risk || effectiveOneAi.workflow.intent.risk,
+    brain,
+    memoryContext,
+    approvals,
+    executions,
+    permissions,
+    oneclawTask,
+  });
+  const multiAgentRuntime = await runMultiAgentRuntime({
+    runId,
+    mode,
+    intent,
+    plan,
+    approvals,
+    permissions,
+    memoryContext,
+    contextFrame,
+  });
+  const allExecutions = [...executions, ...multiAgentRuntime.executions];
   const approvalSummary = approvalGated
     ? pendingTaskSummary({
         baseReply: effectiveOneAi.workflow.assistantReply,
@@ -2798,6 +3021,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         deliveryStatus,
         objectiveAssessment,
         agentTimeline,
+        contextFrame,
+        permissions,
+        multiAgentRuntime,
         l40Runtime,
         workerCatalogSummary: workerCatalog.summary,
         oneAiWorkflow: effectiveOneAi.workflow,
@@ -2816,6 +3042,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         oneclawRun,
       },
     }),
+    ...multiAgentRuntime.proof,
   ];
 
   const ok = effectiveOneAi.oneAiResult.success && !automationPolicy.blocked && !runtimeError;
@@ -2868,18 +3095,30 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     execution: {
       completedSteps: plan.steps.filter((step) => step.status === 'completed').length,
       failedSteps: plan.steps.filter((step) => step.status === 'failed').length,
-      agentResults: [],
+      agentResults: multiAgentRuntime.agents.map((agent) => ({
+        ok: agent.status !== 'block',
+        agent: agent.role,
+        summary: agent.summary,
+        data: {
+          title: agent.title,
+          status: agent.status,
+          confidence: agent.confidence,
+          recommendations: agent.recommendations,
+          signals: agent.signals,
+          durationMs: agent.durationMs,
+        },
+      })),
     },
     proof: proofRecords,
     approvals,
-    executions,
+    executions: allExecutions,
     pendingOneClawTask: oneclawTask && (!oneclawRun || oneClawRunInFlight(oneclawRun)) ? oneclawTask : null,
     preflight,
     os: {
       ...kernel,
       workflow,
       approvals,
-      executions,
+      executions: allExecutions,
       oneClawManifest,
       oneClawBridge,
       preflight,
@@ -2896,6 +3135,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       objectiveAssessment,
       continuity,
       agentTimeline,
+      contextFrame,
+      permissions,
+      multiAgentRuntime,
       l40Runtime,
       brainMode: brain.mode,
       conversationKind: brain.conversationKind,
@@ -2922,6 +3164,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       objectiveAssessment,
       continuity,
       agentTimeline,
+      contextFrame,
+      permissions,
+      multiAgentRuntime,
       l40Runtime,
       modelRoute: primaryModel,
       memoryContext: memorySummary(memoryContext),
