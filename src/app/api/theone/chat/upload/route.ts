@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { inflateSync } from 'node:zlib';
+import { inflateRawSync, inflateSync } from 'node:zlib';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 
 export const runtime = 'nodejs';
@@ -21,7 +21,7 @@ const MAX_SPREADSHEET_ROWS_PER_SHEET = 300;
 const MAX_SPREADSHEET_COLUMNS_PER_ROW = 40;
 
 const DOCUMENT_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'rtf']);
-const SPREADSHEET_EXTENSIONS = new Set(['csv', 'tsv', 'xls', 'xlsx']);
+const SPREADSHEET_EXTENSIONS = new Set(['csv', 'tsv', 'xls', 'xlsx', 'xlsm']);
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'heic']);
 
 function createId(name: string) {
@@ -95,6 +95,14 @@ function readableTextQuality(value: string) {
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function inflateZipPayload(payload: Buffer) {
+  try {
+    return inflateRawSync(payload);
+  } catch {
+    return inflateSync(payload);
+  }
 }
 
 function fileKind(name: string, type: string) {
@@ -393,7 +401,7 @@ function readZipEntry(buffer: Buffer, wanted: RegExp) {
     const compressed = buffer.slice(dataStart, dataEnd);
     if (wanted.test(name)) {
       if (method === 0) return compressed;
-      if (method === 8) return inflateSync(compressed);
+      if (method === 8) return inflateZipPayload(compressed);
       return null;
     }
     offset = dataEnd;
@@ -451,7 +459,7 @@ function readZipDirectoryEntry(buffer: Buffer, entry: ZipDirectoryEntry) {
   if (dataEnd > buffer.length) return null;
   const compressed = buffer.slice(dataStart, dataEnd);
   if (entry.method === 0) return compressed;
-  if (entry.method === 8) return inflateSync(compressed);
+  if (entry.method === 8) return inflateZipPayload(compressed);
   return null;
 }
 
@@ -598,8 +606,14 @@ async function extractReadableContent(name: string, type: string, buffer: Buffer
     return extractPdfTextRobust(buffer, storedPath);
   }
   if (ext === 'docx') return extractDocxText(buffer);
-  if (ext === 'xlsx') return extractSpreadsheetText(buffer);
+  if (ext === 'xlsx' || ext === 'xlsm') return extractSpreadsheetText(buffer);
   return '';
+}
+
+function unsupportedLegacySpreadsheetReason(name: string) {
+  return extension(name) === 'xls'
+    ? 'Legacy .xls spreadsheets are not supported by the production upload parser. Please save the file as .xlsx, .xlsm, .csv, or .tsv and attach it again.'
+    : '';
 }
 
 export async function POST(req: Request) {
@@ -692,14 +706,27 @@ export async function POST(req: Request) {
         item.insights.reportReadiness = 'ready';
       } else {
         const worker = typeof item.insights.recommendedWorker === 'string' ? item.insights.recommendedWorker : recommendedWorker(file.name, file.type || '');
-        const reason = storageError
+        const unsupportedReason = unsupportedLegacySpreadsheetReason(file.name);
+        const reason = unsupportedReason
+          || (storageError
           ? `Upload storage failed: ${storageError}.`
           : extractionError
             ? `Upload-time text extraction failed: ${extractionError}.`
             : text.trim() && !quality.ok
               ? `Upload-time text was not reliable: ${quality.reason}.`
-              : 'No readable text was extracted during upload.';
-        if (isServerlessRuntime() && !hasPersistentUploadStorage()) {
+              : 'No readable text was extracted during upload.');
+        if (unsupportedReason) {
+          item.status = 'failed';
+          item.error = reason;
+          item.summary = reason;
+          item.insights.extraction = 'legacy_spreadsheet_unsupported';
+          item.insights.reportContextAvailable = false;
+          item.insights.reportReadiness = 'needs_supported_spreadsheet';
+          item.insights.limitations = [
+            ...(Array.isArray(item.insights.limitations) ? item.insights.limitations : []),
+            'Convert the workbook to a modern spreadsheet or delimited file before upload.',
+          ];
+        } else if (isServerlessRuntime() && !hasPersistentUploadStorage()) {
           delete item.path;
           item.status = 'failed';
           item.error = `${reason} Serverless temporary file paths cannot be reused across chat requests. Configure THEONE_UPLOAD_DIR with persistent storage or enable upload-time parsing for this file type.`;

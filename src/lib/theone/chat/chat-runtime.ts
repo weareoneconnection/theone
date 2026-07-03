@@ -717,6 +717,84 @@ function buildObjectiveAssessment(input: {
         : input.runtimeError
           ? 'Retry with the suggested fix or ask TheOne for an alternate route.'
           : 'Continue the mission.',
+	  };
+	}
+
+function buildExecutionClosure(input: {
+  summary: string;
+  runtimeError: string | null;
+  blocked: boolean;
+  approvalGated: boolean;
+  canSubmit: boolean;
+  oneclawTask: OneClawTask | null;
+  oneclawRun: OneClawTaskRun | null;
+  documentRuntime: ReturnType<typeof buildDocumentRuntime>;
+  deliveryStatus: ReturnType<typeof buildDeliveryStatus>;
+  objectiveAssessment: ReturnType<typeof buildObjectiveAssessment>;
+}) {
+  const delivery = (isRecord(input.deliveryStatus) ? input.deliveryStatus : {}) as Record<string, unknown>;
+  const deliveryState = String(delivery.status || '');
+  const documentFailed = input.documentRuntime?.status === 'failed' || deliveryState === 'needs_source';
+  const workerFailed = oneClawRunFailed(input.oneclawRun);
+  const workerInFlight = oneClawRunInFlight(input.oneclawRun);
+  const workerSettled = oneClawRunSettled(input.oneclawRun);
+  const satisfied = input.objectiveAssessment.satisfied === true || deliveryState === 'report_ready' || deliveryState === 'export_ready';
+  const state = documentFailed
+    ? 'needs_source'
+    : input.runtimeError || workerFailed
+      ? 'failed_retryable'
+      : input.blocked
+        ? 'blocked'
+        : input.approvalGated
+          ? 'waiting_approval'
+          : workerInFlight
+            ? 'running'
+            : satisfied
+              ? 'satisfied'
+              : input.oneclawTask && !workerSettled
+                ? input.canSubmit ? 'ready_to_submit' : 'planned'
+                : input.oneclawTask
+                  ? 'awaiting_receipt'
+                  : 'answered';
+
+  const nextAction = state === 'needs_source'
+    ? 'Attach a readable source again, or provide a durable source that TheOne can access.'
+    : state === 'waiting_approval'
+      ? 'Review the approval gate, then approve, reject, or ask TheOne to revise.'
+      : state === 'failed_retryable'
+        ? 'Retry after fixing the connector or ask TheOne to rebuild the route.'
+        : state === 'blocked'
+          ? 'Fix the blocked policy/input issue, then rebuild the workflow.'
+          : state === 'running'
+            ? 'Wait for the worker receipt or refresh the run.'
+            : state === 'satisfied'
+              ? 'Use the result, continue the mission, save it, or export it.'
+              : state === 'ready_to_submit'
+                ? 'Submit the prepared worker task.'
+                : state === 'planned'
+                  ? 'Continue the mission so TheOne can dispatch the prepared worker.'
+                  : state === 'awaiting_receipt'
+                    ? 'Open or refresh the run to collect the worker receipt.'
+                    : 'Ask a follow-up or start the next outcome.';
+
+  return {
+    schemaVersion: 'theone.execution_closure.v1',
+    state,
+    done: state === 'satisfied' || state === 'answered',
+    needsHuman: state === 'waiting_approval',
+    needsSource: state === 'needs_source',
+    canRetry: state === 'failed_retryable' || state === 'needs_source',
+    canContinue: !['satisfied', 'blocked'].includes(state),
+    nextAction,
+    reason: input.runtimeError || String(input.objectiveAssessment.outcome || input.summary || ''),
+    worker: {
+      taskName: input.oneclawTask?.taskName || null,
+      firstAction: firstTaskAction(input.oneclawTask),
+      runId: oneClawRunId(input.oneclawRun),
+      inFlight: workerInFlight,
+      settled: workerSettled,
+    },
+    delivery: input.deliveryStatus || null,
   };
 }
 
@@ -2291,9 +2369,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       memoryContext,
       workerRuntime,
     });
-    const l40Runtime = buildL40RuntimeContract({
-      raw,
-      mode,
+	  const l40Runtime = buildL40RuntimeContract({
+	    raw,
+	    mode,
       brain,
       attachmentContext,
       oneclawTask: null,
@@ -2998,12 +3076,24 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     deliveryStatus,
     objectiveAssessment,
     proofCount: 1,
-    modelRoute: primaryModel,
-    oneAiCompletionContract,
-  });
-  const proofRecords = [
-    proof({
-      title: 'TheOne Chat Runtime handled conversation',
+	    modelRoute: primaryModel,
+	    oneAiCompletionContract,
+	  });
+	  const executionClosure = buildExecutionClosure({
+	    summary,
+	    runtimeError,
+	    blocked,
+	    approvalGated,
+	    canSubmit,
+	    oneclawTask,
+	    oneclawRun,
+	    documentRuntime,
+	    deliveryStatus,
+	    objectiveAssessment,
+	  });
+	  const proofRecords = [
+	    proof({
+	      title: 'TheOne Chat Runtime handled conversation',
       value: summary,
       metadata: {
         source: 'theone.chat_runtime',
@@ -3019,10 +3109,11 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         reportArtifact,
         exportBundle,
         deliveryStatus,
-        objectiveAssessment,
-        agentTimeline,
-        contextFrame,
-        permissions,
+	        objectiveAssessment,
+	        agentTimeline,
+	        executionClosure,
+	        contextFrame,
+	        permissions,
         multiAgentRuntime,
         l40Runtime,
         workerCatalogSummary: workerCatalog.summary,
@@ -3137,9 +3228,10 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       agentTimeline,
       contextFrame,
       permissions,
-      multiAgentRuntime,
-      l40Runtime,
-      brainMode: brain.mode,
+	      multiAgentRuntime,
+	      l40Runtime,
+	      executionClosure,
+	      brainMode: brain.mode,
       conversationKind: brain.conversationKind,
       modelRoute: primaryModel,
       selectedAppPackages: selectedAppPackages.map((pkg) => pkg.key),
@@ -3166,9 +3258,10 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       agentTimeline,
       contextFrame,
       permissions,
-      multiAgentRuntime,
-      l40Runtime,
-      modelRoute: primaryModel,
+	      multiAgentRuntime,
+	      l40Runtime,
+	      executionClosure,
+	      modelRoute: primaryModel,
       memoryContext: memorySummary(memoryContext),
       appPackages: selectedAppPackages.length ? selectedAppPackages : appPackages.slice(0, 4),
       workerCatalog: workerCatalog.summary,

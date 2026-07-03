@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
+import { strFromU8, unzipSync } from 'fflate';
 import { friendlyStatus } from '@/components/theone/ProductNav';
 
 const modes = ['manual', 'assist', 'auto'] as const;
@@ -299,9 +300,10 @@ function isPdfUpload(file: File) {
 
 function isSpreadsheetUpload(file: File) {
   const name = file.name.toLowerCase();
-  return /\.(xlsx|xls|csv|tsv)$/i.test(name)
+  return /\.(xlsx|xlsm|xls|csv|tsv)$/i.test(name)
     || [
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-excel.sheet.macroEnabled.12',
       'application/vnd.ms-excel',
       'text/csv',
       'text/tab-separated-values',
@@ -309,13 +311,22 @@ function isSpreadsheetUpload(file: File) {
 }
 
 function isXlsxUpload(file: File) {
-  return /\.xlsx$/i.test(file.name)
-    || file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  return /\.(xlsx|xlsm)$/i.test(file.name)
+    || [
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-excel.sheet.macroEnabled.12',
+    ].includes(file.type);
 }
 
 function isDelimitedSpreadsheetUpload(file: File) {
   return /\.(csv|tsv)$/i.test(file.name)
     || ['text/csv', 'text/tab-separated-values'].includes(file.type);
+}
+
+function spreadsheetRecoveryHint(fileName: string) {
+  return /\.xls$/i.test(fileName)
+    ? 'Legacy .xls files need to be saved as .xlsx, .xlsm, .csv, or .tsv before TheOne can read them in production.'
+    : 'Save the spreadsheet again as .xlsx, .xlsm, .csv, or .tsv, make sure it is not password-protected, then attach the new file.';
 }
 
 function compactText(value: string) {
@@ -634,12 +645,20 @@ function parseWorksheetRows(xml: string, sharedStrings: string[]) {
 
 async function extractXlsxTextInBrowser(file: File) {
   const bytes = new Uint8Array(await file.arrayBuffer());
-  const entries = findZipEntries(bytes);
-  const [sharedXml, workbookXml, relsXml] = await Promise.all([
-    readZipEntryText(bytes, entries, 'xl/sharedStrings.xml'),
-    readZipEntryText(bytes, entries, 'xl/workbook.xml'),
-    readZipEntryText(bytes, entries, 'xl/_rels/workbook.xml.rels'),
-  ]);
+  const files = unzipSync(bytes);
+  const entries = Object.keys(files).map((name) => ({
+    name,
+    method: 8,
+    compressedSize: files[name]?.byteLength || 0,
+    localHeaderOffset: 0,
+  }));
+  const readText = (name: string) => {
+    const entry = files[name];
+    return entry ? strFromU8(entry) : '';
+  };
+  const sharedXml = readText('xl/sharedStrings.xml');
+  const workbookXml = readText('xl/workbook.xml');
+  const relsXml = readText('xl/_rels/workbook.xml.rels');
   const sharedStrings = parseSharedStrings(sharedXml);
   const sheets = parseWorkbookSheets(workbookXml, relsXml, entries);
   const parts: string[] = [];
@@ -647,7 +666,7 @@ async function extractXlsxTextInBrowser(file: File) {
   let maxColumns = 0;
 
   for (const sheet of sheets.slice(0, 20)) {
-    const sheetXml = await readZipEntryText(bytes, entries, sheet.path);
+    const sheetXml = readText(sheet.path);
     if (!sheetXml) continue;
     const rows = parseWorksheetRows(sheetXml, sharedStrings);
     totalRows += rows.length;
@@ -688,7 +707,7 @@ async function buildBrowserSpreadsheetAttachment(file: File): Promise<ChatAttach
       size: file.size,
       status: 'failed',
       summary: 'Legacy spreadsheet format is not readable in the browser upload path.',
-      error: 'Please save this spreadsheet as .xlsx, .csv, or .tsv, then attach it again.',
+      error: spreadsheetRecoveryHint(file.name),
       insights: {
         kind: 'spreadsheet',
         readable: false,
@@ -717,6 +736,7 @@ async function buildBrowserSpreadsheetAttachment(file: File): Promise<ChatAttach
           readable: false,
           recommendedWorker: 'spreadsheet.read',
           reportReadiness: 'no_readable_cells',
+          userAction: 'Attach a workbook with visible table cells, or export the sheet as CSV/TSV.',
         },
       };
     }
@@ -768,19 +788,24 @@ async function buildBrowserSpreadsheetAttachment(file: File): Promise<ChatAttach
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Browser spreadsheet parsing failed.';
+    const friendlyMessage = /invalid|zip|central|offset|compression|decompress|inflate/i.test(message)
+      ? spreadsheetRecoveryHint(file.name)
+      : message;
     return {
       id,
       name: file.name,
       type: file.type || 'spreadsheet',
       size: file.size,
       status: 'failed',
-      summary: `Browser spreadsheet parsing failed: ${message}`,
-      error: message,
+      summary: `Spreadsheet parsing failed: ${friendlyMessage}`,
+      error: friendlyMessage,
       insights: {
         kind: 'spreadsheet',
         readable: false,
         recommendedWorker: 'spreadsheet.read',
-        reportReadiness: 'failed',
+        reportReadiness: 'spreadsheet_parse_failed',
+        reportContextAvailable: false,
+        userAction: spreadsheetRecoveryHint(file.name),
       },
     };
   }
@@ -866,8 +891,27 @@ function failedServerUploadAttachment(file: File, message: string): ChatAttachme
       readable: false,
       recommendedWorker,
       reportReadiness: 'upload_failed',
+      reportContextAvailable: false,
+      limitations: [
+        'The upload did not produce readable content for TheOne Chat.',
+        'Retry the upload, or provide a durable source path if this file must be read through a worker.',
+      ],
     },
   };
+}
+
+function friendlyUploadError(status: number, raw: string, fallback = 'Attachment upload failed.') {
+  const stripped = raw
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const serverPage = /<!doctype html|__next_error__|next-error|application error|deployment/i.test(raw);
+  if (serverPage) {
+    return `Attachment upload failed (${status}). The production upload endpoint returned a server error page before parsing the file. TheOne kept the chat safe; retry after the upload route is healthy.`;
+  }
+  return `Attachment upload failed (${status}). ${stripped.slice(0, 180) || fallback}`;
 }
 
 async function uploadChatAttachments(files: FileList | null): Promise<ChatAttachment[]> {
@@ -879,12 +923,18 @@ async function uploadChatAttachments(files: FileList | null): Promise<ChatAttach
 
   for (const file of selected) {
     if (isPdfUpload(file)) {
-      browserAttachments.push(await buildBrowserPdfAttachment(file));
+      const attachment = await buildBrowserPdfAttachment(file);
+      if (attachment.status === 'ready' || file.size > MAX_SERVER_ATTACHMENT_BYTES) {
+        browserAttachments.push(attachment);
+      } else {
+        serverFiles.push(file);
+      }
       continue;
     }
 
     if (isSpreadsheetUpload(file)) {
-      browserAttachments.push(await buildBrowserSpreadsheetAttachment(file));
+      const attachment = await buildBrowserSpreadsheetAttachment(file);
+      browserAttachments.push(attachment);
       continue;
     }
 
@@ -924,12 +974,12 @@ async function uploadChatAttachments(files: FileList | null): Promise<ChatAttach
   try {
     data = raw ? JSON.parse(raw) : {};
   } catch {
-    const message = `Attachment upload failed (${response.status}). ${raw.slice(0, 180) || 'The upload endpoint did not return JSON.'}`;
+    const message = friendlyUploadError(response.status, raw, 'The upload endpoint did not return JSON.');
     return [...browserAttachments, ...serverFiles.map((file) => failedServerUploadAttachment(file, message))];
   }
 
   if (!response.ok || data?.ok === false) {
-    const message = data?.error || `Attachment upload failed (${response.status}).`;
+    const message = data?.error || friendlyUploadError(response.status, raw, `Attachment upload failed (${response.status}).`);
     return [...browserAttachments, ...serverFiles.map((file) => failedServerUploadAttachment(file, message))];
   }
 
@@ -1548,7 +1598,7 @@ function attachmentWorkerLabel(attachment: ChatAttachment) {
   const worker = attachmentInsight(attachment, 'recommendedWorker');
   if (typeof worker === 'string' && worker.trim()) return worker;
   if (attachment.type.includes('pdf') || /\.(pdf|docx?|rtf)$/i.test(attachment.name)) return 'document.parse';
-  if (/\.(csv|tsv|xlsx?|xls)$/i.test(attachment.name)) return 'spreadsheet.read';
+  if (/\.(csv|tsv|xlsx|xlsm|xls)$/i.test(attachment.name)) return 'spreadsheet.read';
   if (attachment.type.startsWith('image/')) return 'image.extractText';
   return attachment.text ? 'file.read' : 'file.store';
 }
@@ -1556,7 +1606,14 @@ function attachmentWorkerLabel(attachment: ChatAttachment) {
 function attachmentQualityLabel(attachment: ChatAttachment) {
   if (attachment.status !== 'ready') {
     const readiness = attachmentInsight(attachment, 'reportReadiness');
-    if (typeof readiness === 'string' && readiness.trim()) return readiness.replace(/_/g, '-');
+    if (typeof readiness === 'string' && readiness.trim()) {
+      if (readiness === 'legacy_xls_not_supported_in_browser') return 'convert to xlsx/csv';
+      if (readiness === 'spreadsheet_parse_failed') return 'convert or retry';
+      if (readiness === 'no_readable_cells') return 'no table text';
+      if (readiness === 'too_large_for_server_upload') return 'too large';
+      if (readiness === 'upload_failed') return 'upload failed';
+      return readiness.replace(/_/g, '-');
+    }
     return attachment.status;
   }
   if (attachment.reportContext || attachmentInsight(attachment, 'reportContextAvailable') === true) return 'report-ready';
@@ -1597,10 +1654,17 @@ function failedAttachmentMessage(attachments: ChatAttachment[]) {
     .map((attachment) => attachment.error || attachment.summary)
     .filter(Boolean)
     .join(' ');
+  const failedSpreadsheets = attachments.filter((attachment) => attachmentWorkerLabel(attachment) === 'spreadsheet.read');
+  const hasLegacySpreadsheet = failedSpreadsheets.some((attachment) => /\.xls$/i.test(attachment.name));
+  const spreadsheetAction = failedSpreadsheets.length
+    ? hasLegacySpreadsheet
+      ? 'Next step: save the spreadsheet as .xlsx, .xlsm, .csv, or .tsv, clear this failed chip, then attach the converted file.'
+      : 'Next step: clear the failed chip, save or export the spreadsheet again as .xlsx, .xlsm, .csv, or .tsv, then attach it after confirming the workbook is not password-protected.'
+    : '';
   return [
     `I can see ${names}, but it is not readable yet.`,
     reasons ? `What happened: ${reasons}` : 'What happened: the upload or document parsing step failed.',
-    'Please clear the failed chip, attach the file again, and wait until it shows ready/readable before sending the request.',
+    spreadsheetAction || 'Next step: clear the failed chip, attach the file again, and wait until it shows ready/readable before sending the request.',
   ].join('\n\n');
 }
 
@@ -2757,6 +2821,7 @@ function RunPageContent() {
                 {labels.attach}
                 <input
                   type="file"
+                  accept=".pdf,.doc,.docx,.rtf,.txt,.md,.csv,.tsv,.xlsx,.xlsm,.json,.png,.jpg,.jpeg,.webp,.gif"
                   multiple
                   onChange={async (event) => {
                     await handleAttachmentInput(event.target.files);
