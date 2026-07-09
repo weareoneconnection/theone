@@ -3285,6 +3285,33 @@ button, input, textarea { font: inherit; }
   line-height: 1.35;
 }
 
+.run-worker-receipt-summary .run-worker-receipt-head {
+  align-items: center;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding-bottom: 8px;
+}
+
+.run-worker-receipt-summary .run-worker-receipt-head span {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.run-worker-receipt-summary .run-worker-receipt-head strong {
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 999px;
+  color: rgba(255,255,255,0.78);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  padding: 4px 8px;
+  text-transform: uppercase;
+}
+
 .run-worker-receipt-summary p {
   color: rgba(255,255,255,0.82);
 }
@@ -3306,6 +3333,14 @@ button, input, textarea { font: inherit; }
   color: rgba(255,255,255,0.64);
   font-size: 12px;
   line-height: 1.35;
+}
+
+.run-worker-receipt-summary em {
+  color: rgba(255,255,255,0.72);
+  display: block;
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.45;
 }
 
 .run-document-runtime-card {

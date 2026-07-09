@@ -146,6 +146,101 @@ function extractError(value: unknown): string | null {
   return [...logs].reverse().find((line) => /error|failed|blocked|rejected/i.test(line)) || null;
 }
 
+function actionFamily(action: string) {
+  if (/^browser\./i.test(action)) return 'web_browser';
+  if (/^(document|file|spreadsheet|storage)\./i.test(action)) return 'files';
+  if (/^(social|x)\./i.test(action)) return 'social';
+  if (/^git\./i.test(action)) return 'github';
+  if (/^api\./i.test(action)) return 'api';
+  if (/^desktop\./i.test(action)) return 'desktop';
+  if (/^(database|knowledge|vector)\./i.test(action)) return 'knowledge';
+  if (/^(email|message|notification|calendar)\./i.test(action)) return 'communication';
+  if (/^(web3|wallet|chain|payment|finance|commerce)\./i.test(action)) return 'transaction';
+  return 'general';
+}
+
+function actionLabel(action: string) {
+  if (/^browser\./i.test(action)) return 'browser extraction';
+  if (/^document\.parse$/i.test(action)) return 'document parsing';
+  if (/^spreadsheet\.read$/i.test(action)) return 'spreadsheet reading';
+  if (/^file\.read$/i.test(action)) return 'file reading';
+  if (/^social\.post$/i.test(action)) return 'social publishing';
+  if (/^x\./i.test(action)) return 'X reading';
+  if (/^git\./i.test(action)) return 'GitHub worker';
+  if (/^api\./i.test(action)) return 'API worker';
+  if (/^desktop\./i.test(action)) return 'desktop worker';
+  return action || 'worker';
+}
+
+function looksRetryable(error: string | null, action: string) {
+  if (!error) return false;
+  if (/requires approval|approval|forbidden|not allowed|permission|denied|blocked/i.test(error)) return false;
+  if (/too long|max 280/i.test(error) && action === 'social.post') return false;
+  return /timeout|fetch failed|network|rate|temporary|not found|enoent|failed/i.test(error);
+}
+
+function readableOutcome(input: {
+  action: string;
+  status: string;
+  error: string | null;
+  text: string[];
+  artifacts: string[];
+}) {
+  const label = actionLabel(input.action);
+  const failed = Boolean(input.error) || /fail|error|rejected|blocked/i.test(input.status);
+
+  if (failed) {
+    return {
+      state: 'failed',
+      label,
+      primaryText: input.error || `${label} failed.`,
+      userNextAction: input.action === 'social.post' && /too long|max 280/i.test(input.error || '')
+        ? 'Revise the post under the X character limit and retry.'
+        : /^browser\./i.test(input.action)
+          ? 'Retry the browser worker or use another extraction route.'
+          : /^(document|file|spreadsheet)\./i.test(input.action)
+            ? 'Attach a readable file again or provide a durable file source.'
+            : 'Review the error, then retry or ask TheOne for another route.',
+    };
+  }
+
+  if (/^browser\./i.test(input.action)) {
+    return {
+      state: 'succeeded',
+      label,
+      primaryText: input.text[0] || 'Website content was extracted.',
+      userNextAction: 'Use the extracted content, ask a follow-up, or turn it into a report.',
+    };
+  }
+
+  if (/^(document|file|spreadsheet)\./i.test(input.action)) {
+    return {
+      state: 'succeeded',
+      label,
+      primaryText: input.text[0] || 'File content was read.',
+      userNextAction: 'Use the file content, ask for a report, or export the result.',
+    };
+  }
+
+  if (/^social\.post$/i.test(input.action)) {
+    return {
+      state: 'succeeded',
+      label,
+      primaryText: input.text[0] || 'Social content was published or prepared.',
+      userNextAction: 'Open the run receipt or continue with follow-up distribution.',
+    };
+  }
+
+  return {
+    state: 'succeeded',
+    label,
+    primaryText: input.text[0] || `${label} completed.`,
+    userNextAction: input.artifacts.length
+      ? 'Review the generated artifacts or continue with the next step.'
+      : 'Use this result, ask a follow-up, or turn it into a report.',
+  };
+}
+
 export function normalizeWorkerReceipt(input: {
   provider: string;
   action?: string | null;
@@ -158,24 +253,36 @@ export function normalizeWorkerReceipt(input: {
   const text = Array.from(new Set(collectText(raw).map((item) => item.replace(/\s+/g, ' ').trim()).filter(Boolean)));
   const error = extractError(raw);
   const status = String(input.status || input.receipt?.status || (error ? 'failed' : 'completed'));
+  const action = input.action || input.taskName || input.receipt?.operation || 'worker.task';
   const artifacts = Array.from(new Set(extractArtifacts(raw)));
+  const outcome = readableOutcome({ action, status, error, text, artifacts });
+  const retryable = looksRetryable(error, action);
   const summary = error
-    ? `Worker failed: ${error}`
-    : text[0] || `${input.provider} worker ${status}.`;
+    ? `${outcome.label} failed: ${outcome.primaryText}`
+    : outcome.primaryText || `${input.provider} worker ${status}.`;
 
   return {
     schemaVersion: 'theone.normalized_worker_receipt.v1',
     provider: input.provider,
-    action: input.action || input.taskName || input.receipt?.operation || 'worker.task',
+    action,
+    actionFamily: actionFamily(action),
     taskName: input.taskName || null,
     status,
     summary: summary.slice(0, 1200),
     evidence: text.slice(0, 8),
     artifacts,
     error,
+    retryable,
+    outcome: {
+      ...outcome,
+      retryable,
+      evidenceCount: text.length,
+      artifactCount: artifacts.length,
+      readable: text.length > 0,
+    },
     nextActions: error
-      ? ['Review the mission diagnosis.', 'Retry the worker or ask TheOne for an alternate route.']
-      : ['Use this result, ask a follow-up, or turn it into a report.'],
+      ? [outcome.userNextAction, retryable ? 'Retry the worker after fixing the source or connector.' : 'Ask TheOne to revise the route before retrying.']
+      : [outcome.userNextAction],
     receiptId: input.receipt?.id || null,
     externalId: input.receipt?.externalId || (isRecord(raw) ? String(raw.id || '') || null : null),
   };

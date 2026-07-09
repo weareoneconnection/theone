@@ -717,8 +717,8 @@ function buildObjectiveAssessment(input: {
         : input.runtimeError
           ? 'Retry with the suggested fix or ask TheOne for an alternate route.'
           : 'Continue the mission.',
-	  };
-	}
+  };
+}
 
 function buildExecutionClosure(input: {
   summary: string;
@@ -731,6 +731,7 @@ function buildExecutionClosure(input: {
   documentRuntime: ReturnType<typeof buildDocumentRuntime>;
   deliveryStatus: ReturnType<typeof buildDeliveryStatus>;
   objectiveAssessment: ReturnType<typeof buildObjectiveAssessment>;
+  normalizedWorkerReceipt?: ReturnType<typeof normalizeWorkerReceipt> | null;
 }) {
   const delivery = (isRecord(input.deliveryStatus) ? input.deliveryStatus : {}) as Record<string, unknown>;
   const deliveryState = String(delivery.status || '');
@@ -793,6 +794,12 @@ function buildExecutionClosure(input: {
       runId: oneClawRunId(input.oneclawRun),
       inFlight: workerInFlight,
       settled: workerSettled,
+      receipt: input.normalizedWorkerReceipt ? {
+        actionFamily: input.normalizedWorkerReceipt.actionFamily,
+        outcome: input.normalizedWorkerReceipt.outcome,
+        retryable: input.normalizedWorkerReceipt.retryable,
+        nextActions: input.normalizedWorkerReceipt.nextActions,
+      } : null,
     },
     delivery: input.deliveryStatus || null,
   };
@@ -2136,10 +2143,12 @@ function buildL40RuntimeContract(input: {
   proofCount: number;
   modelRoute: ReturnType<typeof resolveTheOneModel>;
   oneAiCompletionContract?: unknown;
+  oneAiRuntimeStrategy?: unknown;
 }) {
   const attachmentItems = attachmentInventory(input.attachmentContext);
   const objectiveAssessment = isRecord(input.objectiveAssessment) ? input.objectiveAssessment : {};
   const completionContract = isRecord(input.oneAiCompletionContract) ? input.oneAiCompletionContract : null;
+  const runtimeStrategy = isRecord(input.oneAiRuntimeStrategy) ? input.oneAiRuntimeStrategy : null;
   const hasAttachmentIntent = attachmentItems.length > 0 ||
     /(attach|attachment|file|document|pdf|spreadsheet|excel|read this|read and report|report|附件|文件|文档|表格|报告)/i.test(input.raw);
   const readableAttachments = attachmentItems.filter((item) => item.hasReadableText);
@@ -2199,9 +2208,16 @@ function buildL40RuntimeContract(input: {
       sourceReady,
       workerNeeded: hasWorkerTask || completionContract?.needsWorker === true,
       approvalNeeded: input.approvalGated || completionContract?.needsApproval === true,
+      resultQuality: typeof completionContract?.resultQuality === 'string' ? completionContract.resultQuality : null,
       nextAction,
       reason: typeof completionContract?.reason === 'string' ? completionContract.reason : input.summary,
     },
+    strategy: runtimeStrategy ? {
+      selectedStage: typeof runtimeStrategy.selectedStage === 'string' ? runtimeStrategy.selectedStage : 'execute_or_answer',
+      evidencePlan: typeof runtimeStrategy.evidencePlan === 'string' ? runtimeStrategy.evidencePlan : '',
+      closurePlan: typeof runtimeStrategy.closurePlan === 'string' ? runtimeStrategy.closurePlan : '',
+      fallbackPlan: typeof runtimeStrategy.fallbackPlan === 'string' ? runtimeStrategy.fallbackPlan : '',
+    } : null,
     execution: {
       taskName: input.oneclawTask?.taskName || null,
       firstAction: firstTaskAction(input.oneclawTask),
@@ -2386,6 +2402,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       proofCount: 1,
       modelRoute: primaryModel,
       oneAiCompletionContract: brainOnlyOneAi?.workflow.completionContract || null,
+      oneAiRuntimeStrategy: brainOnlyOneAi?.workflow.runtimeStrategy || null,
     });
     const proofRecords = [
       proof({
@@ -3056,6 +3073,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
   });
   const oneAiWorkflowRecord = effectiveOneAi.workflow as unknown as Record<string, unknown>;
   const oneAiCompletionContract = oneAiWorkflowRecord.completionContract || null;
+  const oneAiRuntimeStrategy = oneAiWorkflowRecord.runtimeStrategy || null;
   const l40Runtime = buildL40RuntimeContract({
     raw,
     mode,
@@ -3078,6 +3096,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     proofCount: 1,
 	    modelRoute: primaryModel,
 	    oneAiCompletionContract,
+	    oneAiRuntimeStrategy,
 	  });
 	  const executionClosure = buildExecutionClosure({
 	    summary,
@@ -3090,6 +3109,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
 	    documentRuntime,
 	    deliveryStatus,
 	    objectiveAssessment,
+	    normalizedWorkerReceipt,
 	  });
 	  const proofRecords = [
 	    proof({
@@ -3239,6 +3259,8 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       workerCatalogSummary: workerCatalog.summary,
       oneAiWorkflowId: effectiveOneAi.workflow.workflow.id,
       oneAiBrain: effectiveOneAi.workflow.oneAiBrain || null,
+      oneAiCompletionContract,
+      oneAiRuntimeStrategy,
       fallbackRoute,
       oneClawTaskName: oneclawTask?.taskName || null,
       oneClawRunId: oneclawRun?.id || null,
@@ -3265,6 +3287,8 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       memoryContext: memorySummary(memoryContext),
       appPackages: selectedAppPackages.length ? selectedAppPackages : appPackages.slice(0, 4),
       workerCatalog: workerCatalog.summary,
+      oneAiCompletionContract,
+      oneAiRuntimeStrategy,
       assistant: {
         role: 'assistant',
         content: summary,

@@ -1430,10 +1430,23 @@ function ResultActions({
 
 function WorkerReceiptSummary({ receipt }: { receipt: any }) {
   if (!receipt?.summary && !receipt?.error && !receipt?.evidence?.length && !receipt?.artifacts?.length) return null;
+  const outcome = receipt?.outcome || null;
+  const nextActions = Array.isArray(receipt?.nextActions) ? receipt.nextActions : [];
   return (
     <div className="run-worker-receipt-summary">
+      <div className="run-worker-receipt-head">
+        <span>{receipt.actionFamily || receipt.action || 'worker'}</span>
+        <strong>{outcome?.state || receipt.status || 'received'}</strong>
+      </div>
       {receipt.error ? <strong>{receipt.error}</strong> : null}
       {receipt.summary ? <p>{receipt.summary}</p> : null}
+      {outcome?.userNextAction ? <em>{outcome.userNextAction}</em> : null}
+      {nextActions.length ? (
+        <div>
+          <span>Next</span>
+          {nextActions.slice(0, 2).map((item: string) => <small key={item}>{item}</small>)}
+        </div>
+      ) : null}
       {Array.isArray(receipt.evidence) && receipt.evidence.length ? (
         <div>
           <span>Evidence</span>

@@ -38,6 +38,13 @@ export type OneAIWorkflowContract = {
     evidenceRequired: boolean;
     nextAction: string;
     reason: string;
+    resultQuality: 'draft' | 'usable' | 'needs_evidence' | 'blocked';
+  };
+  runtimeStrategy?: {
+    selectedStage: 'understand' | 'select_app' | 'plan_workers' | 'check_policy' | 'execute_or_answer' | 'close_loop';
+    evidencePlan: string;
+    closurePlan: string;
+    fallbackPlan: string;
   };
   intent: {
     objective: string;
@@ -149,6 +156,25 @@ function completionStatusValue(value: unknown): OneAICompletionStatus {
   return 'workflow_ready';
 }
 
+function resultQualityValue(value: unknown): NonNullable<OneAIWorkflowContract['completionContract']>['resultQuality'] {
+  if (value === 'draft' || value === 'usable' || value === 'needs_evidence' || value === 'blocked') return value;
+  return 'needs_evidence';
+}
+
+function runtimeStageValue(value: unknown): NonNullable<OneAIWorkflowContract['runtimeStrategy']>['selectedStage'] {
+  if (
+    value === 'understand' ||
+    value === 'select_app' ||
+    value === 'plan_workers' ||
+    value === 'check_policy' ||
+    value === 'execute_or_answer' ||
+    value === 'close_loop'
+  ) {
+    return value;
+  }
+  return 'understand';
+}
+
 function stepInput(value: unknown) {
   return isRecord(value) ? value : {};
 }
@@ -190,6 +216,9 @@ function taskFromWorkflow(workflow: OneAIWorkflowContract): OneClawTask | null {
       oneAiWorkflow: workflow.workflow,
       intent: workflow.intent,
       safety: workflow.safety,
+      oneAiBrain: workflow.oneAiBrain || null,
+      completionContract: workflow.completionContract || null,
+      runtimeStrategy: workflow.runtimeStrategy || null,
     },
   };
 }
@@ -225,6 +254,13 @@ function normalizeWorkflow(data: unknown, raw: string): OneAIWorkflowContract {
       evidenceRequired: record.completionContract.evidenceRequired === undefined ? true : Boolean(record.completionContract.evidenceRequired),
       nextAction: textValue(record.completionContract.nextAction, 'Let TheOne validate and continue the route.'),
       reason: textValue(record.completionContract.reason, textValue(workflow.summary, 'Workflow candidate prepared.')),
+      resultQuality: resultQualityValue(record.completionContract.resultQuality),
+    } : undefined,
+    runtimeStrategy: isRecord(record.runtimeStrategy) ? {
+      selectedStage: runtimeStageValue(record.runtimeStrategy.selectedStage),
+      evidencePlan: textValue(record.runtimeStrategy.evidencePlan, 'Use available worker receipts or conversation context as evidence.'),
+      closurePlan: textValue(record.runtimeStrategy.closurePlan, 'Close only when the user has a usable answer or a clear approval/source request.'),
+      fallbackPlan: textValue(record.runtimeStrategy.fallbackPlan, 'Ask for the missing source or choose a safer worker route.'),
     } : undefined,
     intent: {
       objective: textValue(intent.objective, raw),
@@ -296,6 +332,13 @@ function fallbackWorkflow(raw: string, mode: TheOneMode): OneAIWorkflowContract 
       evidenceRequired: false,
       nextAction: 'Continue the conversation with a concrete outcome.',
       reason: 'No external action was produced.',
+      resultQuality: 'usable',
+    },
+    runtimeStrategy: {
+      selectedStage: 'execute_or_answer',
+      evidencePlan: 'No external evidence is required for this fallback answer.',
+      closurePlan: 'Close the turn with a direct safe answer.',
+      fallbackPlan: 'Ask the user for a more concrete outcome.',
     },
     safety: {
       requiresApproval: false,
