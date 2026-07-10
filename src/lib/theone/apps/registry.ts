@@ -58,6 +58,17 @@ export const appBundleRegistry: AppBundleDefinition[] = [
     riskProfile: 'high',
   },
   {
+    key: 'code',
+    title: 'Code OS',
+    domain: 'software engineering, repositories, patches, tests, and PR workflows',
+    status: 'installed',
+    description: 'Reads codebases, plans safe changes, prepares patch drafts, gates implementation, validates builds/tests, and packages PR delivery.',
+    capabilities: ['think', 'plan', 'research', 'create', 'operate', 'govern', 'record', 'remember', 'learn'],
+    skills: ['objective_analysis', 'content_prepare', 'status_monitor'],
+    requiredProviders: ['theone', 'oneai', 'oneclaw'],
+    riskProfile: 'high',
+  },
+  {
     key: 'operations',
     title: 'Operations OS',
     domain: 'browser, files, APIs, enterprise systems, field systems, and tools',

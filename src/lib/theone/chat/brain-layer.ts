@@ -105,7 +105,8 @@ const domainCopy: Record<string, { title: string; description: string }> = {
   crm: { title: 'CRM', description: 'Prepare lead, contact, deal, and activity workflows.' },
   commerce: { title: 'Commerce', description: 'Search products and prepare guarded orders.' },
   payment: { title: 'Payments', description: 'Prepare invoices or charges; transactions remain approval-gated.' },
-  git: { title: 'GitHub and Code', description: 'Inspect repos, checks, actions runs, CI status, search repos, and prepare issues or PRs.' },
+  git: { title: 'GitHub and Code', description: 'Inspect repos, checks, actions runs, CI status, search repos, prepare issues or PRs, and connect code work to GitHub proof.' },
+  code: { title: 'Code Workspace', description: 'Read repositories, understand architecture, plan changes, prepare patch drafts, stage implementation approval, validate builds/tests, and package commits or PRs behind explicit gates.' },
   device: { title: 'Devices', description: 'Read device status and prepare guarded device commands.' },
   iot: { title: 'IoT', description: 'Read sensor status and prepare device-related workflows.' },
   robot: { title: 'Robotics', description: 'Prepare guarded robot tasks for future connected operators.' },
@@ -210,7 +211,13 @@ function inferCapabilityRoute(raw: string) {
   const route = new Set<string>(['think', 'plan', 'govern', 'record']);
   if (hasAny(raw, [/browse|website|web|search|research|网页|网站|搜索|研究/i])) route.add('research');
   if (hasAny(raw, [/post|tweet|x\b|twitter|发布|推文|回复/i])) route.add('communicate');
-  if (hasAny(raw, [/\bgithub\b|\brepo\b|repository|代码|仓库|ci|pr|issue/i])) route.add('coordinate');
+  if (hasAny(raw, [/\bgithub\b|\brepo\b|repository|仓库|ci|pr|issue/i])) route.add('coordinate');
+  if (hasAny(raw, [/code|代码|代码库|patch|diff|补丁|修复|bug|refactor|重构|test|测试|build|构建|component|组件|页面|api route|feature|功能/i])) {
+    route.add('research');
+    route.add('create');
+    route.add('operate');
+    route.add('coordinate');
+  }
   if (hasAny(raw, [/desktop|computer|chrome|电脑|本地|click|type|hotkey|截图/i])) route.add('operate');
   if (hasAny(raw, [/file|folder|document|report|文件|目录|报告/i])) route.add('create');
   if (hasAny(raw, [/api|webhook|接口|sync|同步/i])) route.add('integrate');

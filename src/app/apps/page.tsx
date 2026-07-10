@@ -12,6 +12,7 @@ const phases = [
       ['Browser Operations', '/apps/browser', 'Ready', 'online', 'Open, extract, screenshot, and keep browser proof.'],
       ['X Growth', '/apps/x', 'Guarded', 'manual', 'Prepare posts, replies, limits, approvals, and public proof.'],
       ['GitHub Workflow', '/apps/github', 'Ready', 'online', 'Inspect repos, issues, actions, pull requests, and engineering status.'],
+      ['Code Workspace', '/apps/code', 'Ready', 'online', 'Read codebases, plan changes, prepare patches, validate, and package PR delivery.'],
       ['Desktop Control', '/apps/desktop', 'Local', 'manual', 'Use the local OneClaw bridge to operate this computer safely.'],
       ['Files', '/apps/files', 'Ready', 'online', 'Read, transform, write, and route local or cloud artifacts.'],
       ['OneAI Bot', '/apps/bot', 'Bridge', 'assist', 'Connect the existing Telegram community bot without changing its code.'],

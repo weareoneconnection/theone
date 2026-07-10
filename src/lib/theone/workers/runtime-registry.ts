@@ -132,6 +132,16 @@ const baseWorkers: WorkerRuntimeDefinition[] = [
     policy: 'Read automatically; issue/PR creation is approval-gated.',
   },
   {
+    key: 'code_workspace_worker',
+    title: 'Code Workspace Worker',
+    provider: 'theone',
+    domain: 'code',
+    status: 'live',
+    actions: ['code.workspace.scan', 'code.plan.change', 'code.patch.prepare', 'code.patch.apply', 'code.validate.run', 'code.delivery.prepare', 'code.review.risk'],
+    eventSources: ['filesystem.change', 'github.actions', 'code.review'],
+    policy: 'Repository reading, change planning, and patch drafting can run automatically; applying patches, shell commands, commits, pushes, and PRs require approval.',
+  },
+  {
     key: 'email_worker',
     title: 'Email Worker',
     provider: 'oneclaw',
