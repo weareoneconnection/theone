@@ -63,6 +63,15 @@ type TimelineItem = {
   status: 'ready' | 'running' | 'done' | 'blocked' | 'waiting';
 };
 
+function formatMessageTime(createdAt: string) {
+  const match = createdAt.match(/T(\d{2}):(\d{2})/);
+  if (match) {
+    return `${match[1]}:${match[2]}`;
+  }
+
+  return '--:--';
+}
+
 const workerPrompts = [
   {
     label: 'Web research',
@@ -2793,7 +2802,7 @@ function RunPageContent() {
               <article key={message.id} className={`run-message run-message-${message.role}`}>
                 <div className="run-message-meta">
                   <span>{message.role === 'user' ? labels.messageYou : message.role === 'assistant' ? labels.messageAssistant : labels.messageSystem}</span>
-                  <small>{new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small>
+                  <small>{formatMessageTime(message.createdAt)}</small>
                 </div>
                 <p>{message.content}</p>
                 {message.role === 'assistant' && message.result ? <WorkStatusLine result={message.result} /> : null}
