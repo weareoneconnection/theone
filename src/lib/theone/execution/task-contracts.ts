@@ -73,13 +73,22 @@ export function normalizeOneClawTaskContract(input: {
   if (!input.task) return null;
   let repaired = false;
   const repairs: string[] = [];
+  const taskMetadata = isRecord(input.task.metadata) ? input.task.metadata : {};
+  const taskWorkspacePath = textValue(taskMetadata.workspacePath);
 
   const steps = input.task.steps.map((step) => {
     const stepInput = isRecord(step.input) ? step.input : {};
+    const nextStepInput = { ...stepInput };
+
+    if (step.action.startsWith('code.') && taskWorkspacePath && !textValue(nextStepInput.workspacePath)) {
+      repaired = true;
+      repairs.push(`${step.id}.input.workspacePath`);
+      nextStepInput.workspacePath = taskWorkspacePath;
+    }
 
     if (step.action === 'social.post') {
       const content = inferSocialContent({
-        stepInput,
+        stepInput: nextStepInput,
         oneAiData: input.oneAiData,
         intent: input.intent,
       });
@@ -96,7 +105,7 @@ export function normalizeOneClawTaskContract(input: {
           return {
             ...step,
             input: {
-              ...stepInput,
+              ...nextStepInput,
               channel: textValue(stepInput.channel) || 'x',
               content: normalizedContent,
             },
@@ -107,12 +116,13 @@ export function normalizeOneClawTaskContract(input: {
 
     return {
       ...step,
-      input: stepInput,
+      input: nextStepInput,
     };
   });
 
   return {
     ...input.task,
+    approvalMode: steps.some((step) => step.action === 'code.patch.apply') ? 'manual' : input.task.approvalMode,
     steps,
     metadata: {
       ...(input.task.metadata || {}),

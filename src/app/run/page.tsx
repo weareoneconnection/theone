@@ -1214,6 +1214,9 @@ function promptForWorker(action: string, title?: string) {
   if (/browser\.extract|browser\.scrape|search\.web/i.test(action)) return `Use ${action} to analyze https://weareoneconnection.org and summarize useful findings`;
   if (/social\.post|x\./i.test(action)) return `Use ${action} to prepare a high-signal X workflow and wait for approval when needed`;
   if (/git\./i.test(action)) return `Use ${action} for repo weareoneconnection/theone and explain what needs attention`;
+  if (/code\.workspace\.status/i.test(action)) return `Use ${action} to inspect the current code workspace and summarize status`;
+  if (/code\.diff\.prepare/i.test(action)) return `Use ${action} to prepare a code diff preview for the requested change without applying it`;
+  if (/code\.patch\.apply/i.test(action)) return `Use ${action} to apply an approved code patch with proof`;
   if (/desktop\./i.test(action)) return `Use ${action} through the local desktop bridge for Google Chrome`;
   if (/file\.|document\.|spreadsheet\./i.test(action)) return `Use ${action} to inspect files and summarize the result`;
   if (/api\.|webhook|health/i.test(action)) return `Use ${action} to call the OneClaw health API and summarize the response`;
@@ -1509,6 +1512,81 @@ function DocumentRuntimeCard({ result }: { result: any }) {
       ) : null}
       {Array.isArray(documentRuntime.nextActions) && documentRuntime.nextActions.length ? (
         <p>{documentRuntime.nextActions.slice(0, 2).join(' ')}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function codeRuntimeFromResult(result: any) {
+  return result?.chat?.codeRuntime || result?.networkSignals?.codeRuntime || result?.appResult?.codeRuntime || null;
+}
+
+function diffPreviewLines(diff: string) {
+  return diff.split('\n').slice(0, 180);
+}
+
+function diffLineClass(line: string) {
+  if (line.startsWith('+++') || line.startsWith('---')) return 'meta';
+  if (line.startsWith('@@')) return 'hunk';
+  if (line.startsWith('+')) return 'add';
+  if (line.startsWith('-')) return 'remove';
+  return 'context';
+}
+
+function CodeRuntimeCard({ result, busy, onAction }: { result: any; busy?: boolean; onAction?: (prompt: string) => void }) {
+  const codeRuntime = codeRuntimeFromResult(result);
+  if (!codeRuntime) return null;
+  const files = Array.isArray(codeRuntime.files) ? codeRuntime.files.filter(Boolean) : [];
+  const steps = Array.isArray(codeRuntime.steps) ? codeRuntime.steps : [];
+  const diff = typeof codeRuntime.diff === 'string' ? codeRuntime.diff : '';
+  const nextActions = Array.isArray(codeRuntime.nextActions) ? codeRuntime.nextActions : [];
+  const primaryAction = codeRuntime.action || steps[0]?.action || 'code';
+  return (
+    <div className="run-code-runtime-card">
+      <div className="run-code-runtime-head">
+        <span>Code Preview</span>
+        <strong>{friendlyStatus(codeRuntime.status || 'planned')}</strong>
+      </div>
+      <div className="run-code-runtime-grid">
+        <small>
+          <span>Action</span>
+          <strong>{primaryAction}</strong>
+        </small>
+        <small>
+          <span>Approval</span>
+          <strong>{codeRuntime.approvalRequired ? 'required' : 'clear'}</strong>
+        </small>
+        <small>
+          <span>Files</span>
+          <strong>{files.length || '-'}</strong>
+        </small>
+      </div>
+      {codeRuntime.workspacePath ? (
+        <p className="run-code-workspace">{codeRuntime.workspacePath}</p>
+      ) : null}
+      {codeRuntime.summary ? <p>{codeRuntime.summary}</p> : null}
+      {files.length ? (
+        <div className="run-code-files">
+          {files.slice(0, 6).map((file: string) => <em key={file}>{file}</em>)}
+        </div>
+      ) : null}
+      {diff ? (
+        <pre className="run-code-diff-preview" aria-label="Code diff preview">
+          {diffPreviewLines(diff).map((line, index) => (
+            <code key={`${index}-${line.slice(0, 16)}`} className={`diff-${diffLineClass(line)}`}>
+              {line || ' '}
+            </code>
+          ))}
+        </pre>
+      ) : null}
+      {nextActions.length ? <p className="run-code-next">{nextActions.slice(0, 2).join(' ')}</p> : null}
+      {onAction ? (
+        <div className="run-code-runtime-actions">
+          <button type="button" disabled={busy} onClick={() => onAction('Explain this code diff in plain language and call out risks.')}>Explain</button>
+          <button type="button" disabled={busy} onClick={() => onAction('Revise the code diff preview to make it safer and smaller.')}>Revise</button>
+          {diff ? <button type="button" disabled={busy} onClick={() => onAction('Prepare an approval-gated code.patch.apply task for this diff.')}>Prepare apply</button> : null}
+          <button type="button" disabled={busy} onClick={() => onAction('Inspect the workspace and suggest the best tests to run for this change.')}>Tests</button>
+        </div>
       ) : null}
     </div>
   );
@@ -1850,9 +1928,11 @@ function approvalInputPreview(input: Record<string, any>) {
 }
 
 function actionRiskLabel(action: string, result: any) {
-  if (/social\.post|email\.send|message\.send|payment|transfer|delete|desktop\.(click|type|hotkey)/i.test(action)) {
+  if (/social\.post|email\.send|message\.send|payment|transfer|delete|desktop\.(click|type|hotkey)|code\.patch\.apply/i.test(action)) {
     return 'External write';
   }
+  if (/code\.diff\.prepare/i.test(action)) return 'Code preview';
+  if (/code\.workspace\.status/i.test(action)) return 'Read-only';
   if (/file\.write|document\.generate|spreadsheet\.write|database\.write/i.test(action)) return 'Creates output';
   if (result?.chat?.workerCoordination?.approvalGated) return 'Approval gated';
   return 'Managed';
@@ -2806,6 +2886,9 @@ function RunPageContent() {
                 </div>
                 <p>{message.content}</p>
                 {message.role === 'assistant' && message.result ? <WorkStatusLine result={message.result} /> : null}
+                {message.role === 'assistant' && message.result ? (
+                  <CodeRuntimeCard result={message.result} busy={loading} onAction={(prompt) => sendMessage(prompt)} />
+                ) : null}
                 {message.role === 'assistant' && message.result ? <DocumentRuntimeCard result={message.result} /> : null}
                 {message.role === 'assistant' && message.result ? <ReportArtifactCard result={message.result} /> : null}
                 {message.role === 'assistant' && message.result ? <DeliveryStatusCard result={message.result} /> : null}
@@ -3011,6 +3094,9 @@ function RunPageContent() {
               <span className="product-card-kicker">Now</span>
               <strong>{workerRuntime.current?.title || friendlyStatus(workerRuntime.status)}</strong>
             <p className="panel-subtitle">{workerRuntime.current?.detail || workerRuntime.diagnostics?.userReadable}</p>
+              {latestResult?.chat?.codeRuntime ? (
+                <CodeRuntimeCard result={latestResult} busy={loading} onAction={(prompt) => sendMessage(prompt)} />
+              ) : null}
               {latestResult?.chat?.documentRuntime ? <DocumentRuntimeCard result={latestResult} /> : null}
               {latestResult?.chat?.reportArtifact ? <ReportArtifactCard result={latestResult} /> : null}
               {latestResult?.chat?.deliveryStatus || latestResult?.chat?.exportBundle ? <DeliveryStatusCard result={latestResult} /> : null}

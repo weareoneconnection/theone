@@ -812,7 +812,7 @@ function isProcessPlaceholderReply(value: string) {
 function objectiveNeedsWorkerResult(raw: string, task: OneClawTask | null) {
   if (!task) return false;
   const action = firstTaskAction(task);
-  if (/^(browser\.|git\.|file\.|document\.|spreadsheet\.|image\.|api\.|x\.|social\.)/.test(action)) return true;
+  if (/^(browser\.|git\.|file\.|document\.|spreadsheet\.|image\.|api\.|x\.|social\.|code\.)/.test(action)) return true;
   return /(analy[sz]e|summarize|summary|findings|browse|website|web page|inspect|check|read|report|extract|list|分析|总结|浏览|网站|检查|读取|报告|提取)/i.test(raw);
 }
 
@@ -820,10 +820,127 @@ function taskOutcomeLabel(task: OneClawTask | null) {
   const action = firstTaskAction(task);
   if (action === 'browser.extract' || action === 'browser.scrape' || action === 'browser.open') return 'website analysis';
   if (action.startsWith('git.')) return 'GitHub check';
+  if (action === 'code.workspace.status') return 'code workspace check';
+  if (action === 'code.diff.prepare') return 'code diff preview';
+  if (action === 'code.patch.apply') return 'code patch application';
   if (action.startsWith('document.') || action.startsWith('file.') || action.startsWith('spreadsheet.') || action.startsWith('image.')) return 'file reading';
   if (action === 'social.post') return 'X publishing';
   if (action.startsWith('api.')) return 'API call';
   return action || 'worker task';
+}
+
+function isCodeAction(action: string) {
+  return /^code\./i.test(action || '');
+}
+
+function stringsFromArray(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (typeof item === 'string') return item.trim();
+      if (!isRecord(item)) return '';
+      return textField(item.path) || textField(item.file) || textField(item.name) || textField(item.title);
+    })
+    .filter(Boolean);
+}
+
+function collectCodeOutputs(value: unknown, outputs: Record<string, unknown>[] = [], depth = 0) {
+  if (depth > 6 || !value) return outputs;
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectCodeOutputs(item, outputs, depth + 1));
+    return outputs;
+  }
+  if (!isRecord(value)) return outputs;
+
+  const output = isRecord(value.output) ? value.output : value;
+  const status = String(output.status || '');
+  if (
+    textField(output.diff) ||
+    textField(output.patch) ||
+    textField(output.unifiedDiff) ||
+    textField(output.preview) ||
+    textField(output.workspacePath) ||
+    Array.isArray(output.files) ||
+    /^code_/i.test(status)
+  ) {
+    outputs.push(output);
+  }
+
+  for (const key of ['raw', 'steps', 'task', 'receipt', 'response', 'data', 'result']) {
+    collectCodeOutputs(value[key], outputs, depth + 1);
+  }
+  return outputs;
+}
+
+function buildCodeRuntime(input: {
+  raw: string;
+  oneclawTask: OneClawTask | null;
+  oneclawRun: OneClawTaskRun | null;
+  runtimeError: string | null;
+  approvalGated: boolean;
+  blocked: boolean;
+  canSubmit: boolean;
+  workerResultText: string;
+}) {
+  const steps = input.oneclawTask?.steps || [];
+  const codeSteps = steps.filter((step) => isCodeAction(step.action));
+  const outputs = collectCodeOutputs(input.oneclawRun);
+  const latest = outputs[outputs.length - 1] || null;
+  if (!codeSteps.length && !latest) return null;
+
+  const action = codeSteps[0]?.action || textField(latest?.action) || 'code.workspace.status';
+  const diff = textField(latest?.diff) || textField(latest?.patch) || textField(latest?.unifiedDiff) || textField(latest?.preview);
+  const files = Array.from(new Set([
+    ...stringsFromArray(latest?.files),
+    ...stringsFromArray(latest?.changedFiles),
+    ...stringsFromArray(codeSteps[0]?.input?.files),
+  ])).filter(Boolean);
+  const workspacePath = textField(latest?.workspacePath) ||
+    textField(codeSteps[0]?.input?.workspacePath) ||
+    textField(input.oneclawTask?.metadata?.workspacePath);
+  const summary = textField(latest?.summary) ||
+    textField(latest?.message) ||
+    (diff ? 'Code diff preview is ready.' : input.workerResultText || 'Code workspace task is prepared.');
+  const status = input.runtimeError
+    ? 'failed'
+    : input.blocked
+      ? 'blocked'
+      : input.approvalGated
+        ? 'approval_required'
+        : oneClawRunInFlight(input.oneclawRun)
+          ? 'running'
+          : oneClawRunSettled(input.oneclawRun)
+            ? action === 'code.patch.apply' ? 'applied' : diff ? 'preview_ready' : 'completed'
+            : input.canSubmit
+              ? 'ready'
+              : 'planned';
+
+  return {
+    schemaVersion: 'theone.code_runtime.v1',
+    status,
+    action,
+    workspacePath: workspacePath || null,
+    summary,
+    diff: diff || null,
+    files,
+    approvalRequired: action === 'code.patch.apply' || input.approvalGated,
+    steps: codeSteps.map((step) => {
+      const stepRecord = step as Record<string, unknown>;
+      return {
+        id: step.id,
+        action: step.action,
+        approvalMode: step.action === 'code.patch.apply'
+          ? 'manual'
+          : textField(stepRecord.approvalMode) || input.oneclawTask?.approvalMode || 'auto',
+        input: step.input,
+      };
+    }),
+    nextActions: action === 'code.patch.apply' || input.approvalGated
+      ? ['Review the diff, then approve or reject the patch gate.']
+      : diff
+        ? ['Review the diff preview. Ask TheOne to revise it, test it, or prepare an approval-gated apply task.']
+        : ['Ask TheOne to prepare a diff preview or inspect the workspace in more detail.'],
+  };
 }
 
 function firstBlockedCheck(preflight: unknown) {
@@ -3024,6 +3141,16 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     reportArtifact,
     runtimeError,
   });
+  const codeRuntime = buildCodeRuntime({
+    raw,
+    oneclawTask,
+    oneclawRun,
+    runtimeError,
+    approvalGated,
+    blocked,
+    canSubmit,
+    workerResultText,
+  });
   const deliveryStatus = buildDeliveryStatus({
     documentRuntime,
     reportArtifact,
@@ -3126,6 +3253,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         continuity,
         missionState,
         documentRuntime,
+        codeRuntime,
         reportArtifact,
         exportBundle,
         deliveryStatus,
@@ -3240,6 +3368,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       workerRuntime,
       missionState,
       documentRuntime,
+      codeRuntime,
       reportArtifact,
       exportBundle,
       deliveryStatus,
@@ -3272,6 +3401,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       workerRuntime,
       missionState,
       documentRuntime,
+      codeRuntime,
       reportArtifact,
       exportBundle,
       deliveryStatus,

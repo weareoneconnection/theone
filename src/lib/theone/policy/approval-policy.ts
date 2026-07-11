@@ -31,6 +31,7 @@ const highRiskOneClawActions = new Set([
   'construction.qaqc.ncr.create',
   'construction.change_order.prepare',
   'construction.contract.claim_prepare',
+  'code.patch.apply',
 ]);
 
 const mediumRiskOneClawPrefixes = [
@@ -41,6 +42,10 @@ const mediumRiskOneClawPrefixes = [
 ];
 
 export function getActionRisk(action: string): 'low' | 'medium' | 'high' {
+  if (action === 'code.patch.apply') return 'high';
+  if (action === 'code.diff.prepare') return 'medium';
+  if (action === 'code.workspace.status') return 'low';
+
   if (highRiskPlanActions.has(action as PlanStep['action']) || highRiskOneClawActions.has(action)) {
     return 'high';
   }
@@ -96,6 +101,8 @@ function isReadOnlyAutoAction(action: string, input: Record<string, unknown> = {
     'vector.query',
     'storage.get',
     'storage.signUrl',
+    'code.workspace.status',
+    'code.diff.prepare',
     'web3.balance',
     'web3.tx',
     'web3.contract.read',
