@@ -1,4 +1,5 @@
 import type { ClassifiedIntent, OneClawTask } from '../types';
+import { normalizeCodeTaskContract } from '../code/code-task-contract';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -120,9 +121,14 @@ export function normalizeOneClawTaskContract(input: {
     };
   });
 
-  return {
+  const normalizedTask = {
     ...input.task,
-    approvalMode: steps.some((step) => step.action === 'code.patch.apply') ? 'manual' : input.task.approvalMode,
+    approvalMode: steps.some((step) => [
+      'code.patch.apply',
+      'code.test.run',
+      'code.patch.rollback',
+      'code.pr.create',
+    ].includes(step.action)) ? 'manual' : input.task.approvalMode,
     steps,
     metadata: {
       ...(input.task.metadata || {}),
@@ -134,4 +140,6 @@ export function normalizeOneClawTaskContract(input: {
       },
     },
   };
+
+  return normalizeCodeTaskContract(normalizedTask);
 }

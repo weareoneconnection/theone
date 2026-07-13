@@ -1,6 +1,13 @@
+import path from 'node:path';
 import { getOneClawCapability } from './oneclaw-capabilities';
 import { selectExecutionTemplate } from './templates';
 import { getOneClawConfig } from '../providers/oneclaw';
+import {
+  codeTaskMetadata,
+  getCodeSandboxProfile,
+  isCodeAction,
+  resolveCodeRuntimeRoute,
+} from '../code/code-task-contract';
 import type {
   ClassifiedIntent,
   ExecutionPreflightCheck,
@@ -57,6 +64,10 @@ function isReadOnlyAutoAction(action: string, stepInput: Record<string, unknown>
     'web3.contract.read',
     'chain.query',
     'secret.check',
+    'code.workspace.status',
+    'code.diff.prepare',
+    'code.verify',
+    'code.commit.prepare',
   ].includes(action)) return true;
 
   return (
@@ -67,6 +78,98 @@ function isReadOnlyAutoAction(action: string, stepInput: Record<string, unknown>
     action.includes('.read') ||
     action.includes('.inspect')
   );
+}
+
+function recordValue(value: unknown) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function codeRuntimeChecks(task: OneClawTask, action: string, stepInput: Record<string, unknown>) {
+  if (!isCodeAction(action)) return [];
+  const metadata = codeTaskMetadata(task);
+  const runtimeMetadata = recordValue(metadata?.runtime);
+  const workspacePath = String(stepInput.workspacePath || metadata?.workspacePath || '').trim();
+  const runtime = runtimeMetadata.target
+    ? {
+        target: String(runtimeMetadata.target),
+        status: String(runtimeMetadata.status || 'blocked'),
+        configured: runtimeMetadata.configured === true,
+        reason: String(runtimeMetadata.reason || ''),
+      }
+    : resolveCodeRuntimeRoute({ workspacePath });
+  const sandbox = getCodeSandboxProfile(action);
+  const checks: ExecutionPreflightCheck[] = [];
+
+  checks.push(check(
+    `code_runtime_${action}`,
+    'Code execution runtime',
+    runtime.configured && runtime.status === 'ready' ? 'pass' : 'fail',
+    runtime.configured
+      ? `${runtime.target} is configured for this code task.`
+      : runtime.reason || 'No local bridge or cloud coding sandbox is configured.'
+  ));
+
+  if (runtime.target === 'local_bridge' && !workspacePath) {
+    checks.push(check(
+      `code_workspace_${action}`,
+      'Code workspace',
+      'fail',
+      'Local coding requires an explicit workspacePath inside an allowed root.'
+    ));
+  } else if (workspacePath && sandbox.workspaceRoots.length > 0) {
+    const resolved = path.resolve(workspacePath);
+    const allowed = sandbox.workspaceRoots.some((root) => (
+      resolved === root || resolved.startsWith(`${root}${path.sep}`)
+    ));
+    checks.push(check(
+      `code_workspace_${action}`,
+      'Code workspace',
+      allowed ? 'pass' : 'fail',
+      allowed
+        ? 'Workspace is inside an approved code root.'
+        : 'Workspace is outside THEONE_CODE_WORKSPACE_ROOTS.'
+    ));
+  }
+
+  const guardedMutation = [
+    'code.patch.apply',
+    'code.test.run',
+    'code.patch.rollback',
+    'code.pr.create',
+  ].includes(action);
+
+  checks.push(check(
+    `code_sandbox_${action}`,
+    'Code sandbox contract',
+    guardedMutation ? 'warn' : 'pass',
+    `${sandbox.filesystem}; network ${sandbox.networkEgress}; commands ${sandbox.commandExecution}; ` +
+    `max ${sandbox.maxFiles} files / ${sandbox.maxTotalBytes} bytes / ${sandbox.timeoutMs}ms.`
+  ));
+
+  if (action === 'code.test.run') {
+    const scripts = Array.isArray(stepInput.scripts) ? stepInput.scripts : [];
+    checks.push(check(
+      `code_test_scripts_${action}`,
+      'Approved test scripts',
+      scripts.length > 0 ? 'warn' : 'fail',
+      scripts.length > 0
+        ? `Requested package.json validation scripts: ${scripts.join(', ')}.`
+        : 'code.test.run requires at least one approved package.json validation script.'
+    ));
+  }
+
+  if (action === 'code.patch.rollback' && !String(stepInput.rollbackToken || '').trim()) {
+    checks.push(check(
+      `code_rollback_token_${action}`,
+      'Rollback snapshot',
+      'fail',
+      'code.patch.rollback requires the rollbackToken returned by code.patch.apply.'
+    ));
+  }
+
+  return checks;
 }
 
 function sandboxBoundaryForAction(action: string): ExecutionPreflightCheck {
@@ -240,6 +343,7 @@ export function preflightOneClawTask(input: {
       approvalActions.push(step.action);
     }
 
+    checks.push(...codeRuntimeChecks(task, step.action, step.input || {}));
     checks.push(sandboxBoundaryForAction(step.action));
   }
 

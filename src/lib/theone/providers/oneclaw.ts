@@ -1,4 +1,9 @@
 import { listOneClawCapabilities } from '../execution/oneclaw-capabilities';
+import {
+  codeTaskMetadata,
+  isCodeAction,
+  resolveCodeRuntimeRoute,
+} from '../code/code-task-contract';
 import type {
   OneClawCapabilityDefinition,
   OneClawCapabilityManifest,
@@ -45,6 +50,79 @@ function getHeaders(token: string) {
   }
 
   return headers;
+}
+
+type OneClawEndpointConfig = {
+  baseUrl: string;
+  token: string;
+  target: 'default' | 'local_bridge' | 'cloud_sandbox';
+};
+
+function codeRuntimeToken(target: 'local_bridge' | 'cloud_sandbox', fallback: string) {
+  if (target === 'local_bridge') {
+    return String(
+      process.env.THEONE_CODE_LOCAL_BRIDGE_TOKEN ||
+      process.env.ONECLAW_LOCAL_BRIDGE_TOKEN ||
+      fallback
+    ).trim();
+  }
+  return String(
+    process.env.THEONE_CODE_CLOUD_SANDBOX_TOKEN ||
+    process.env.ONECLAW_CODE_SANDBOX_TOKEN ||
+    fallback
+  ).trim();
+}
+
+function endpointConfigs(): OneClawEndpointConfig[] {
+  const defaultConfig = getOneClawConfig();
+  const local = resolveCodeRuntimeRoute({ requestedTarget: 'local_bridge' });
+  const cloud = resolveCodeRuntimeRoute({ requestedTarget: 'cloud_sandbox' });
+  const candidates: OneClawEndpointConfig[] = [
+    { ...defaultConfig, target: 'default' },
+  ];
+  if (local.configured && local.baseUrl) {
+    candidates.push({
+      baseUrl: local.baseUrl,
+      token: codeRuntimeToken('local_bridge', defaultConfig.token),
+      target: 'local_bridge',
+    });
+  }
+  if (cloud.configured && cloud.baseUrl) {
+    candidates.push({
+      baseUrl: cloud.baseUrl,
+      token: codeRuntimeToken('cloud_sandbox', defaultConfig.token),
+      target: 'cloud_sandbox',
+    });
+  }
+  return candidates.filter((candidate, index, items) => (
+    candidate.baseUrl && items.findIndex((item) => item.baseUrl === candidate.baseUrl) === index
+  ));
+}
+
+function taskEndpointConfig(task: OneClawTask): OneClawEndpointConfig {
+  const defaultConfig = getOneClawConfig();
+  if (!task.steps.some((step) => isCodeAction(step.action))) {
+    return { ...defaultConfig, target: 'default' };
+  }
+
+  const metadata = codeTaskMetadata(task);
+  const runtime = metadata?.runtime && typeof metadata.runtime === 'object'
+    ? metadata.runtime as Record<string, unknown>
+    : {};
+  const workspacePath = String(metadata?.workspacePath || task.steps[0]?.input?.workspacePath || '').trim();
+  const route = resolveCodeRuntimeRoute({
+    workspacePath,
+    requestedTarget: String(runtime.target || ''),
+  });
+  if (!route.configured || !route.baseUrl || route.target === 'unavailable') {
+    throw new Error('Code task blocked: no local bridge or cloud coding sandbox is configured.');
+  }
+
+  return {
+    baseUrl: route.baseUrl,
+    token: codeRuntimeToken(route.target, defaultConfig.token),
+    target: route.target,
+  };
 }
 
 function normalizeRisk(value: unknown): OneClawCapabilityDefinition['risk'] {
@@ -288,7 +366,7 @@ export async function checkOneClawConnection(): Promise<ProviderConnectionCheck>
 }
 
 export async function runOneClawTask<T = OneClawTaskRun>(task: OneClawTask): Promise<T> {
-  const { baseUrl, token } = getOneClawConfig();
+  const { baseUrl, token } = taskEndpointConfig(task);
 
   if (!token) {
     return mockTaskRun(task) as T;
@@ -310,9 +388,8 @@ export async function runOneClawTask<T = OneClawTaskRun>(task: OneClawTask): Pro
 }
 
 export async function getOneClawTask<T = unknown>(taskId: string): Promise<T> {
-  const { baseUrl, token } = getOneClawConfig();
-
-  if (!token) {
+  const configs = endpointConfigs();
+  if (!configs.some((item) => item.token)) {
     return {
       id: taskId,
       status: 'mock',
@@ -320,18 +397,22 @@ export async function getOneClawTask<T = unknown>(taskId: string): Promise<T> {
     } as T;
   }
 
-  const res = await fetch(`${baseUrl}/v1/tasks/${encodeURIComponent(taskId)}`, {
-    method: 'GET',
-    headers: getHeaders(token),
-    cache: 'no-store',
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`ONECLAW task lookup failed: ${res.status} ${text}`);
+  let lastError = 'Task was not found on any configured OneClaw runtime.';
+  for (const { baseUrl, token } of configs) {
+    if (!token) continue;
+    try {
+      const res = await fetch(`${baseUrl}/v1/tasks/${encodeURIComponent(taskId)}`, {
+        method: 'GET',
+        headers: getHeaders(token),
+        cache: 'no-store',
+      });
+      if (res.ok) return (await res.json()) as T;
+      lastError = `${res.status} ${await res.text()}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
   }
-
-  return (await res.json()) as T;
+  throw new Error(`ONECLAW task lookup failed: ${lastError}`);
 }
 
 export async function runOneClaw<T = unknown>(actions: unknown[]): Promise<T> {
@@ -360,14 +441,17 @@ export async function runOneClawAction<T = unknown>(payload: {
   approvalMode?: 'auto' | 'manual';
   idempotencyKey?: string;
 }): Promise<T> {
-  const { baseUrl, token } = getOneClawConfig();
+  const actionTask: OneClawTask = {
+    taskName: `action:${payload.action}`,
+    approvalMode: payload.approvalMode,
+    steps: [{ id: 'step_1', action: payload.action, input: payload.input }],
+  };
+  const { baseUrl, token } = isCodeAction(payload.action)
+    ? taskEndpointConfig(actionTask)
+    : getOneClawConfig();
 
   if (!token) {
-    return mockTaskRun({
-      taskName: `action:${payload.action}`,
-      approvalMode: payload.approvalMode,
-      steps: [{ id: 'step_1', action: payload.action, input: payload.input }],
-    }) as T;
+    return mockTaskRun(actionTask) as T;
   }
 
   const res = await fetch(`${baseUrl}/v1/actions/execute`, {
@@ -389,23 +473,51 @@ export async function runOneClawAction<T = unknown>(payload: {
 }
 
 export async function listOneClawPendingApprovals(): Promise<OneClawApprovalRecord[]> {
-  const { baseUrl, token } = getOneClawConfig();
-  if (!token) return [];
+  const results = await Promise.allSettled(endpointConfigs().filter((item) => item.token).map(async ({ baseUrl, token, target }) => {
+    const res = await fetch(`${baseUrl}/v1/approvals/pending`, {
+      method: 'GET',
+      headers: getHeaders(token),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) throw new Error(`${target} returned ${res.status}`);
+    const raw = await res.json();
+    return Array.isArray(raw) ? raw as OneClawApprovalRecord[] : [];
+  }));
+  const approvals = results.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
+  return approvals.filter((approval, index, items) => (
+    items.findIndex((item) => item.id === approval.id) === index
+  ));
+}
 
-  const res = await fetch(`${baseUrl}/v1/approvals/pending`, {
-    method: 'GET',
-    headers: getHeaders(token),
-    cache: 'no-store',
-    signal: AbortSignal.timeout(6000),
-  });
+async function decideApprovalAcrossEndpoints<T>(input: {
+  approvalId: string;
+  decision: 'approve' | 'reject';
+  body: Record<string, unknown>;
+}): Promise<T> {
+  const configs = endpointConfigs().filter((item) => item.token);
+  if (!configs.length) throw new Error('ONECLAW token is not configured.');
+  let lastError = 'Approval was not found on any configured OneClaw runtime.';
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`ONECLAW approval lookup failed: ${res.status} ${text}`);
+  for (const { baseUrl, token, target } of configs) {
+    try {
+      const res = await fetch(
+        `${baseUrl}/v1/approvals/${encodeURIComponent(input.approvalId)}/${input.decision}`,
+        {
+          method: 'POST',
+          headers: getHeaders(token),
+          body: JSON.stringify(input.body),
+          cache: 'no-store',
+        }
+      );
+      if (res.ok) return await res.json() as T;
+      lastError = `${target} returned ${res.status}: ${await res.text()}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
   }
 
-  const raw = await res.json();
-  return Array.isArray(raw) ? raw as OneClawApprovalRecord[] : [];
+  throw new Error(`ONECLAW approval failed: ${lastError}`);
 }
 
 export async function approveOneClawApproval<T = unknown>(payload: {
@@ -413,27 +525,14 @@ export async function approveOneClawApproval<T = unknown>(payload: {
   decidedBy?: string;
   decisionNote?: string;
 }): Promise<T> {
-  const { baseUrl, token } = getOneClawConfig();
-  if (!token) {
-    throw new Error('ONECLAW token is not configured.');
-  }
-
-  const res = await fetch(`${baseUrl}/v1/approvals/${encodeURIComponent(payload.approvalId)}/approve`, {
-    method: 'POST',
-    headers: getHeaders(token),
-    body: JSON.stringify({
+  return decideApprovalAcrossEndpoints<T>({
+    approvalId: payload.approvalId,
+    decision: 'approve',
+    body: {
       decidedBy: payload.decidedBy || 'theone',
       decisionNote: payload.decisionNote || 'Approved from TheOne control plane.',
-    }),
-    cache: 'no-store',
+    },
   });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`ONECLAW approval failed: ${res.status} ${text}`);
-  }
-
-  return (await res.json()) as T;
 }
 
 export async function rejectOneClawApproval<T = unknown>(payload: {
@@ -441,25 +540,12 @@ export async function rejectOneClawApproval<T = unknown>(payload: {
   decidedBy?: string;
   decisionNote?: string;
 }): Promise<T> {
-  const { baseUrl, token } = getOneClawConfig();
-  if (!token) {
-    throw new Error('ONECLAW token is not configured.');
-  }
-
-  const res = await fetch(`${baseUrl}/v1/approvals/${encodeURIComponent(payload.approvalId)}/reject`, {
-    method: 'POST',
-    headers: getHeaders(token),
-    body: JSON.stringify({
+  return decideApprovalAcrossEndpoints<T>({
+    approvalId: payload.approvalId,
+    decision: 'reject',
+    body: {
       decidedBy: payload.decidedBy || 'theone',
       decisionNote: payload.decisionNote || 'Rejected from TheOne control plane.',
-    }),
-    cache: 'no-store',
+    },
   });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`ONECLAW rejection failed: ${res.status} ${text}`);
-  }
-
-  return (await res.json()) as T;
 }

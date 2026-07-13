@@ -1533,6 +1533,22 @@ function diffLineClass(line: string) {
   return 'context';
 }
 
+const codeLifecycleLabels: Record<string, string> = {
+  'code.workspace.status': 'Inspect',
+  'code.diff.prepare': 'Plan',
+  'code.patch.apply': 'Apply',
+  'code.test.run': 'Test',
+  'code.verify': 'Verify',
+  'code.commit.prepare': 'Package',
+  'code.pr.create': 'Deliver',
+};
+
+function compactCodeToken(value: unknown) {
+  const token = typeof value === 'string' ? value : '';
+  if (!token) return '';
+  return token.length > 22 ? `${token.slice(0, 10)}...${token.slice(-8)}` : token;
+}
+
 function CodeRuntimeCard({ result, busy, onAction }: { result: any; busy?: boolean; onAction?: (prompt: string) => void }) {
   const codeRuntime = codeRuntimeFromResult(result);
   if (!codeRuntime) return null;
@@ -1541,20 +1557,44 @@ function CodeRuntimeCard({ result, busy, onAction }: { result: any; busy?: boole
   const diff = typeof codeRuntime.diff === 'string' ? codeRuntime.diff : '';
   const nextActions = Array.isArray(codeRuntime.nextActions) ? codeRuntime.nextActions : [];
   const primaryAction = codeRuntime.action || steps[0]?.action || 'code';
+  const lifecycle = Array.isArray(codeRuntime.lifecycle) ? codeRuntime.lifecycle : [];
+  const tests = codeRuntime.tests && typeof codeRuntime.tests === 'object' ? codeRuntime.tests : {};
+  const testResults = Array.isArray(tests.results) ? tests.results : [];
+  const rollback = codeRuntime.rollback && typeof codeRuntime.rollback === 'object' ? codeRuntime.rollback : {};
+  const delivery = codeRuntime.delivery && typeof codeRuntime.delivery === 'object' ? codeRuntime.delivery : {};
+  const codeWorkspace = result?.chat?.codeWorkspace || result?.networkSignals?.codeWorkspace || null;
+  const testStatus = tests.status || 'not_run';
+  const deliveryStatus = delivery.ready ? 'ready' : 'not ready';
+  const workspaceStage = codeWorkspace?.stage || primaryAction.replace(/^code\./, '');
   return (
     <div className="run-code-runtime-card">
       <div className="run-code-runtime-head">
-        <span>Code Preview</span>
+        <span>Code Mission Control</span>
         <strong>{friendlyStatus(codeRuntime.status || 'planned')}</strong>
       </div>
+      {lifecycle.length ? (
+        <div className="run-code-lifecycle" aria-label="Code mission lifecycle">
+          {lifecycle.map((item: any, index: number) => (
+            <div key={item.action || item.id || index} className={`is-${item.status || 'pending'}`}>
+              <small>{String(index + 1).padStart(2, '0')}</small>
+              <strong>{codeLifecycleLabels[item.action] || item.action || 'Stage'}</strong>
+              <span>{friendlyStatus(item.status || 'pending')}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div className="run-code-runtime-grid">
         <small>
-          <span>Action</span>
-          <strong>{primaryAction}</strong>
+          <span>Stage</span>
+          <strong>{workspaceStage}</strong>
         </small>
         <small>
-          <span>Approval</span>
-          <strong>{codeRuntime.approvalRequired ? 'required' : 'clear'}</strong>
+          <span>Tests</span>
+          <strong>{friendlyStatus(testStatus)}</strong>
+        </small>
+        <small>
+          <span>Delivery</span>
+          <strong>{deliveryStatus}</strong>
         </small>
         <small>
           <span>Files</span>
@@ -1568,6 +1608,40 @@ function CodeRuntimeCard({ result, busy, onAction }: { result: any; busy?: boole
       {files.length ? (
         <div className="run-code-files">
           {files.slice(0, 6).map((file: string) => <em key={file}>{file}</em>)}
+        </div>
+      ) : null}
+      {testResults.length ? (
+        <div className="run-code-test-results">
+          <span>Validation</span>
+          {testResults.slice(0, 6).map((test: any, index: number) => (
+            <div key={`${test.script || 'test'}-${index}`} className={`is-${test.status || 'unknown'}`}>
+              <strong>{test.script || 'test'}</strong>
+              <em>{friendlyStatus(test.status || 'unknown')}</em>
+              {typeof test.durationMs === 'number' ? <small>{test.durationMs} ms</small> : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {rollback.available || delivery.branch || delivery.diffStat ? (
+        <div className="run-code-safety-delivery">
+          {rollback.available ? (
+            <div>
+              <span>Recovery point</span>
+              <strong title={rollback.token || ''}>{compactCodeToken(rollback.token)}</strong>
+            </div>
+          ) : null}
+          {delivery.branch ? (
+            <div>
+              <span>Branch</span>
+              <strong>{delivery.branch}</strong>
+            </div>
+          ) : null}
+          {delivery.diffStat ? (
+            <div>
+              <span>Change set</span>
+              <strong>{delivery.diffStat}</strong>
+            </div>
+          ) : null}
         </div>
       ) : null}
       {diff ? (
@@ -1585,7 +1659,21 @@ function CodeRuntimeCard({ result, busy, onAction }: { result: any; busy?: boole
           <button type="button" disabled={busy} onClick={() => onAction('Explain this code diff in plain language and call out risks.')}>Explain</button>
           <button type="button" disabled={busy} onClick={() => onAction('Revise the code diff preview to make it safer and smaller.')}>Revise</button>
           {diff ? <button type="button" disabled={busy} onClick={() => onAction('Prepare an approval-gated code.patch.apply task for this diff.')}>Prepare apply</button> : null}
-          <button type="button" disabled={busy} onClick={() => onAction('Inspect the workspace and suggest the best tests to run for this change.')}>Tests</button>
+          {primaryAction === 'code.patch.apply' || rollback.available ? (
+            <button type="button" disabled={busy} onClick={() => onAction('Run the approved code.test.run package validation scripts for this workspace and return the exact results.')}>Run tests</button>
+          ) : null}
+          {testStatus === 'passed' ? (
+            <button type="button" disabled={busy} onClick={() => onAction('Run code.verify for the current workspace and return git status, diff check, and proof.')}>Verify</button>
+          ) : null}
+          {primaryAction === 'code.verify' && codeRuntime.status === 'completed' ? (
+            <button type="button" disabled={busy} onClick={() => onAction('Prepare code.commit.prepare for this verified change. Do not commit or push.')}>Prepare delivery</button>
+          ) : null}
+          {delivery.ready ? (
+            <button type="button" disabled={busy} onClick={() => onAction('Prepare an approval-gated code.pr.create package for this verified change. Do not claim the PR exists until a receipt is returned.')}>Prepare PR</button>
+          ) : null}
+          {rollback.available ? (
+            <button type="button" className="is-danger" disabled={busy} onClick={() => onAction(`Prepare an approval-gated code.patch.rollback task using the exact rollback token ${rollback.token}.`)}>Roll back</button>
+          ) : null}
         </div>
       ) : null}
     </div>

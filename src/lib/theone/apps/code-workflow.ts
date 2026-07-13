@@ -497,7 +497,7 @@ function buildCodeApprovals(runId: string, mode: TheOneMode): ApprovalGate[] {
     {
       id: `${runId}_code_validate`,
       stepId: 'code_validate_gate',
-      action: 'shell.exec',
+      action: 'code.test.run',
       risk: 'medium',
       required: true,
       status: 'pending',
@@ -507,7 +507,7 @@ function buildCodeApprovals(runId: string, mode: TheOneMode): ApprovalGate[] {
     {
       id: `${runId}_code_delivery`,
       stepId: 'code_delivery_gate',
-      action: 'git.pr.create',
+      action: 'code.pr.create',
       risk: 'high',
       required: true,
       status: 'pending',
@@ -648,7 +648,7 @@ export async function runCodeWorkflowApp(input: CodeWorkflowInput): Promise<TheO
     {
       id: 'code_apply_gate',
       title: 'Prepare implementation package',
-      action: 'custom',
+      action: 'code.patch.apply',
       status: 'blocked',
       output: { implementationPackage },
       requiresApproval: true,
@@ -658,7 +658,7 @@ export async function runCodeWorkflowApp(input: CodeWorkflowInput): Promise<TheO
     {
       id: 'code_validate_gate',
       title: 'Prepare validation runbook',
-      action: 'custom',
+      action: 'code.test.run',
       status: 'blocked',
       output: { validationPlan },
       requiresApproval: true,
@@ -666,13 +666,30 @@ export async function runCodeWorkflowApp(input: CodeWorkflowInput): Promise<TheO
       capability: 'operate',
     },
     {
+      id: 'code_verify',
+      title: 'Verify workspace state',
+      action: 'code.verify',
+      status: 'pending',
+      dependsOn: ['code_validate_gate'],
+      capability: 'govern',
+    },
+    {
+      id: 'code_commit_package',
+      title: 'Prepare commit package',
+      action: 'code.commit.prepare',
+      status: 'pending',
+      output: { branchName: deliveryPackage.branchName, commitMessage: deliveryPackage.commitMessage },
+      dependsOn: ['code_verify'],
+      capability: 'coordinate',
+    },
+    {
       id: 'code_delivery_gate',
       title: 'Prepare PR delivery package',
-      action: 'custom',
+      action: 'code.pr.create',
       status: 'blocked',
       output: { deliveryPackage },
       requiresApproval: true,
-      dependsOn: ['code_validate_gate'],
+      dependsOn: ['code_commit_package'],
       capability: 'coordinate',
     },
     {

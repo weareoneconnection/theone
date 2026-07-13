@@ -28,7 +28,9 @@ function statusFor(input: {
   if (input.mode === 'manual') {
     return 'requires_approval';
   }
-  if (action === 'code.patch.apply') return 'requires_approval';
+  if (['code.patch.apply', 'code.test.run', 'code.patch.rollback', 'code.pr.create'].includes(action)) {
+    return 'requires_approval';
+  }
   if (action.startsWith('desktop.')) return 'requires_approval';
   if (['file.write', 'file.append', 'file.delete'].includes(action)) return 'requires_approval';
   if (action === 'social.post') return 'requires_approval';

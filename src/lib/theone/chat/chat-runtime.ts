@@ -16,6 +16,8 @@ import { queryMemoryGraph } from '../state/run-store';
 import { exportReportArtifact, type ReportExportBundle, type TheOneReportArtifact } from '../report-artifacts';
 import { buildBrainOnlyReply, buildTheOneBrainFrame, type TheOneBrainFrame } from './brain-layer';
 import { buildOneAIChatWorkflow, type TheOneChatMessage } from './oneai-workflow-builder';
+import { createCodeWorkspace, listCodeWorkspaces, updateCodeWorkspace, type CodeWorkspaceStage } from '../code/code-workspace-store';
+import { resolveCodeRuntimeRoute } from '../code/code-task-contract';
 import type {
   ApprovalGate,
   ClassifiedIntent,
@@ -823,6 +825,11 @@ function taskOutcomeLabel(task: OneClawTask | null) {
   if (action === 'code.workspace.status') return 'code workspace check';
   if (action === 'code.diff.prepare') return 'code diff preview';
   if (action === 'code.patch.apply') return 'code patch application';
+  if (action === 'code.test.run') return 'code test run';
+  if (action === 'code.verify') return 'code verification';
+  if (action === 'code.patch.rollback') return 'code rollback';
+  if (action === 'code.commit.prepare') return 'commit preparation';
+  if (action === 'code.pr.create') return 'pull request preparation';
   if (action.startsWith('document.') || action.startsWith('file.') || action.startsWith('spreadsheet.') || action.startsWith('image.')) return 'file reading';
   if (action === 'social.post') return 'X publishing';
   if (action.startsWith('api.')) return 'API call';
@@ -861,6 +868,10 @@ function collectCodeOutputs(value: unknown, outputs: Record<string, unknown>[] =
     textField(output.preview) ||
     textField(output.workspacePath) ||
     Array.isArray(output.files) ||
+    Array.isArray(output.results) ||
+    textField(output.rollbackToken) ||
+    textField(output.diffStat) ||
+    textField(output.gitStatus) ||
     /^code_/i.test(status)
   ) {
     outputs.push(output);
@@ -888,12 +899,15 @@ function buildCodeRuntime(input: {
   const latest = outputs[outputs.length - 1] || null;
   if (!codeSteps.length && !latest) return null;
 
-  const action = codeSteps[0]?.action || textField(latest?.action) || 'code.workspace.status';
-  const diff = textField(latest?.diff) || textField(latest?.patch) || textField(latest?.unifiedDiff) || textField(latest?.preview);
+  const action = textField(latest?.action) || codeSteps[codeSteps.length - 1]?.action || 'code.workspace.status';
+  const diffSource = [...outputs].reverse().find((output) =>
+    textField(output.diff) || textField(output.patch) || textField(output.unifiedDiff) || textField(output.preview)
+  );
+  const diff = textField(diffSource?.diff) || textField(diffSource?.patch) || textField(diffSource?.unifiedDiff) || textField(diffSource?.preview);
   const files = Array.from(new Set([
-    ...stringsFromArray(latest?.files),
-    ...stringsFromArray(latest?.changedFiles),
-    ...stringsFromArray(codeSteps[0]?.input?.files),
+    ...outputs.flatMap((output) => stringsFromArray(output.files)),
+    ...outputs.flatMap((output) => stringsFromArray(output.changedFiles)),
+    ...codeSteps.flatMap((step) => stringsFromArray(step.input?.files)),
   ])).filter(Boolean);
   const workspacePath = textField(latest?.workspacePath) ||
     textField(codeSteps[0]?.input?.workspacePath) ||
@@ -915,32 +929,182 @@ function buildCodeRuntime(input: {
               ? 'ready'
               : 'planned';
 
+  const rollbackToken = [...outputs].reverse().map((output) => textField(output.rollbackToken)).find(Boolean) || null;
+  const testOutput = [...outputs].reverse().find((output) => Array.isArray(output.results) || /^code_tests_/i.test(String(output.status || '')));
+  const testResults = Array.isArray(testOutput?.results)
+    ? testOutput.results.filter(isRecord).map((result) => ({
+        script: textField(result.script) || textField(result.name) || 'test',
+        status: textField(result.status) || (result.ok === true ? 'passed' : result.ok === false ? 'failed' : 'unknown'),
+        durationMs: typeof result.durationMs === 'number' ? result.durationMs : null,
+        output: textField(result.output) || textField(result.stdout) || textField(result.error) || null,
+      }))
+    : [];
+  const testsPassed = testOutput?.passed === true || /^code_tests_passed$/i.test(String(testOutput?.status || ''));
+  const gitStatus = [...outputs].reverse().map((output) => textField(output.gitStatus) || textField(output.statusText)).find(Boolean) || null;
+  const diffStat = [...outputs].reverse().map((output) => textField(output.diffStat)).find(Boolean) || null;
+  const branch = [...outputs].reverse().map((output) => textField(output.branch)).find(Boolean) ||
+    textField(codeSteps[0]?.input?.branch) || null;
+  const repo = [...outputs].reverse().map((output) => textField(output.repo)).find(Boolean) ||
+    textField(codeSteps[0]?.input?.repo) || null;
+  const actionOrder = [
+    'code.workspace.status',
+    'code.diff.prepare',
+    'code.patch.apply',
+    'code.test.run',
+    'code.verify',
+    'code.commit.prepare',
+    'code.pr.create',
+  ];
+  const currentIndex = Math.max(0, actionOrder.indexOf(action));
+  const completedActions = new Set([
+    ...codeSteps.map((step) => step.action),
+    ...outputs.map((output) => textField(output.action)).filter(Boolean),
+  ]);
+  const lifecycle = actionOrder.map((lifecycleAction, index) => ({
+    id: lifecycleAction.replace(/\./g, '_'),
+    action: lifecycleAction,
+    status: input.runtimeError && lifecycleAction === action
+      ? 'failed'
+      : completedActions.has(lifecycleAction) && index <= currentIndex
+        ? 'completed'
+        : lifecycleAction === action
+          ? status
+          : index < currentIndex
+            ? 'completed'
+            : 'pending',
+  }));
+  const guardedActions = new Set(['code.patch.apply', 'code.test.run', 'code.patch.rollback', 'code.pr.create']);
+  const nextActions = input.runtimeError && rollbackToken
+    ? ['Review the failure, then use the rollback token to restore the workspace.', 'After rollback, prepare a smaller diff and rerun validation.']
+    : action === 'code.workspace.status'
+      ? ['Prepare a focused diff preview for the requested change.']
+      : action === 'code.diff.prepare'
+        ? ['Review the diff, revise it if needed, then prepare an approval-gated apply task.']
+        : action === 'code.patch.apply'
+          ? ['Run the approved package validation scripts, then verify the workspace diff.']
+          : action === 'code.test.run'
+            ? testsPassed
+              ? ['Verify the final workspace state and prepare delivery.']
+              : ['Review the failed test output, revise the patch, or roll back the change.']
+            : action === 'code.verify'
+              ? ['Prepare the commit package, then open an approval-gated pull request task.']
+              : action === 'code.commit.prepare'
+                ? ['Review the branch and commit summary, then prepare the pull request.']
+                : action === 'code.pr.create'
+                  ? ['Review the pull request package and submit it through the configured GitHub connector.']
+                  : ['Inspect the workspace and prepare the next safe code operation.'];
+
   return {
-    schemaVersion: 'theone.code_runtime.v1',
+    schemaVersion: 'theone.code_runtime.v2',
     status,
     action,
     workspacePath: workspacePath || null,
     summary,
     diff: diff || null,
     files,
-    approvalRequired: action === 'code.patch.apply' || input.approvalGated,
+    approvalRequired: guardedActions.has(action) || input.approvalGated,
+    lifecycle,
+    rollback: {
+      available: Boolean(rollbackToken),
+      token: rollbackToken,
+    },
+    tests: {
+      status: testResults.length ? (testsPassed ? 'passed' : 'failed') : 'not_run',
+      passed: testsPassed,
+      results: testResults,
+    },
+    delivery: {
+      branch,
+      repo,
+      gitStatus,
+      diffStat,
+      ready: action === 'code.commit.prepare' || action === 'code.pr.create',
+    },
     steps: codeSteps.map((step) => {
       const stepRecord = step as Record<string, unknown>;
       return {
         id: step.id,
         action: step.action,
-        approvalMode: step.action === 'code.patch.apply'
+        approvalMode: guardedActions.has(step.action)
           ? 'manual'
           : textField(stepRecord.approvalMode) || input.oneclawTask?.approvalMode || 'auto',
         input: step.input,
       };
     }),
-    nextActions: action === 'code.patch.apply' || input.approvalGated
-      ? ['Review the diff, then approve or reject the patch gate.']
-      : diff
-        ? ['Review the diff preview. Ask TheOne to revise it, test it, or prepare an approval-gated apply task.']
-        : ['Ask TheOne to prepare a diff preview or inspect the workspace in more detail.'],
+    nextActions,
   };
+}
+
+function codeWorkspaceStage(action: string, status: string): CodeWorkspaceStage {
+  if (/fail|error|block/i.test(status)) return 'failed';
+  if (action === 'code.workspace.status') return 'inspected';
+  if (action === 'code.diff.prepare') return 'diff_ready';
+  if (action === 'code.patch.apply') return 'applied';
+  if (action === 'code.test.run') return 'tested';
+  if (action === 'code.verify') return 'verified';
+  if (action === 'code.patch.rollback') return 'rolled_back';
+  if (action === 'code.commit.prepare' || action === 'code.pr.create') return 'delivery_ready';
+  return 'registered';
+}
+
+async function persistCodeRuntimeWorkspace(codeRuntime: ReturnType<typeof buildCodeRuntime>, runId: string) {
+  if (!codeRuntime) return null;
+  const route = resolveCodeRuntimeRoute({
+    workspacePath: codeRuntime.workspacePath || undefined,
+    requestedTarget: codeRuntime.workspacePath ? 'local_bridge' : 'cloud_sandbox',
+  });
+  const name = codeRuntime.delivery.repo || codeRuntime.workspacePath?.split('/').filter(Boolean).pop() || 'Code mission';
+  const existing = (await listCodeWorkspaces(100)).find((workspace) =>
+    (codeRuntime.workspacePath && workspace.workspacePath === codeRuntime.workspacePath) ||
+    (codeRuntime.delivery.repo && workspace.repo === codeRuntime.delivery.repo)
+  );
+  const stage = codeWorkspaceStage(codeRuntime.action, codeRuntime.status);
+  if (!existing) {
+    const created = await createCodeWorkspace({
+      name,
+      workspacePath: codeRuntime.workspacePath || undefined,
+      runtimeTarget: route.target,
+      runtimeStatus: route.status,
+      repo: codeRuntime.delivery.repo || undefined,
+      branch: codeRuntime.delivery.branch || undefined,
+      metadata: {
+        latestAction: codeRuntime.action,
+        latestStatus: codeRuntime.status,
+        schemaVersion: codeRuntime.schemaVersion,
+      },
+    });
+    return updateCodeWorkspace(created.id, {
+      stage,
+      latestRunId: runId,
+      rollbackToken: codeRuntime.rollback.token,
+      event: {
+        type: `runtime.${codeRuntime.action}`,
+        stage,
+        detail: codeRuntime.summary,
+        metadata: { status: codeRuntime.status, files: codeRuntime.files },
+      },
+    });
+  }
+  return updateCodeWorkspace(existing.id, {
+    stage,
+    runtimeStatus: route.status,
+    branch: codeRuntime.delivery.branch || existing.branch,
+    repo: codeRuntime.delivery.repo || existing.repo,
+    latestRunId: runId,
+    rollbackToken: codeRuntime.rollback.token || existing.rollbackToken,
+    metadata: {
+      ...existing.metadata,
+      latestAction: codeRuntime.action,
+      latestStatus: codeRuntime.status,
+      schemaVersion: codeRuntime.schemaVersion,
+    },
+    event: {
+      type: `runtime.${codeRuntime.action}`,
+      stage,
+      detail: codeRuntime.summary,
+      metadata: { status: codeRuntime.status, files: codeRuntime.files },
+    },
+  });
 }
 
 function firstBlockedCheck(preflight: unknown) {
@@ -3151,6 +3315,9 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     canSubmit,
     workerResultText,
   });
+  const codeWorkspace = codeRuntime
+    ? await persistCodeRuntimeWorkspace(codeRuntime, runId).catch(() => null)
+    : null;
   const deliveryStatus = buildDeliveryStatus({
     documentRuntime,
     reportArtifact,
@@ -3254,6 +3421,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         missionState,
         documentRuntime,
         codeRuntime,
+        codeWorkspace,
         reportArtifact,
         exportBundle,
         deliveryStatus,
@@ -3369,6 +3537,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       missionState,
       documentRuntime,
       codeRuntime,
+      codeWorkspace,
       reportArtifact,
       exportBundle,
       deliveryStatus,
@@ -3402,6 +3571,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       missionState,
       documentRuntime,
       codeRuntime,
+      codeWorkspace,
       reportArtifact,
       exportBundle,
       deliveryStatus,
