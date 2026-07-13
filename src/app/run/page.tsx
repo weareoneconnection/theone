@@ -1521,6 +1521,10 @@ function codeRuntimeFromResult(result: any) {
   return result?.chat?.codeRuntime || result?.networkSignals?.codeRuntime || result?.appResult?.codeRuntime || null;
 }
 
+function codeMissionFromResult(result: any) {
+  return result?.chat?.codeMission || result?.networkSignals?.codeMission || result?.codeMission || null;
+}
+
 function diffPreviewLines(diff: string) {
   return diff.split('\n').slice(0, 180);
 }
@@ -1552,6 +1556,7 @@ function compactCodeToken(value: unknown) {
 function CodeRuntimeCard({ result, busy, onAction }: { result: any; busy?: boolean; onAction?: (prompt: string) => void }) {
   const codeRuntime = codeRuntimeFromResult(result);
   if (!codeRuntime) return null;
+  const codeMission = codeMissionFromResult(result);
   const files = Array.isArray(codeRuntime.files) ? codeRuntime.files.filter(Boolean) : [];
   const steps = Array.isArray(codeRuntime.steps) ? codeRuntime.steps : [];
   const diff = typeof codeRuntime.diff === 'string' ? codeRuntime.diff : '';
@@ -1569,9 +1574,29 @@ function CodeRuntimeCard({ result, busy, onAction }: { result: any; busy?: boole
   return (
     <div className="run-code-runtime-card">
       <div className="run-code-runtime-head">
-        <span>Code Mission Control</span>
-        <strong>{friendlyStatus(codeRuntime.status || 'planned')}</strong>
+        <span>{codeMission?.objective || 'Code Mission Control'}</span>
+        <strong>{friendlyStatus(codeMission?.status || codeRuntime.status || 'planned')}</strong>
       </div>
+      {codeMission ? (
+        <div className="run-code-mission-summary">
+          <div>
+            <span>Mission</span>
+            <strong title={codeMission.id}>{compactCodeToken(codeMission.id)}</strong>
+          </div>
+          <div>
+            <span>Mode</span>
+            <strong>{codeMission.mode || 'assist'}</strong>
+          </div>
+          <div>
+            <span>Iteration</span>
+            <strong>{codeMission.iteration || 1} / {codeMission.loop?.maxIterations || 12}</strong>
+          </div>
+          <div>
+            <span>Next</span>
+            <strong>{friendlyStatus(codeMission.loop?.decision || codeMission.nextAction || 'plan')}</strong>
+          </div>
+        </div>
+      ) : null}
       {lifecycle.length ? (
         <div className="run-code-lifecycle" aria-label="Code mission lifecycle">
           {lifecycle.map((item: any, index: number) => (
@@ -1654,6 +1679,7 @@ function CodeRuntimeCard({ result, busy, onAction }: { result: any; busy?: boole
         </pre>
       ) : null}
       {nextActions.length ? <p className="run-code-next">{nextActions.slice(0, 2).join(' ')}</p> : null}
+      {codeMission?.nextAction && !nextActions.length ? <p className="run-code-next">Next: {codeMission.nextAction}</p> : null}
       {onAction ? (
         <div className="run-code-runtime-actions">
           <button type="button" disabled={busy} onClick={() => onAction('Explain this code diff in plain language and call out risks.')}>Explain</button>
@@ -2421,9 +2447,19 @@ function WorkerCallCards({ result }: { result: any }) {
 function StreamEventList({ events }: { events: StreamEvent[] }) {
   if (!events.length) return null;
   const labelFor = (event: string) => ({
+    mission_started: 'Mission started',
     plan_delta: 'Plan',
+    plan_created: 'Plan ready',
     tool_start: 'Worker start',
+    tool_started: 'Tool started',
     tool_result: 'Worker result',
+    tool_completed: 'Tool completed',
+    diff_ready: 'Diff ready',
+    test_completed: 'Tests',
+    verification_completed: 'Verification',
+    checkpoint_created: 'Checkpoint',
+    mission_completed: 'Mission completed',
+    mission_failed: 'Mission failed',
     approval_required: 'Approval',
     proof_recorded: 'Proof',
   }[event] || event.replace(/_/g, ' '));
@@ -2467,6 +2503,7 @@ function RunPageContent() {
   const [chatSessionId, setChatSessionId] = useState('');
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const threadRef = useRef<HTMLDivElement | null>(null);
+  const restoredSessionRef = useRef('');
   const labels = copyFor(locale);
   const progressStages = liveProgressStagesByLocale[locale];
 
@@ -2517,6 +2554,71 @@ function RunPageContent() {
       ));
     }
   }, []);
+
+  useEffect(() => {
+    const continueRunId = searchParams.get('continue');
+    if (!chatSessionId || continueRunId || restoredSessionRef.current === chatSessionId) return undefined;
+    restoredSessionRef.current = chatSessionId;
+    let active = true;
+
+    (async () => {
+      try {
+        const sessionResponse = await fetch(`/api/theone/chat/sessions/${encodeURIComponent(chatSessionId)}`, {
+          cache: 'no-store',
+        });
+        if (!sessionResponse.ok) return;
+        const sessionPayload = await sessionResponse.json();
+        const session = sessionPayload?.session;
+        if (!active || !session) return;
+
+        const restoredMessages = Array.isArray(session.messages)
+          ? session.messages
+            .filter((message: any) => message?.role === 'user' || message?.role === 'assistant' || message?.role === 'system')
+            .map((message: any, index: number) => ({
+              id: createId(`session_${index}`),
+              role: message.role,
+              content: String(message.content || ''),
+              createdAt: message.createdAt || new Date().toISOString(),
+            }))
+            .filter((message: ConversationMessage) => message.content.trim())
+          : [];
+
+        let latestRun: any = null;
+        if (session.latestRunId) {
+          const runResponse = await fetch(`/api/theone/runs/${encodeURIComponent(session.latestRunId)}`, {
+            cache: 'no-store',
+          });
+          if (runResponse.ok) latestRun = await runResponse.json();
+        }
+        if (!active) return;
+
+        if (session.mode === 'manual' || session.mode === 'assist' || session.mode === 'auto') {
+          setMode(session.mode);
+        }
+        if (latestRun?.runId) setResult(latestRun);
+        if (restoredMessages.length) {
+          const lastAssistantIndex = restoredMessages.reduce(
+            (found: number, message: ConversationMessage, index: number) => (message.role === 'assistant' ? index : found),
+            -1,
+          );
+          setMessages((current) => {
+            if (current.some((message) => message.role === 'user')) return current;
+            return restoredMessages.map((message: ConversationMessage, index: number) => (
+              index === lastAssistantIndex && latestRun?.runId
+                ? { ...message, result: latestRun }
+                : message
+            ));
+          });
+        }
+      } catch {
+        // A missing or offline session should leave the fresh-chat experience intact.
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [chatSessionId, searchParams]);
 
   useEffect(() => {
     if (!loading) {
@@ -2696,6 +2798,7 @@ function RunPageContent() {
           exportBundle: latestResult.chat.exportBundle,
           deliveryStatus: latestResult.chat.deliveryStatus,
           continuity: latestResult.chat.continuity,
+          codeMission: latestResult.chat.codeMission || latestResult.codeMission,
           pendingOneClawTask: latestResult.pendingOneClawTask,
           approvals: latestResult.approvals,
           executions: latestResult.executions,

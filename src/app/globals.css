@@ -3336,6 +3336,44 @@ button, input, textarea { font: inherit; }
   text-transform: uppercase;
 }
 
+.run-code-mission-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid rgba(99, 216, 201, 0.22);
+  background: rgba(7, 18, 18, 0.48);
+}
+
+.run-code-mission-summary > div {
+  min-width: 0;
+  padding: 11px 12px;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.run-code-mission-summary > div:last-child {
+  border-right: 0;
+}
+
+.run-code-mission-summary span,
+.run-code-mission-summary strong {
+  display: block;
+}
+
+.run-code-mission-summary span {
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.run-code-mission-summary strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .run-code-runtime-grid {
   display: grid;
   gap: 8px;
@@ -5548,6 +5586,18 @@ button, input, textarea { font: inherit; }
   .app-launch-grid,
   .app-workspace {
     grid-template-columns: 1fr;
+  }
+
+  .run-code-mission-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .run-code-mission-summary > div:nth-child(2) {
+    border-right: 0;
+  }
+
+  .run-code-mission-summary > div:nth-child(-n + 2) {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   }
 
   .os-summary-band {

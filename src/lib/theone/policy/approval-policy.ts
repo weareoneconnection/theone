@@ -125,6 +125,32 @@ function isReadOnlyAutoAction(action: string, input: Record<string, unknown> = {
   );
 }
 
+function codeRuntimeTarget(task: OneClawTask) {
+  const codeTask = task.metadata?.codeTask;
+  if (!codeTask || typeof codeTask !== 'object' || Array.isArray(codeTask)) return '';
+  const runtime = (codeTask as Record<string, unknown>).runtime;
+  if (!runtime || typeof runtime !== 'object' || Array.isArray(runtime)) return '';
+  return String((runtime as Record<string, unknown>).target || '');
+}
+
+function codeApprovalRequired(action: string, mode: TheOneMode, task: OneClawTask) {
+  if (['code.workspace.status', 'code.diff.prepare', 'code.verify', 'code.commit.prepare'].includes(action)) {
+    return false;
+  }
+
+  // Tests are limited to approved package scripts by the code sandbox contract.
+  if (action === 'code.test.run') return mode === 'manual';
+
+  // Automatic mutation is only allowed inside an isolated cloud sandbox.
+  if (action === 'code.patch.apply') {
+    return mode !== 'auto' || codeRuntimeTarget(task) !== 'cloud_sandbox';
+  }
+
+  // Recovery and external delivery always stay operator-gated.
+  if (action === 'code.patch.rollback' || action === 'code.pr.create') return true;
+  return null;
+}
+
 function approvalRequired(action: string, explicit: boolean | undefined, mode: TheOneMode) {
   const risk = getActionRisk(action);
   const readOnlyAuto = isReadOnlyAutoAction(action);
@@ -169,7 +195,12 @@ export function evaluateOneClawTaskPolicy(
     const strictXReply = isStrictXReply(task, step.id);
     const readOnlyAuto = isReadOnlyAutoAction(step.action, step.input || {});
     const risk = strictXReply ? 'medium' : getActionRisk(step.action);
-    const required = strictXReply
+    const codeRequired = step.action.startsWith('code.')
+      ? codeApprovalRequired(step.action, mode, task)
+      : null;
+    const required = codeRequired !== null
+      ? codeRequired
+      : strictXReply
       ? mode === 'manual' || task.approvalMode === 'manual'
       : readOnlyAuto
         ? false
@@ -184,8 +215,12 @@ export function evaluateOneClawTaskPolicy(
       status: required ? 'pending' : 'not_required',
       mode,
       reason: required
-        ? `${step.action} requires approval before OneClaw execution.`
-        : `${step.action} can be submitted to OneClaw.`,
+        ? step.action === 'code.patch.apply'
+          ? `${step.action} requires approval unless auto mode is using the isolated cloud sandbox.`
+          : `${step.action} requires approval before OneClaw execution.`
+        : step.action === 'code.patch.apply'
+          ? `${step.action} can continue automatically inside the isolated cloud sandbox.`
+          : `${step.action} can be submitted to OneClaw.`,
     };
   });
 }

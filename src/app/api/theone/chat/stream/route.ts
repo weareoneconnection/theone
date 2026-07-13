@@ -1,6 +1,7 @@
 import { runTheOneChatRuntime, type TheOneChatRuntimeInput } from '@/lib/theone/chat/chat-runtime';
 import { saveRunResult } from '@/lib/theone/state/run-store';
 import { saveChatSessionSnapshot, type TheOneChatAttachment } from '@/lib/theone/state/chat-session-store';
+import { attachCodeMission } from '@/lib/theone/code/code-mission';
 import type { TheOneMode } from '@/lib/theone/types';
 
 type ChatRole = 'user' | 'assistant' | 'system';
@@ -42,10 +43,11 @@ function normalizeContextMessage(value: unknown) {
   const deliveryStatus = record.deliveryStatus && typeof record.deliveryStatus === 'object' ? record.deliveryStatus as Record<string, unknown> : null;
   const continuity = record.continuity && typeof record.continuity === 'object' ? record.continuity as Record<string, unknown> : null;
   const pendingOneClawTask = record.pendingOneClawTask && typeof record.pendingOneClawTask === 'object' ? record.pendingOneClawTask as Record<string, unknown> : null;
+  const codeMission = record.codeMission && typeof record.codeMission === 'object' ? record.codeMission as Record<string, unknown> : null;
   const lastAssistant = typeof record.lastAssistant === 'string' ? record.lastAssistant.slice(0, 2400) : '';
   const approvals = Array.isArray(record.approvals) ? record.approvals.slice(0, 8) : [];
   const executions = Array.isArray(record.executions) ? record.executions.slice(-6) : [];
-  if (!mission && !workerRuntime && !lastAssistant) return null;
+  if (!mission && !workerRuntime && !codeMission && !lastAssistant) return null;
 
   return {
     role: 'system' as const,
@@ -110,6 +112,24 @@ function normalizeContextMessage(value: unknown) {
         taskName: pendingOneClawTask.taskName,
         approvalMode: pendingOneClawTask.approvalMode,
         steps: pendingOneClawTask.steps,
+      })}` : '',
+      codeMission ? `Persistent code mission: ${JSON.stringify({
+        id: codeMission.id,
+        objective: codeMission.objective,
+        mode: codeMission.mode,
+        status: codeMission.status,
+        iteration: codeMission.iteration,
+        currentAction: codeMission.currentAction,
+        nextAction: codeMission.nextAction,
+        workspace: codeMission.workspace,
+        acceptanceCriteria: codeMission.acceptanceCriteria,
+        constraints: codeMission.constraints,
+        plan: codeMission.plan,
+        completedActions: codeMission.completedActions,
+        files: codeMission.files,
+        tests: codeMission.tests,
+        recovery: codeMission.recovery,
+        loop: codeMission.loop,
       })}` : '',
       approvals.length ? `Approvals: ${JSON.stringify(approvals)}` : '',
       executions.length ? `Executions: ${JSON.stringify(executions.map((execution: any) => ({
@@ -242,6 +262,19 @@ function streamAnswer(controller: ReadableStreamDefaultController<Uint8Array>, c
 function emitRuntimeEvents(controller: ReadableStreamDefaultController<Uint8Array>, result: any) {
   const workflow = result?.chat?.oneAiWorkflow;
   const steps = Array.isArray(workflow?.steps) ? workflow.steps : [];
+  const codeMission = result?.codeMission || result?.chat?.codeMission;
+  const codeRuntime = result?.chat?.codeRuntime || result?.networkSignals?.codeRuntime;
+  if (codeMission) {
+    send(controller, 'mission_started', {
+      id: codeMission.id,
+      objective: codeMission.objective,
+      status: codeMission.status,
+      iteration: codeMission.iteration,
+      mode: codeMission.mode,
+      workspace: codeMission.workspace,
+      loop: codeMission.loop,
+    });
+  }
   send(controller, 'plan_delta', {
     summary: workflow?.summary || result?.summary || 'TheOne prepared the route.',
     steps: steps.map((step: any) => ({
@@ -252,9 +285,21 @@ function emitRuntimeEvents(controller: ReadableStreamDefaultController<Uint8Arra
       status: step.status || step.approvalMode || 'ready',
     })).slice(0, 12),
   });
+  send(controller, 'plan_created', {
+    missionId: codeMission?.id,
+    summary: workflow?.summary || result?.summary || 'TheOne prepared the route.',
+    steps: steps.slice(0, 12),
+    nextAction: codeMission?.nextAction,
+  });
 
   if (result?.pendingOneClawTask) {
     send(controller, 'tool_start', {
+      taskName: result.pendingOneClawTask.taskName,
+      approvalMode: result.pendingOneClawTask.approvalMode,
+      steps: result.pendingOneClawTask.steps || [],
+    });
+    send(controller, 'tool_started', {
+      missionId: codeMission?.id,
       taskName: result.pendingOneClawTask.taskName,
       approvalMode: result.pendingOneClawTask.approvalMode,
       steps: result.pendingOneClawTask.steps || [],
@@ -278,6 +323,14 @@ function emitRuntimeEvents(controller: ReadableStreamDefaultController<Uint8Arra
       summary: execution.summary,
       externalId: execution.externalId,
     });
+    send(controller, 'tool_completed', {
+      missionId: codeMission?.id,
+      provider: execution.provider,
+      taskName: execution.taskName || execution.action,
+      status: execution.status,
+      summary: execution.summary,
+      externalId: execution.externalId,
+    });
   }
 
   for (const proof of (Array.isArray(result?.proof) ? result.proof : []).slice(-6)) {
@@ -287,6 +340,42 @@ function emitRuntimeEvents(controller: ReadableStreamDefaultController<Uint8Arra
       value: proof.value,
       timestamp: proof.timestamp,
     });
+  }
+
+  if (codeRuntime?.diff) {
+    send(controller, 'diff_ready', {
+      missionId: codeMission?.id,
+      summary: codeRuntime.summary,
+      diff: codeRuntime.diff,
+      files: codeRuntime.files || [],
+    });
+  }
+  if (codeRuntime?.tests) {
+    send(controller, 'test_completed', {
+      missionId: codeMission?.id,
+      status: codeRuntime.tests.status,
+      passed: codeRuntime.tests.passed,
+      results: codeRuntime.tests.results || [],
+    });
+  }
+  if (codeRuntime?.lifecycle?.some((step: any) => step?.action === 'code.verify')) {
+    send(controller, 'verification_completed', {
+      missionId: codeMission?.id,
+      status: codeMission?.workspace?.stage || codeRuntime.status,
+      delivery: codeRuntime.delivery,
+    });
+  }
+  if (codeRuntime?.rollback?.available) {
+    send(controller, 'checkpoint_created', {
+      missionId: codeMission?.id,
+      token: codeRuntime.rollback.token,
+      workspace: codeMission?.workspace,
+    });
+  }
+  if (codeMission?.status === 'completed') {
+    send(controller, 'mission_completed', codeMission);
+  } else if (codeMission?.status === 'failed' || codeMission?.status === 'blocked') {
+    send(controller, 'mission_failed', codeMission);
   }
 }
 
@@ -357,35 +446,49 @@ export async function POST(req: Request) {
             : 'Receipts, proof, and memory are being attached.',
         });
 
-        const sessionId = typeof body.sessionId === 'string' ? body.sessionId : undefined;
+        const sessionId = typeof body.sessionId === 'string' && body.sessionId.trim()
+          ? body.sessionId.trim()
+          : result.runId;
         const withConversation = attachConversation(result, messages, sessionId);
-        const stored = await saveRunResult(withConversation);
+        const objective = [...messages].reverse().find((message) => message.role === 'user')?.content
+          || (typeof body.input === 'string' ? body.input : undefined);
+        const withCodeMission = attachCodeMission({
+          result: withConversation,
+          sessionId,
+          runId: result.runId,
+          mode: normalizeMode(body.mode),
+          objective,
+          previous: body.context?.codeMission,
+        });
+        const stored = await saveRunResult(withCodeMission);
         await saveChatSessionSnapshot({
-          sessionId: String((withConversation.chat as any)?.conversation?.sessionId || sessionId || stored.runId),
+          sessionId: String((withCodeMission.chat as any)?.conversation?.sessionId || sessionId || stored.runId),
           runId: stored.runId,
           mode: stored.os?.mode || normalizeMode(body.mode),
-          title: (withConversation.chat as any)?.mission?.title || stored.intent?.objective || 'TheOne chat',
+          title: (withCodeMission.chat as any)?.mission?.title || stored.intent?.objective || 'TheOne chat',
           summary: stored.summary,
           status: stored.ok ? 'active' : 'failed',
-          messages: (withConversation.chat as any)?.conversation?.messages || messages,
+          messages: (withCodeMission.chat as any)?.conversation?.messages || messages,
           attachments,
           metadata: {
             approvals: stored.approvals?.length || 0,
             executions: stored.executions?.length || 0,
             proof: stored.proof?.length || 0,
             selectedWorker: body.selectedWorker || null,
+            codeMission: withCodeMission.codeMission || null,
           },
         });
         const output = {
           ...stored,
-          chat: withConversation.chat,
+          codeMission: withCodeMission.codeMission,
+          chat: withCodeMission.chat,
         };
 
         emitRuntimeEvents(controller, output);
         const l40Runtime = (output.chat as Record<string, unknown> | undefined)?.l40Runtime;
         if (l40Runtime) send(controller, 'runtime_contract', l40Runtime);
         send(controller, 'stage', { index: 5, label: 'Writing answer', detail: 'Returning the result in plain language.' });
-        streamAnswer(controller, String((withConversation.chat as any)?.assistant?.content || withConversation.summary || ''));
+        streamAnswer(controller, String((withCodeMission.chat as any)?.assistant?.content || withCodeMission.summary || ''));
         send(controller, 'result', output);
       } catch (error) {
         send(controller, 'error', {

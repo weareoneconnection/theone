@@ -1,6 +1,7 @@
 import { runTheOneChatRuntime, type TheOneChatRuntimeInput } from '@/lib/theone/chat/chat-runtime';
 import { saveRunResult } from '@/lib/theone/state/run-store';
 import { saveChatSessionSnapshot, type TheOneChatAttachment } from '@/lib/theone/state/chat-session-store';
+import { attachCodeMission } from '@/lib/theone/code/code-mission';
 import type { TheOneMode } from '@/lib/theone/types';
 
 type ChatRole = 'user' | 'assistant' | 'system';
@@ -42,10 +43,11 @@ function normalizeContextMessage(value: unknown) {
   const deliveryStatus = record.deliveryStatus && typeof record.deliveryStatus === 'object' ? record.deliveryStatus as Record<string, unknown> : null;
   const continuity = record.continuity && typeof record.continuity === 'object' ? record.continuity as Record<string, unknown> : null;
   const pendingOneClawTask = record.pendingOneClawTask && typeof record.pendingOneClawTask === 'object' ? record.pendingOneClawTask as Record<string, unknown> : null;
+  const codeMission = record.codeMission && typeof record.codeMission === 'object' ? record.codeMission as Record<string, unknown> : null;
   const lastAssistant = typeof record.lastAssistant === 'string' ? record.lastAssistant.slice(0, 2400) : '';
   const approvals = Array.isArray(record.approvals) ? record.approvals.slice(0, 8) : [];
   const executions = Array.isArray(record.executions) ? record.executions.slice(-6) : [];
-  if (!mission && !workerRuntime && !lastAssistant) return null;
+  if (!mission && !workerRuntime && !codeMission && !lastAssistant) return null;
 
   return {
     role: 'system' as const,
@@ -110,6 +112,24 @@ function normalizeContextMessage(value: unknown) {
         taskName: pendingOneClawTask.taskName,
         approvalMode: pendingOneClawTask.approvalMode,
         steps: pendingOneClawTask.steps,
+      })}` : '',
+      codeMission ? `Persistent code mission: ${JSON.stringify({
+        id: codeMission.id,
+        objective: codeMission.objective,
+        mode: codeMission.mode,
+        status: codeMission.status,
+        iteration: codeMission.iteration,
+        currentAction: codeMission.currentAction,
+        nextAction: codeMission.nextAction,
+        workspace: codeMission.workspace,
+        acceptanceCriteria: codeMission.acceptanceCriteria,
+        constraints: codeMission.constraints,
+        plan: codeMission.plan,
+        completedActions: codeMission.completedActions,
+        files: codeMission.files,
+        tests: codeMission.tests,
+        recovery: codeMission.recovery,
+        loop: codeMission.loop,
       })}` : '',
       approvals.length ? `Approvals: ${JSON.stringify(approvals)}` : '',
       executions.length ? `Executions: ${JSON.stringify(executions.map((execution: any) => ({
@@ -249,28 +269,43 @@ export async function POST(req: Request) {
       contextHint: inputHint || undefined,
       language: normalizeLanguage(body.language),
     });
-    const withConversation = attachConversation(result, messages, typeof body.sessionId === 'string' ? body.sessionId : undefined);
-    const stored = await saveRunResult(withConversation);
+    const sessionId = typeof body.sessionId === 'string' && body.sessionId.trim()
+      ? body.sessionId.trim()
+      : result.runId;
+    const withConversation = attachConversation(result, messages, sessionId);
+    const objective = [...messages].reverse().find((message) => message.role === 'user')?.content
+      || (typeof body.input === 'string' ? body.input : undefined);
+    const withCodeMission = attachCodeMission({
+      result: withConversation,
+      sessionId,
+      runId: result.runId,
+      mode: normalizeMode(body.mode),
+      objective,
+      previous: body.context?.codeMission,
+    });
+    const stored = await saveRunResult(withCodeMission);
     await saveChatSessionSnapshot({
-      sessionId: String((withConversation.chat as any)?.conversation?.sessionId || body.sessionId || stored.runId),
+      sessionId: String((withCodeMission.chat as any)?.conversation?.sessionId || body.sessionId || stored.runId),
       runId: stored.runId,
       mode: stored.os?.mode || normalizeMode(body.mode),
-      title: (withConversation.chat as any)?.mission?.title || stored.intent?.objective || 'TheOne chat',
+      title: (withCodeMission.chat as any)?.mission?.title || stored.intent?.objective || 'TheOne chat',
       summary: stored.summary,
       status: stored.ok ? 'active' : 'failed',
-      messages: (withConversation.chat as any)?.conversation?.messages || messages,
+      messages: (withCodeMission.chat as any)?.conversation?.messages || messages,
       attachments,
       metadata: {
         approvals: stored.approvals?.length || 0,
         executions: stored.executions?.length || 0,
         proof: stored.proof?.length || 0,
         selectedWorker: body.selectedWorker || null,
+        codeMission: withCodeMission.codeMission || null,
       },
     });
 
     return Response.json({
       ...stored,
-      chat: withConversation.chat,
+      codeMission: withCodeMission.codeMission,
+      chat: withCodeMission.chat,
     }, {
       status: stored.ok ? 200 : 500,
     });
