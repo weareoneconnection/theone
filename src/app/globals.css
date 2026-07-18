@@ -2614,11 +2614,21 @@ button, input, textarea { font: inherit; }
   border-color: rgba(98,215,196,0.28);
 }
 
+.run-rail-projects a.run-history-item {
+  align-items: start;
+  gap: 3px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .run-rail-projects button strong,
 .run-rail-projects a.run-history-item strong {
+  display: -webkit-box;
   font-size: 13px;
   line-height: 1.35;
   min-width: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .run-rail-projects button small,
@@ -2626,6 +2636,12 @@ button, input, textarea { font: inherit; }
 .run-rail-projects p {
   color: var(--muted);
   font-size: 12px;
+}
+
+.run-rail-projects a.run-history-item small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .run-chat-stage {

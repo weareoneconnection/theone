@@ -2598,7 +2598,8 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
 
   if (!directReportExport && !attachmentRequest && !explicitExternalWorkerRequest && (!brain.executionDecision.shouldPlan || brain.reasoning.missingInformation.length > 0)) {
     let brainOnlyOneAi: Awaited<ReturnType<typeof buildOneAIChatWorkflow>> | null = null;
-    let summary = buildBrainOnlyReply({ brain, appPackages });
+    const localBrainReply = buildBrainOnlyReply({ brain, appPackages });
+    let summary = localBrainReply;
 
     try {
       brainOnlyOneAi = await buildOneAIChatWorkflow({
@@ -2612,8 +2613,10 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         language: input.language,
         direct: true,
       });
-      if (brainOnlyOneAi.workflow.assistantReply.trim()) {
-        summary = brainOnlyOneAi.workflow.assistantReply.trim();
+      const oneAiReply = brainOnlyOneAi.workflow.assistantReply.trim();
+      const isWorkflowPlaceholder = /(?:prepared|build|building|ready|准备|构建|建立).{0,24}(?:workflow|工作流)|no external worker|不需要外部\s*worker/i.test(oneAiReply);
+      if (oneAiReply && !(brain.conversationKind === 'capability' && isWorkflowPlaceholder)) {
+        summary = oneAiReply;
       }
     } catch {
       brainOnlyOneAi = null;

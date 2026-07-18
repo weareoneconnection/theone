@@ -1201,13 +1201,22 @@ function runIdOf(run: any) {
 }
 
 function runTitleOf(run: any) {
-  return run?.title ||
-    run?.taskName ||
-    run?.chat?.mission?.title ||
-    run?.metadata?.normalizedTask?.taskName ||
-    run?.summary ||
-    runIdOf(run) ||
-    'TheOne mission';
+  const candidates = [
+    run?.title,
+    run?.objective,
+    run?.chat?.mission?.title,
+    run?.chat?.brain?.objective,
+    run?.intent?.objective,
+    run?.chat?.oneAiWorkflow?.summary,
+    run?.workflow?.summary,
+    run?.summary,
+  ];
+
+  return candidates.find((value) => (
+    typeof value === 'string' &&
+    value.trim() &&
+    !/^run_[\w-]+$/i.test(value.trim())
+  ))?.trim() || 'TheOne mission';
 }
 
 function templateCommands(): CommandItem[] {
@@ -3037,9 +3046,10 @@ function RunPageContent() {
               <span>{labels.activeWork}</span>
               {runHistory.length ? runHistory.slice(0, 7).map((run) => {
                 const id = runIdOf(run);
+                const taskTitle = runTitleOf(run);
                 return (
-                  <Link key={id || runTitleOf(run)} className="run-history-item" href={id ? `/run?continue=${id}` : '/runs'}>
-                    <strong>{runTitleOf(run).slice(0, 58)}{runTitleOf(run).length > 58 ? '...' : ''}</strong>
+                  <Link key={id || taskTitle} className="run-history-item" href={id ? `/run?continue=${id}` : '/runs'} title={taskTitle}>
+                    <strong>{taskTitle}</strong>
                     <small>{friendlyStatus(run?.status || run?.workflow?.status || 'saved')} · {formatRelativeTime(run?.updatedAt || run?.createdAt)}</small>
                   </Link>
                 );

@@ -185,9 +185,27 @@ function inferBrainMode(mode: TheOneMode, raw: string): TheOneBrainMode {
 }
 
 function inferKind(raw: string): TheOneBrainConversationKind {
+  const explicitActionRequest = hasAny(raw, [
+    /(?:帮我|请(?:你)?|给我|为我|开始|现在|直接).{0,24}(?:写|编写|开发|实现|修改|修复|重构|测试|运行|执行|发布|创建|调用|操作)/i,
+    /(?:write|build|implement|fix|refactor|test|run|execute|post|create|send)\s+(?:me\s+)?(?:a\s+)?/i,
+  ]);
+  const capabilityQuestion = hasAny(raw, [
+    /what can you do/i,
+    /can you\s+(?:code|program|develop|write code)/i,
+    /你(?:可以|能|会|支持).{0,24}(?:吗|么|？|\?)/i,
+    /你(?:会不会|能不能).{0,24}/i,
+    /(?:可以|能|会|支持)(?:编程|写代码|开发|代码审查|调试)(?:吗|么|？|\?)/i,
+    /你能.*做/,
+    /能做什么/,
+    /能力/,
+    /介绍一下/,
+    /^hello\b/i,
+    /^hi\b/i,
+  ]);
+
+  if (capabilityQuestion && !explicitActionRequest) return 'capability';
   if (hasAny(raw, [
     /what can you do/i,
-    /你能.*做/,
     /能做什么/,
     /能力/,
     /介绍一下/,
@@ -287,7 +305,33 @@ function buildContextReadiness(raw: string): TheOneBrainFrame['contextReadiness'
 function capabilityReply(input: {
   apps: AppRuntimePackage[];
   workerCapabilityMap: TheOneBrainFrame['workerCapabilityMap'];
+  raw: string;
 }) {
+  const asksAboutProgramming = /(?:编程|写代码|开发|代码审查|调试|coding|programming|write code|develop)/i.test(input.raw);
+  const prefersChinese = /[\u3400-\u9fff]/.test(input.raw);
+
+  if (asksAboutProgramming) {
+    return prefersChinese
+      ? [
+          '可以。',
+          '',
+          '我可以直接在对话中完成软件工程任务：理解项目和架构、读取与修改代码、排查错误、实现功能、重构、运行构建与测试、生成变更说明，并在需要时准备提交或 PR。',
+          '',
+          '实际执行时，TheOne 会先规划改动并检查权限，再把文件、代码、测试和 GitHub 操作交给相应 Worker；高风险写入仍会经过审批并保留执行证明。',
+          '',
+          '告诉我项目或仓库，以及你想实现或修复什么，我就可以开始。',
+        ].join('\n')
+      : [
+          'Yes.',
+          '',
+          'I can handle software-engineering work in this chat: understand a codebase, read and edit code, diagnose bugs, implement features, refactor, run builds and tests, explain changes, and prepare commits or pull requests.',
+          '',
+          'For execution, TheOne plans and checks permissions before routing file, code, test, and GitHub operations to the appropriate workers. High-risk writes remain approval-gated and proof-backed.',
+          '',
+          'Give me the project or repository and the outcome you want, and I can start.',
+        ].join('\n');
+  }
+
   const totalActions = input.workerCapabilityMap.reduce((sum, item) => sum + item.actions.length, 0);
   const byDomain = new Map(input.workerCapabilityMap.map((item) => [item.domain, item]));
   const statusRank = (domains: string[]) => {
@@ -542,6 +586,7 @@ export function buildBrainOnlyReply(input: {
     return capabilityReply({
       apps: input.appPackages,
       workerCapabilityMap: input.brain.workerCapabilityMap,
+      raw: input.brain.reasoning.userIntent,
     });
   }
 

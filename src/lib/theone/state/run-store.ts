@@ -88,6 +88,27 @@ function safeParse<T>(value: string | null | undefined, fallback: T): T {
   }
 }
 
+function runDisplayTitle(result: TheOneRunResult | null | undefined, objective: string) {
+  const extendedResult = result as (TheOneRunResult & {
+    chat?: {
+      mission?: { title?: string };
+      brain?: { objective?: string };
+      oneAiWorkflow?: { summary?: string };
+    };
+  }) | null | undefined;
+  const candidates = [
+    extendedResult?.chat?.mission?.title,
+    extendedResult?.chat?.brain?.objective,
+    result?.intent?.objective,
+    objective,
+    extendedResult?.chat?.oneAiWorkflow?.summary,
+    result?.summary,
+    result?.os?.workflow?.summary,
+  ];
+
+  return candidates.find((value) => typeof value === 'string' && value.trim())?.trim() || 'TheOne mission';
+}
+
 function uniqueById<T extends { id: string }>(items: T[] = []) {
   const seen = new Set<string>();
   return items.filter((item) => {
@@ -996,6 +1017,7 @@ export async function listRuns(limit = 20) {
 
       return {
         runId: row.id,
+        title: runDisplayTitle(result, row.objective),
         ok: row.ok,
         mode: row.mode,
         intentType: row.intentType,
@@ -1013,6 +1035,7 @@ export async function listRuns(limit = 20) {
     console.warn('[theone] listing runs from offline ledger:', databaseWarning(error));
     return Array.from(offlineRuns.values()).slice(0, Math.max(1, Math.min(limit, 100))).map((stored) => ({
       runId: stored.result.runId,
+      title: runDisplayTitle(stored.result, stored.result.intent.objective),
       ok: stored.result.ok,
       mode: stored.result.os?.mode || 'assist',
       intentType: stored.result.intent.type,
