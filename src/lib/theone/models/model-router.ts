@@ -15,8 +15,8 @@ export type TheOneModelRoute = {
   latencyClass: 'fast' | 'balanced' | 'deep' | 'realtime';
 };
 
-const DEFAULT_FRONTIER_MODEL = 'gpt-5.2';
-const DEFAULT_FAST_MODEL = 'gpt-5.2-mini';
+const DEFAULT_FRONTIER_MODEL = 'gpt-5.5';
+const DEFAULT_FAST_MODEL = 'gpt-5.5';
 const DEFAULT_CODE_MODEL = 'gpt-5.2-codex';
 const DEFAULT_REALTIME_MODEL = 'gpt-realtime';
 
@@ -84,4 +84,3 @@ export function resolveTheOneModel(useCase: TheOneModelUseCase): TheOneModelRout
 export function listTheOneModelRoutes() {
   return (Object.keys(modelRoutes) as TheOneModelUseCase[]).map(resolveTheOneModel);
 }
-

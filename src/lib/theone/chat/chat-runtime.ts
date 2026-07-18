@@ -2631,21 +2631,14 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       mode,
       capabilities: oneClawManifest.capabilities,
     });
-    const plan = buildPlan({
-      planId,
+    const plan: ExecutionPlan = {
+      id: planId,
       intent,
       summary: brain.reasoning.strategy,
-      oneAiSteps: [{
-        id: 'brain_understanding',
-        title: 'TheOne Brain understands the conversation',
-        action: 'theone.brain',
-        worker: 'theone',
-        dependsOn: [],
-      }],
-      hasOneClawTask: false,
-      oneClawStatus: 'skipped',
-      risk: brain.safety.risk,
-    });
+      steps: [],
+      estimatedRisk: brain.safety.risk,
+      estimatedValue: 'Direct OneAI answer without external execution',
+    };
     const workflow = createWorkflowTrace({ runId, mode, plan, approvals: [] });
     const workerRuntime = describeWorkerRuntime({
       oneclawTask: null,
@@ -2681,48 +2674,13 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       summary,
       finalSummary: summary,
       workerRuntime,
-      proofCount: 1,
+      proofCount: 0,
       modelRoute: primaryModel,
       oneAiCompletionContract: brainOnlyOneAi?.workflow.completionContract || null,
       oneAiRuntimeStrategy: brainOnlyOneAi?.workflow.runtimeStrategy || null,
     });
-    const proofRecords = [
-      proof({
-        title: 'TheOne Brain handled conversation',
-        value: summary,
-        metadata: {
-          source: 'theone.brain_layer',
-          mission,
-          brain,
-          workerRuntime,
-          modelRoute: primaryModel,
-          selectedAppPackages,
-          memoryContext: memorySummary(memoryContext),
-          continuity,
-          missionState,
-          workerCatalogSummary: workerCatalog.summary,
-          oneAiBrain: brainOnlyOneAi?.workflow.oneAiBrain || null,
-          l40Runtime,
-          preflight,
-        },
-      }),
-    ];
-    const executions = [
-      ...(brainOnlyOneAi ? [createExecutionRecord({
-        provider: 'oneai' as const,
-        status: brainOnlyOneAi.oneAiResult.mock ? 'mock' : brainOnlyOneAi.oneAiResult.success ? 'success' : 'failed',
-        summary: 'OneAI generated the natural brain-layer chat reply.',
-        taskName: 'oneai.chat.brain_reply',
-        raw: brainOnlyOneAi.oneAiResult,
-      })] : []),
-      createExecutionRecord({
-        provider: 'theone',
-        status: 'success',
-        summary: 'TheOne Brain answered without external worker execution.',
-        taskName: 'theone.brain.respond',
-        raw: { brain, preflight },
-      }),
-    ];
+    const proofRecords: ProofRecord[] = [];
+    const executions: ExecutionRecord[] = [];
     const permissions = buildPermissionDecisionsForChat({
       runId,
       mode,
@@ -2743,28 +2701,13 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       permissions,
       oneclawTask: null,
     });
-    const multiAgentRuntime = await runMultiAgentRuntime({
-      runId,
-      mode,
-      intent,
-      plan,
-      approvals: [],
-      permissions,
-      memoryContext,
-      contextFrame,
-    });
-    const allExecutions = [...executions, ...multiAgentRuntime.executions];
-    const allProofRecords = [...proofRecords, ...multiAgentRuntime.proof];
+    const multiAgentRuntime = null;
+    const allExecutions = executions;
+    const allProofRecords = proofRecords;
     const agentTimeline = buildAgentTimeline({
       mode,
       workerRuntime,
-      workflowSteps: [{
-        id: 'brain_understanding',
-        title: 'Understand and answer',
-        action: 'oneai.generate',
-        worker: 'oneai',
-        status: 'completed',
-      }],
+      workflowSteps: [],
       executions: allExecutions,
       approvals: [],
       oneclawTask: null,
@@ -2844,14 +2787,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
           owner: brainOnlyOneAi ? 'OneAI' : 'TheOne',
           status: 'validated',
           planningBrain: brainOnlyOneAi?.workflow.oneAiBrain || null,
-          steps: (brainOnlyOneAi?.workflow.workflow.steps || [{
-            id: 'brain_understanding',
-            title: 'Understand and answer',
-            worker: 'oneai',
-            action: 'oneai.generate',
-            input: { objective: brain.objective },
-            dependsOn: [],
-          }]).map((step) => ({
+          steps: (brainOnlyOneAi?.workflow.workflow.steps || []).map((step) => ({
             ...step,
             owner: step.worker || 'oneai',
             status: 'completed',
@@ -2859,15 +2795,8 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         },
         workerCoordination: {
           mode,
-          requiredWorkers: ['theone'],
-          workers: [
-            {
-              key: 'theone',
-              title: 'TheOne Brain',
-              role: 'Understands the conversation, chooses strategy, and decides whether workers are needed.',
-              status: 'ready',
-            },
-          ],
+          requiredWorkers: [],
+          workers: [],
           oneclawTask: null,
           oneclawRun: null,
           workerResultText: '',

@@ -1104,6 +1104,11 @@ function isDocumentContextIssue(result: any) {
   return /attachment|document|file path|pdf|docx|xlsx|上传|附件|文档|文件/i.test(resultFailureText(result));
 }
 
+function externalWorkerExecutions(result: any) {
+  const executions = Array.isArray(result?.executions) ? result.executions : [];
+  return executions.filter((execution: any) => execution?.provider === 'oneclaw');
+}
+
 function runStats(result: any) {
   const approvals = result?.pendingApprovals || result?.approvals || [];
   const pendingApprovals = Array.isArray(approvals)
@@ -1112,7 +1117,7 @@ function runStats(result: any) {
 
   return {
     approvals: pendingApprovals.length,
-    executions: result?.executions?.length || 0,
+    executions: externalWorkerExecutions(result).length,
     proof: result?.proof?.length || result?.proofRecords?.length || 0,
   };
 }
@@ -1145,7 +1150,7 @@ function evidenceText(result: any) {
 function workStatusLine(result: any) {
   if (!result?.chat && !result?.runId) return null;
   const steps = workflowSteps(result).length || result?.plan?.steps?.length || 0;
-  const executions = result?.executions?.length || 0;
+  const executions = externalWorkerExecutions(result).length;
   const proof = result?.proof?.length || result?.proofRecords?.length || 0;
   const approvals = pendingApprovals(result).length;
   const pieces = [
