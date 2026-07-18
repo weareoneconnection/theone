@@ -2546,6 +2546,7 @@ function RunPageContent() {
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const restoredSessionRef = useRef('');
+  const submittingRef = useRef(false);
   const labels = copyFor(locale);
   const progressStages = liveProgressStagesByLocale[locale];
 
@@ -2733,7 +2734,7 @@ function RunPageContent() {
 
   async function sendMessage(text?: string) {
     const content = (text ?? input).trim();
-    if (!content || loading) return;
+    if (!content || loading || submittingRef.current) return;
     const readyAttachments = attachments.filter((attachment) => attachment.status === 'ready');
     const failedAttachments = attachments.filter((attachment) => attachment.status === 'failed');
     const uploadInProgress = attachments.some((attachment) => attachment.status === 'uploading');
@@ -2770,8 +2771,11 @@ function RunPageContent() {
       return;
     }
 
+    submittingRef.current = true;
+    const turnId = createId('turn');
+    const assistantMessageId = `assistant_${turnId}`;
     const userMessage: ConversationMessage = {
-      id: createId('user'),
+      id: `user_${turnId}`,
       role: 'user',
       content,
       createdAt: new Date().toISOString(),
@@ -2807,10 +2811,9 @@ function RunPageContent() {
         const resolved = data.result || data;
         if (resolved?.ok === false || data?.ok === false) throw new Error(data.error || resolved.error || 'Mission command failed.');
         setResult(resolved);
-        setMessages((current) => ([
-          ...current,
-          {
-            id: createId(`assistant_${command}`),
+        setMessages((current) => {
+          const assistantMessage: ConversationMessage = {
+            id: assistantMessageId,
             role: 'assistant',
             content: command === 'approve'
               ? approvalDecisionMessage('approve', resolved)
@@ -2821,8 +2824,11 @@ function RunPageContent() {
                   : `I rebuilt the mission route.\n\n${plainResult(resolved)}`,
             createdAt: new Date().toISOString(),
             result: resolved,
-          },
-        ]));
+          };
+          return current.some((message) => message.id === assistantMessageId)
+            ? current.map((message) => message.id === assistantMessageId ? assistantMessage : message)
+            : [...current, assistantMessage];
+        });
         return;
       }
 
@@ -2855,16 +2861,15 @@ function RunPageContent() {
           action: selectedWorker.action,
           meta: selectedWorker.meta,
         } : undefined,
+        requestId: turnId,
       };
       let data: any;
-      const streamMessageId = createId('assistant_stream');
-      let streamed = false;
+      const streamMessageId = assistantMessageId;
       try {
         data = await postChatWithStream(
           payload,
           (stage) => setProgressStage(stage),
           (delta) => {
-            streamed = true;
             setMessages((current) => {
               const existing = current.find((message) => message.id === streamMessageId);
               if (existing) {
@@ -2902,23 +2907,17 @@ function RunPageContent() {
       }
       setResult(data);
       setMessages((current) => {
-        if (streamed) {
-          return current.map((message) => (
-            message.id === streamMessageId
-              ? { ...message, content: plainResult(data), result: data }
-              : message
-          ));
-        }
-        return [
-          ...current,
-          {
-            id: createId('assistant'),
+        const existing = current.find((message) => message.id === assistantMessageId);
+        const assistantMessage: ConversationMessage = {
+            id: assistantMessageId,
             role: 'assistant',
             content: plainResult(data),
-            createdAt: new Date().toISOString(),
+            createdAt: existing?.createdAt || new Date().toISOString(),
             result: data,
-          },
-        ];
+        };
+        return existing
+          ? current.map((message) => message.id === assistantMessageId ? assistantMessage : message)
+          : [...current, assistantMessage];
       });
       if (data?.chat?.conversation?.sessionId) {
         setChatSessionId(data.chat.conversation.sessionId);
@@ -2929,18 +2928,22 @@ function RunPageContent() {
     } catch (error) {
       const failure = { ok: false, error: error instanceof Error ? error.message : 'TheOne could not start this run.' };
       setResult(failure);
-      setMessages((current) => ([
-        ...current,
-        {
-          id: createId('assistant_error'),
+      setMessages((current) => {
+        const existing = current.find((message) => message.id === assistantMessageId);
+        const assistantMessage: ConversationMessage = {
+          id: assistantMessageId,
           role: 'assistant',
           content: plainResult(failure),
-          createdAt: new Date().toISOString(),
+          createdAt: existing?.createdAt || new Date().toISOString(),
           result: failure,
-        },
-      ]));
+        };
+        return existing
+          ? current.map((message) => message.id === assistantMessageId ? assistantMessage : message)
+          : [...current, assistantMessage];
+      });
     } finally {
       setWorkedMs(Date.now() - startedAt);
+      submittingRef.current = false;
       setLoading(false);
     }
   }
