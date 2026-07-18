@@ -2610,6 +2610,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         appPackages,
         brain,
         language: input.language,
+        direct: true,
       });
       if (brainOnlyOneAi.workflow.assistantReply.trim()) {
         summary = brainOnlyOneAi.workflow.assistantReply.trim();

@@ -471,6 +471,13 @@ export async function POST(req: Request) {
           objective,
           previous: body.context?.codeMission,
         });
+
+        emitRuntimeEvents(controller, withCodeMission);
+        const immediateRuntime = (withCodeMission.chat as Record<string, unknown> | undefined)?.l40Runtime;
+        if (immediateRuntime) send(controller, 'runtime_contract', immediateRuntime);
+        send(controller, 'stage', { index: 5, label: 'Writing answer', detail: 'Returning the result in plain language.' });
+        streamAnswer(controller, String((withCodeMission.chat as any)?.assistant?.content || withCodeMission.summary || ''));
+
         const stored = await saveRunResult(withCodeMission);
         await saveChatSessionSnapshot({
           sessionId: String((withCodeMission.chat as any)?.conversation?.sessionId || sessionId || stored.runId),
@@ -494,12 +501,6 @@ export async function POST(req: Request) {
           codeMission: withCodeMission.codeMission,
           chat: withCodeMission.chat,
         };
-
-        emitRuntimeEvents(controller, output);
-        const l40Runtime = (output.chat as Record<string, unknown> | undefined)?.l40Runtime;
-        if (l40Runtime) send(controller, 'runtime_contract', l40Runtime);
-        send(controller, 'stage', { index: 5, label: 'Writing answer', detail: 'Returning the result in plain language.' });
-        streamAnswer(controller, String((withCodeMission.chat as any)?.assistant?.content || withCodeMission.summary || ''));
         send(controller, 'result', output);
       } catch (error) {
         const content = publicChatFailure(error);

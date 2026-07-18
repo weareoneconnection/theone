@@ -492,6 +492,7 @@ export async function buildOneAIChatWorkflow(input: {
   appPackages?: AppRuntimePackage[];
   brain?: TheOneBrainFrame;
   language?: string;
+  direct?: boolean;
 }): Promise<{
   workflow: OneAIWorkflowContract;
   oneAiResult: OneAIGenerateResult<unknown>;
@@ -529,6 +530,68 @@ export async function buildOneAIChatWorkflow(input: {
   const compactedBrain = compactBrain(input.brain);
   const compactedWorkerCatalog = compactWorkerCatalog(input.workerCatalog, actionNames);
   const compactedAppPackages = compactAppPackages(input.appPackages, input.brain);
+
+  if (input.direct) {
+    const oneAiResult = await runOneAI<unknown>({
+      type: 'theone_chat_direct',
+      input: {
+        message: input.raw,
+        responseLanguage,
+        conversation: compactConversation(input.messages).slice(-6),
+        capabilityContext: {
+          role: 'TheOne AI OS',
+          abilities: [
+            'converse and reason',
+            'plan and program',
+            'analyze websites and files',
+            'coordinate connected OneClaw workers',
+            'request approval and return proof for external actions',
+          ],
+          executionBoundary: 'This direct route answers only and does not execute workers.',
+        },
+      },
+      options: {
+        responseFormat: 'json',
+        chain: 'theone_chat_direct',
+        model: modelRoute.model,
+        modelRoute,
+      },
+    });
+
+    const data = extractOneAIData(oneAiResult);
+    const normalized = oneAiResult.success
+      ? normalizeWorkflow(data, input.raw)
+      : fallbackWorkflow(input.raw, input.mode);
+    const workflow: OneAIWorkflowContract = {
+      ...normalized,
+      workflow: {
+        ...normalized.workflow,
+        steps: [],
+      },
+      requiredWorkers: [],
+      oneclawTask: null,
+      completionContract: {
+        status: 'answered',
+        finalAnswerReady: true,
+        needsWorker: false,
+        needsApproval: false,
+        evidenceRequired: false,
+        nextAction: normalized.completionContract?.nextAction || 'Continue the conversation or give TheOne a concrete outcome.',
+        reason: normalized.completionContract?.reason || 'The request was answered directly.',
+        resultQuality: 'usable',
+      },
+      safety: {
+        requiresApproval: false,
+        reason: normalized.safety.reason || 'No external action was requested.',
+      },
+    };
+
+    return {
+      workflow,
+      oneAiResult,
+      oneclawTask: null,
+    };
+  }
 
   const oneAiResult = await runOneAI<unknown>({
     type: 'theone_chat_workflow',
