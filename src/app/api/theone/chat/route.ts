@@ -247,6 +247,17 @@ function attachConversation(result: Awaited<ReturnType<typeof runTheOneChatRunti
   };
 }
 
+function publicChatFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  if (/request entity too large|payload too large|content too large|status\s*413/i.test(message)) {
+    return 'This conversation contains more context than the planning service can accept. TheOne compacted it automatically, but the request is still too large. Start a new chat or remove large attachments, then retry.';
+  }
+  if (/ONEAI request failed|internal server error/i.test(message)) {
+    return 'TheOne could not reach the planning brain for this request. Please retry; your existing runs and files were not changed.';
+  }
+  return 'TheOne could not start this request. Please retry or start a new chat if the current conversation is very long.';
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -310,14 +321,15 @@ export async function POST(req: Request) {
       status: stored.ok ? 200 : 500,
     });
   } catch (error) {
+    const content = publicChatFailure(error);
     return Response.json({
       ok: false,
-      error: error instanceof Error ? error.message : 'TheOne Chat Runtime failed.',
+      error: content,
       chat: {
         runtime: 'theone.chat_runtime.v1',
         assistant: {
           role: 'assistant',
-          content: 'TheOne could not start the intelligent chat workflow.',
+          content,
           createdAt: new Date().toISOString(),
         },
       },

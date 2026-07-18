@@ -1016,6 +1016,14 @@ async function uploadChatAttachments(files: FileList | null): Promise<ChatAttach
 function plainResult(result: any) {
   const assistant = result?.chat?.assistant?.content;
   const error = String(result?.error || '');
+  const oversizedRequest = /request entity too large|payload too large|content too large|status\s*413/i.test(error);
+  if (oversizedRequest) {
+    return 'This conversation is too large for the planning service. TheOne already tried to compact it. Start a new chat or remove large attachments, then retry.';
+  }
+  const planningServiceFailure = /ONEAI request failed|internal server error/i.test(error);
+  if (planningServiceFailure) {
+    return 'TheOne could not reach the planning brain for this request. Retry it; your existing runs and files were not changed.';
+  }
   const genericStartupFailure = typeof assistant === 'string' &&
     /could not start the intelligent chat workflow/i.test(assistant);
   if (error && (!assistant || genericStartupFailure)) {

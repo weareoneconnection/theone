@@ -517,26 +517,147 @@ export function extractOneAIPlannedOneClawTask(data: unknown): OneClawTask | nul
   };
 }
 
+function requestSize(value: unknown) {
+  return new TextEncoder().encode(JSON.stringify(value)).length;
+}
+
+function trimRequestText(value: unknown, maxLength: number) {
+  if (typeof value !== 'string' || value.length <= maxLength) return value;
+  return `${value.slice(0, Math.max(0, maxLength - 28))}\n...[context truncated]`;
+}
+
+function compactChatRequest(payload: OneAIGeneratePayload, aggressive = false): OneAIGeneratePayload {
+  if (payload.type !== 'theone_chat_workflow' || !isRecord(payload.input)) return payload;
+  const input = payload.input;
+  const actionLimit = aggressive ? 20 : 36;
+  const conversationLimit = aggressive ? 4 : 8;
+  const conversationChars = aggressive ? 1_200 : 2_400;
+  const availableActions = Array.isArray(input.availableActions)
+    ? input.availableActions.slice(0, actionLimit).map((item) => {
+        if (!isRecord(item)) return item;
+        return {
+          action: item.action,
+          domain: item.domain,
+          connectorKey: item.connectorKey,
+          risk: item.risk,
+          approvalRequired: item.approvalRequired,
+          inputRequired: item.inputRequired,
+          liveMode: item.liveMode,
+          maturity: item.maturity,
+        };
+      })
+    : [];
+  const conversation = Array.isArray(input.conversation)
+    ? input.conversation.slice(-conversationLimit).map((message) => {
+        if (!isRecord(message)) return message;
+        return {
+          role: message.role,
+          content: trimRequestText(message.content, conversationChars),
+        };
+      })
+    : [];
+  const workerCatalog = isRecord(input.workerCatalog)
+    ? {
+        summary: input.workerCatalog.summary,
+        workers: Array.isArray(input.workerCatalog.workers)
+          ? input.workerCatalog.workers.slice(0, aggressive ? 8 : 12)
+          : [],
+      }
+    : null;
+  const appPackages = Array.isArray(input.appPackages)
+    ? input.appPackages.slice(0, aggressive ? 4 : 6)
+    : null;
+  const sourceBrain = isRecord(input.brain) ? input.brain : null;
+  const brain = sourceBrain
+    ? {
+        objective: trimRequestText(sourceBrain.objective, aggressive ? 600 : 1_000),
+        mode: sourceBrain.mode,
+        conversationKind: sourceBrain.conversationKind,
+        language: sourceBrain.language,
+        contextReadiness: sourceBrain.contextReadiness,
+        selectedApps: Array.isArray(sourceBrain.selectedApps) ? sourceBrain.selectedApps.slice(0, 4) : [],
+        capabilityRoute: Array.isArray(sourceBrain.capabilityRoute) ? sourceBrain.capabilityRoute.slice(0, 10) : [],
+        reasoning: sourceBrain.reasoning,
+        executionDecision: sourceBrain.executionDecision,
+        safety: sourceBrain.safety,
+        nextMoves: Array.isArray(sourceBrain.nextMoves) ? sourceBrain.nextMoves.slice(0, 4) : [],
+      }
+    : null;
+
+  return {
+    ...payload,
+    input: {
+      ...input,
+      message: trimRequestText(input.message, aggressive ? 3_000 : 6_000),
+      conversation,
+      availableActions,
+      workerCatalog,
+      appPackages,
+      brain,
+      instruction: trimRequestText(input.instruction, aggressive ? 12_000 : 24_000),
+      ...(aggressive
+        ? {
+            responseContract: {
+              assistantReply: 'string',
+              intent: { objective: 'string', domain: 'string', risk: 'low|medium|high', requiresApproval: 'boolean' },
+              workflow: { id: 'string', summary: 'string', steps: 'workflow step[]' },
+              requiredWorkers: 'string[]',
+              oneclawTask: 'OneClaw task object or null',
+              safety: { requiresApproval: 'boolean', reason: 'string' },
+              completionContract: 'completion contract object',
+            },
+          }
+        : {}),
+    },
+  };
+}
+
+function requestEntityTooLarge(status: number, body: string) {
+  return status === 413 || /request entity too large|payload too large|content too large/i.test(body);
+}
+
 export async function runOneAI<T = unknown>(payload: OneAIGeneratePayload): Promise<OneAIGenerateResult<T>> {
   const { baseUrl, apiKey } = getOneAIConfig();
-  const upstreamPayload = adaptOneAIPayload(payload);
+  let upstreamPayload = adaptOneAIPayload(payload);
+  const maxRequestBytes = Math.max(64_000, Number(process.env.ONEAI_REQUEST_MAX_BYTES || 180_000));
+  let requestCompacted = false;
 
   if (!apiKey) {
     return createMockResult<T>(payload);
   }
 
-  const res = await fetch(`${baseUrl}/v1/generate`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-    },
-    body: JSON.stringify(upstreamPayload),
-    cache: 'no-store',
-  });
+  if (requestSize(upstreamPayload) > maxRequestBytes) {
+    upstreamPayload = compactChatRequest(upstreamPayload);
+    requestCompacted = true;
+  }
+
+  const send = (request: OneAIGeneratePayload) => fetch(`${baseUrl}/v1/generate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+      },
+      body: JSON.stringify(request),
+      cache: 'no-store',
+    });
+
+  let res = await send(upstreamPayload);
+  if (!res.ok) {
+    const text = await res.text();
+    if (requestEntityTooLarge(res.status, text) && payload.type === 'theone_chat_workflow') {
+      upstreamPayload = compactChatRequest(upstreamPayload, true);
+      requestCompacted = true;
+      res = await send(upstreamPayload);
+    } else {
+      throw new Error(`ONEAI request failed (${payload.type} -> ${upstreamPayload.type}): ${res.status} ${text}`);
+    }
+  }
 
   if (!res.ok) {
     const text = await res.text();
+    if (requestEntityTooLarge(res.status, text)) {
+      throw new Error('OneAI could not accept the conversation context after automatic compression. Start a new task or remove large attachments, then retry.');
+    }
     throw new Error(`ONEAI request failed (${payload.type} -> ${upstreamPayload.type}): ${res.status} ${text}`);
   }
 
@@ -549,6 +670,8 @@ export async function runOneAI<T = unknown>(payload: OneAIGeneratePayload): Prom
         requestedTask: payload.type,
         upstreamTask: upstreamPayload.type,
         adapted: payload.type !== upstreamPayload.type,
+        requestCompacted,
+        requestBytes: requestSize(upstreamPayload),
         request: upstreamPayload,
         response: json,
       },
@@ -566,6 +689,8 @@ export async function runOneAI<T = unknown>(payload: OneAIGeneratePayload): Prom
       requestedTask: payload.type,
       upstreamTask: upstreamPayload.type,
       adapted: payload.type !== upstreamPayload.type,
+      requestCompacted,
+      requestBytes: requestSize(upstreamPayload),
       request: upstreamPayload,
       response: json,
     },

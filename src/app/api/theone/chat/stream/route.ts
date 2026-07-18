@@ -259,6 +259,17 @@ function streamAnswer(controller: ReadableStreamDefaultController<Uint8Array>, c
   }
 }
 
+function publicChatFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  if (/request entity too large|payload too large|content too large|status\s*413/i.test(message)) {
+    return 'This conversation contains more context than the planning service can accept. TheOne compacted it automatically, but the request is still too large. Start a new chat or remove large attachments, then retry.';
+  }
+  if (/ONEAI request failed|internal server error/i.test(message)) {
+    return 'TheOne could not reach the planning brain for this request. Please retry; your existing runs and files were not changed.';
+  }
+  return 'TheOne could not start this request. Please retry or start a new chat if the current conversation is very long.';
+}
+
 function emitRuntimeEvents(controller: ReadableStreamDefaultController<Uint8Array>, result: any) {
   const workflow = result?.chat?.oneAiWorkflow;
   const steps = Array.isArray(workflow?.steps) ? workflow.steps : [];
@@ -491,9 +502,10 @@ export async function POST(req: Request) {
         streamAnswer(controller, String((withCodeMission.chat as any)?.assistant?.content || withCodeMission.summary || ''));
         send(controller, 'result', output);
       } catch (error) {
+        const content = publicChatFailure(error);
         send(controller, 'error', {
           ok: false,
-          error: error instanceof Error ? error.message : 'TheOne Chat stream failed.',
+          error: content,
         });
       } finally {
         controller.close();

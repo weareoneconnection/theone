@@ -1,12 +1,148 @@
 import { extractOneAIData, extractOneAIPlannedOneClawTask, runOneAI } from '../providers/oneai';
 import { resolveTheOneModel } from '../models/model-router';
 import type { OneAIGenerateResult, OneClawCapabilityDefinition, OneClawTask, TheOneMode } from '../types';
+import type { AppRuntimePackage } from '../apps/runtime-packages';
+import type { buildUniversalWorkerCatalog } from '../workers/action-catalog';
 import type { TheOneBrainFrame } from './brain-layer';
+
+type UniversalWorkerCatalog = ReturnType<typeof buildUniversalWorkerCatalog>;
 
 export type TheOneChatMessage = {
   role: 'user' | 'assistant' | 'system';
   content: string;
 };
+
+const MAX_ONEAI_ACTIONS = 48;
+const MAX_ONEAI_CONVERSATION_CHARS = 16_000;
+
+function compactText(value: unknown, maxLength: number) {
+  const text = typeof value === 'string' ? value : '';
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 28))}\n...[context truncated]`;
+}
+
+function compactConversation(messages: TheOneChatMessage[]) {
+  let remaining = MAX_ONEAI_CONVERSATION_CHARS;
+  const compacted: TheOneChatMessage[] = [];
+
+  for (const message of messages.slice(-10).reverse()) {
+    if (remaining <= 0) break;
+    const content = compactText(message.content, Math.min(3_200, remaining));
+    if (!content) continue;
+    compacted.push({ role: message.role, content });
+    remaining -= content.length;
+  }
+
+  return compacted.reverse();
+}
+
+function selectedWorkerActions(brain: TheOneBrainFrame | null | undefined) {
+  return new Set(
+    (brain?.selectedApps || []).flatMap((app) =>
+      Array.isArray(app.workerActions) ? app.workerActions : [],
+    ),
+  );
+}
+
+function actionRelevanceScore(
+  capability: OneClawCapabilityDefinition,
+  raw: string,
+  brain: TheOneBrainFrame | null | undefined,
+) {
+  const normalized = raw.toLowerCase();
+  const action = capability.action.toLowerCase();
+  const domain = String(capability.domain || action.split('.')[0] || '').toLowerCase();
+  const preferredActions = selectedWorkerActions(brain);
+  let score = preferredActions.has(capability.action) ? 100 : 0;
+
+  const keywordDomains: Array<[RegExp, string[]]> = [
+    [/code|coding|program|编程|代码|开发|debug|bug|repo|repository/, ['code', 'git', 'shell', 'file']],
+    [/website|browser|web|网页|网站|浏览/, ['browser', 'web', 'search']],
+    [/twitter|tweet|\bx\b|推文|发帖/, ['x', 'social']],
+    [/document|pdf|word|文件|文档|报告/, ['document', 'file', 'storage']],
+    [/spreadsheet|excel|csv|表格/, ['spreadsheet', 'file']],
+    [/desktop|computer|电脑|桌面/, ['desktop']],
+    [/api|webhook|接口/, ['api']],
+  ];
+
+  for (const [pattern, domains] of keywordDomains) {
+    if (pattern.test(normalized) && domains.some((item) => domain.includes(item) || action.startsWith(`${item}.`))) {
+      score += 60;
+    }
+  }
+
+  if (brain?.capabilityRoute?.some((item) => action.includes(String(item).toLowerCase()))) score += 30;
+  if (capability.liveMode === 'live') score += 8;
+  if (capability.maturity === 'production') score += 6;
+  if (!capability.approvalRequired) score += 2;
+  return score;
+}
+
+function compactWorkerCatalog(catalog: UniversalWorkerCatalog | null | undefined, actionNames: Set<string>) {
+  if (!catalog) return null;
+  return {
+    summary: catalog.summary,
+    workers: catalog.workers
+      .map((worker) => ({
+        key: worker.key,
+        domain: worker.domain,
+        connectorKey: worker.connectorKey,
+        actionCount: worker.actions.length,
+        actions: worker.actions
+          .filter((action) => actionNames.has(action))
+          .slice(0, 8),
+      }))
+      .filter((worker) => worker.actions.length > 0)
+      .slice(0, 16),
+  };
+}
+
+function compactAppPackages(
+  packages: AppRuntimePackage[] | null | undefined,
+  brain: TheOneBrainFrame | null | undefined,
+) {
+  if (!packages?.length) return null;
+  const selectedKeys = new Set((brain?.selectedApps || []).map((app) => app.key));
+  const selected = packages.filter((item) => selectedKeys.has(item.key));
+  const source = selected.length ? selected : packages;
+  return source.slice(0, 8).map((item) => ({
+    key: item.key,
+    title: item.title,
+    stage: item.stage,
+    purpose: compactText(item.purpose, 420),
+    workerActions: item.workerActions.slice(0, 12),
+    policy: item.policy,
+  }));
+}
+
+function compactBrain(brain: TheOneBrainFrame | null | undefined) {
+  if (!brain) return null;
+  return {
+    objective: compactText(brain.objective, 1_200),
+    mode: brain.mode,
+    conversationKind: brain.conversationKind,
+    contextReadiness: brain.contextReadiness,
+    selectedApps: brain.selectedApps.slice(0, 6).map((app) => ({
+      key: app.key,
+      title: app.title,
+      workerActions: app.workerActions.slice(0, 12),
+    })),
+    capabilityRoute: brain.capabilityRoute.slice(0, 16),
+    reasoning: brain.reasoning,
+    executionDecision: brain.executionDecision,
+    safety: brain.safety,
+    nextMoves: brain.nextMoves.slice(0, 6),
+    workerCapabilityMap: brain.workerCapabilityMap.slice(0, 24).map((item) => ({
+      domain: item.domain,
+      status: item.status,
+      liveActions: item.liveActions,
+      preparedActions: item.preparedActions,
+      approvalGatedActions: item.approvalGatedActions,
+      blockedActions: item.blockedActions,
+      actions: item.actions.slice(0, 6),
+    })),
+  };
+}
 
 export type OneAIWorkflowStep = {
   id: string;
@@ -352,8 +488,8 @@ export async function buildOneAIChatWorkflow(input: {
   mode: TheOneMode;
   messages: TheOneChatMessage[];
   capabilities: OneClawCapabilityDefinition[];
-  workerCatalog?: unknown;
-  appPackages?: unknown;
+  workerCatalog?: UniversalWorkerCatalog;
+  appPackages?: AppRuntimePackage[];
   brain?: TheOneBrainFrame;
   language?: string;
 }): Promise<{
@@ -361,18 +497,22 @@ export async function buildOneAIChatWorkflow(input: {
   oneAiResult: OneAIGenerateResult<unknown>;
   oneclawTask: OneClawTask | null;
 }> {
-  const availableActions = input.capabilities.slice(0, 120).map((capability) => ({
+  const rankedCapabilities = [...input.capabilities]
+    .sort((left, right) =>
+      actionRelevanceScore(right, input.raw, input.brain) - actionRelevanceScore(left, input.raw, input.brain),
+    )
+    .slice(0, input.brain?.conversationKind === 'capability' ? 32 : MAX_ONEAI_ACTIONS);
+  const availableActions = rankedCapabilities.map((capability) => ({
     action: capability.action,
-    title: capability.title,
     domain: capability.domain,
     connectorKey: capability.connectorKey,
     risk: capability.risk,
     approvalRequired: capability.approvalRequired,
     inputRequired: capability.inputRequired,
-    outputContract: capability.outputContract,
     liveMode: capability.liveMode,
     maturity: capability.maturity,
   }));
+  const actionNames = new Set(availableActions.map((capability) => capability.action));
   const workerDomains = Array.from(
     input.capabilities.reduce((domains, capability) => {
       domains.add(capability.domain);
@@ -386,6 +526,9 @@ export async function buildOneAIChatWorkflow(input: {
     messages: input.messages,
   });
   const language = languageContract(responseLanguage);
+  const compactedBrain = compactBrain(input.brain);
+  const compactedWorkerCatalog = compactWorkerCatalog(input.workerCatalog, actionNames);
+  const compactedAppPackages = compactAppPackages(input.appPackages, input.brain);
 
   const oneAiResult = await runOneAI<unknown>({
     type: 'theone_chat_workflow',
@@ -396,7 +539,7 @@ export async function buildOneAIChatWorkflow(input: {
       language: responseLanguage,
       responseLanguage,
       languageContract: language,
-      conversation: input.messages.slice(-12),
+      conversation: compactConversation(input.messages),
       availableActions,
       actionCount: input.capabilities.length,
       workerDomains,
@@ -408,9 +551,9 @@ export async function buildOneAIChatWorkflow(input: {
 	        preferDirectAnswerWhenEvidenceReady: true,
 	        preferWorkerWhenExternalEvidenceMissing: true,
 	      },
-	      workerCatalog: input.workerCatalog || null,
-	      appPackages: input.appPackages || null,
-	      brain: input.brain || null,
+	      workerCatalog: compactedWorkerCatalog,
+	      appPackages: compactedAppPackages,
+	      brain: compactedBrain,
       responseContract: {
         languageContract: language,
         assistantReply: 'string',
@@ -470,13 +613,12 @@ export async function buildOneAIChatWorkflow(input: {
         },
       },
       instruction: [
-        input.brain?.systemPrompt || '',
-        input.brain ? `Brain objective: ${input.brain.objective}` : '',
+        input.brain ? compactText(input.brain.systemPrompt, 5_000) : '',
+        input.brain ? `Brain objective: ${compactText(input.brain.objective, 1_200)}` : '',
         input.brain ? `Brain mode: ${input.brain.mode}` : '',
         input.brain ? `Brain selected apps: ${input.brain.selectedApps.map((app) => app.key).join(', ')}` : '',
         input.brain ? `Brain execution decision: ${JSON.stringify(input.brain.executionDecision)}` : '',
         input.brain ? `Brain context readiness: ${JSON.stringify(input.brain.contextReadiness)}` : '',
-        input.brain ? `OneAI planning brain contract: ${JSON.stringify(input.brain.oneAiBrain)}` : '',
         `Use model route ${modelRoute.useCase} with preferred model alias ${modelRoute.model}.`,
         `Response language: ${responseLanguage}.`,
         `Language contract: ${JSON.stringify(language)}.`,
