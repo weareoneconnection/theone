@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { strFromU8, unzipSync } from 'fflate';
+import { MarkdownMessage } from '@/components/theone/MarkdownMessage';
 import { friendlyStatus } from '@/components/theone/ProductNav';
 
 const modes = ['manual', 'assist', 'auto'] as const;
@@ -1560,6 +1561,8 @@ function diffLineClass(line: string) {
 }
 
 const codeLifecycleLabels: Record<string, string> = {
+  'code.generate': 'Generate',
+  'code.review': 'Review',
   'code.workspace.status': 'Inspect',
   'code.diff.prepare': 'Plan',
   'code.patch.apply': 'Apply',
@@ -1580,6 +1583,9 @@ function CodeRuntimeCard({ result, busy, onAction }: { result: any; busy?: boole
   if (!codeRuntime) return null;
   const codeMission = codeMissionFromResult(result);
   const files = Array.isArray(codeRuntime.files) ? codeRuntime.files.filter(Boolean) : [];
+  const artifacts = Array.isArray(codeRuntime.artifacts)
+    ? codeRuntime.artifacts.filter((artifact: any) => artifact?.fileName && artifact?.content)
+    : [];
   const steps = Array.isArray(codeRuntime.steps) ? codeRuntime.steps : [];
   const diff = typeof codeRuntime.diff === 'string' ? codeRuntime.diff : '';
   const nextActions = Array.isArray(codeRuntime.nextActions) ? codeRuntime.nextActions : [];
@@ -1655,6 +1661,20 @@ function CodeRuntimeCard({ result, busy, onAction }: { result: any; busy?: boole
       {files.length ? (
         <div className="run-code-files">
           {files.slice(0, 6).map((file: string) => <em key={file}>{file}</em>)}
+        </div>
+      ) : null}
+      {artifacts.length ? (
+        <div className="run-code-artifacts">
+          <span>Generated files</span>
+          {artifacts.slice(0, 8).map((artifact: any, index: number) => (
+            <details key={`${artifact.fileName}-${index}`}>
+              <summary>
+                <strong>{artifact.fileName}</strong>
+                <em>{artifact.language || 'code'}</em>
+              </summary>
+              <pre><code>{artifact.content}</code></pre>
+            </details>
+          ))}
         </div>
       ) : null}
       {testResults.length ? (
@@ -3098,7 +3118,11 @@ function RunPageContent() {
                   <span>{message.role === 'user' ? labels.messageYou : message.role === 'assistant' ? labels.messageAssistant : labels.messageSystem}</span>
                   <small>{formatMessageTime(message.createdAt)}</small>
                 </div>
-                <p>{message.content}</p>
+                {message.role === 'user' ? (
+                  <p>{message.content}</p>
+                ) : (
+                  <MarkdownMessage content={message.content} locale={locale} />
+                )}
                 {message.role === 'assistant' && message.result ? <WorkStatusLine result={message.result} /> : null}
                 {message.role === 'assistant' && message.result ? (
                   <CodeRuntimeCard result={message.result} busy={loading} onAction={(prompt) => sendMessage(prompt)} />

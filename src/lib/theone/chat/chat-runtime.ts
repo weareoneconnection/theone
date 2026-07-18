@@ -883,8 +883,100 @@ function collectCodeOutputs(value: unknown, outputs: Record<string, unknown>[] =
   return outputs;
 }
 
+const programmingRequestPattern = /(编程|写(?:一份|一个|个)?(?:代码|脚本|程序|机器人|bot|app|api)|代码|脚本|程序|机器人|telegram\s*bot|program(?:ming)?|code|script|implement|build\s+(?:an?|the)|write\s+(?:an?|the)|python|typescript|javascript|react|next\.?js)/i;
+
+const generatedCodeExtensions: Record<string, string> = {
+  bash: 'sh',
+  c: 'c',
+  cpp: 'cpp',
+  cs: 'cs',
+  csharp: 'cs',
+  css: 'css',
+  go: 'go',
+  html: 'html',
+  java: 'java',
+  javascript: 'js',
+  js: 'js',
+  jsx: 'jsx',
+  json: 'json',
+  kotlin: 'kt',
+  php: 'php',
+  py: 'py',
+  python: 'py',
+  ruby: 'rb',
+  rust: 'rs',
+  sh: 'sh',
+  shell: 'sh',
+  sql: 'sql',
+  swift: 'swift',
+  toml: 'toml',
+  ts: 'ts',
+  tsx: 'tsx',
+  typescript: 'ts',
+  yaml: 'yaml',
+  yml: 'yml',
+};
+
+function generatedCodeFileName(language: string, content: string, index: number) {
+  const normalized = language.toLowerCase();
+  if ((normalized === 'python' || normalized === 'py') && /(telegram\.ext|ApplicationBuilder|run_polling)/.test(content)) {
+    return 'bot.py';
+  }
+  if (normalized === 'json' && /"(?:dependencies|scripts|devDependencies)"\s*:/.test(content)) {
+    return 'package.json';
+  }
+  if (normalized === 'tsx' && /(?:function|const)\s+App\b|export\s+default\s+(?:function\s+)?App\b/.test(content)) {
+    return 'App.tsx';
+  }
+  const preferredNames: Record<string, string> = {
+    bash: 'setup.sh',
+    css: 'styles.css',
+    html: 'index.html',
+    javascript: 'index.js',
+    js: 'index.js',
+    json: 'config.json',
+    py: 'main.py',
+    python: 'main.py',
+    sh: 'setup.sh',
+    shell: 'setup.sh',
+    sql: 'query.sql',
+    ts: 'index.ts',
+    tsx: 'App.tsx',
+    typescript: 'index.ts',
+    yaml: 'config.yaml',
+    yml: 'config.yml',
+  };
+  const preferred = preferredNames[normalized];
+  if (preferred) return index === 0 ? preferred : `${preferred.replace(/(\.[^.]+)$/, `-${index + 1}$1`)}`;
+  const extension = generatedCodeExtensions[normalized] || 'txt';
+  return `generated-${index + 1}.${extension}`;
+}
+
+function extractGeneratedCodeArtifacts(summary: string) {
+  const artifacts: Array<{ fileName: string; language: string; content: string }> = [];
+  const names = new Set<string>();
+  const fencePattern = /```([A-Za-z0-9_+#.-]*)[^\S\r\n]*\r?\n([\s\S]*?)```/g;
+  let match: RegExpExecArray | null;
+  while ((match = fencePattern.exec(summary)) !== null) {
+    const language = (match[1] || '').toLowerCase();
+    const content = match[2].replace(/\s+$/, '');
+    if (!content || !generatedCodeExtensions[language]) continue;
+    let fileName = generatedCodeFileName(language, content, artifacts.length);
+    if (names.has(fileName)) {
+      const extensionIndex = fileName.lastIndexOf('.');
+      fileName = extensionIndex > 0
+        ? `${fileName.slice(0, extensionIndex)}-${artifacts.length + 1}${fileName.slice(extensionIndex)}`
+        : `${fileName}-${artifacts.length + 1}`;
+    }
+    names.add(fileName);
+    artifacts.push({ fileName, language: language || 'code', content });
+  }
+  return artifacts;
+}
+
 function buildCodeRuntime(input: {
   raw: string;
+  summary: string;
   oneclawTask: OneClawTask | null;
   oneclawRun: OneClawTaskRun | null;
   runtimeError: string | null;
@@ -897,6 +989,49 @@ function buildCodeRuntime(input: {
   const codeSteps = steps.filter((step) => isCodeAction(step.action));
   const outputs = collectCodeOutputs(input.oneclawRun);
   const latest = outputs[outputs.length - 1] || null;
+  const generatedArtifacts = programmingRequestPattern.test(input.raw)
+    ? extractGeneratedCodeArtifacts(input.summary)
+    : [];
+  if (!codeSteps.length && !latest && generatedArtifacts.length) {
+    const files = generatedArtifacts.map((artifact) => artifact.fileName);
+    return {
+      schemaVersion: 'theone.code_runtime.v2',
+      status: 'draft_ready',
+      action: 'code.generate',
+      workspacePath: null,
+      summary: `${generatedArtifacts.length} generated code artifact${generatedArtifacts.length === 1 ? '' : 's'} ready for review.`,
+      diff: null,
+      files,
+      artifacts: generatedArtifacts,
+      approvalRequired: false,
+      lifecycle: [
+        { id: 'code_generate', action: 'code.generate', status: 'completed' },
+        { id: 'code_review', action: 'code.review', status: 'ready' },
+        { id: 'code_test_run', action: 'code.test.run', status: 'pending' },
+        { id: 'code_verify', action: 'code.verify', status: 'pending' },
+        { id: 'code_pr_create', action: 'code.pr.create', status: 'pending' },
+      ],
+      rollback: { available: false, token: null },
+      tests: { status: 'not_run', passed: false, results: [] },
+      delivery: {
+        branch: null,
+        repo: null,
+        gitStatus: null,
+        diffStat: null,
+        ready: false,
+      },
+      steps: [{
+        id: 'code_generate',
+        action: 'code.generate',
+        approvalMode: 'auto',
+        input: { files },
+      }],
+      nextActions: [
+        'Review the generated files and requirements.',
+        'Select a workspace when you want TheOne to apply and test the code.',
+      ],
+    };
+  }
   if (!codeSteps.length && !latest) return null;
 
   const action = textField(latest?.action) || codeSteps[codeSteps.length - 1]?.action || 'code.workspace.status';
@@ -1002,6 +1137,7 @@ function buildCodeRuntime(input: {
     summary,
     diff: diff || null,
     files,
+    artifacts: [],
     approvalRequired: guardedActions.has(action) || input.approvalGated,
     lifecycle,
     rollback: {
@@ -2717,6 +2853,17 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
       oneclawRun: null,
       finalSummary: summary,
     });
+    const codeRuntime = buildCodeRuntime({
+      raw,
+      summary,
+      oneclawTask: null,
+      oneclawRun: null,
+      runtimeError: null,
+      approvalGated: false,
+      blocked: false,
+      canSubmit: false,
+      workerResultText: '',
+    });
     return {
       ok: true,
       runId,
@@ -2760,6 +2907,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         contextFrame,
         permissions,
         multiAgentRuntime,
+        codeRuntime,
       },
       chat: {
         runtime: 'theone.chat_runtime.v2',
@@ -2774,6 +2922,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
         contextFrame,
         permissions,
         multiAgentRuntime,
+        codeRuntime,
         modelRoute: primaryModel,
         memoryContext: memorySummary(memoryContext),
         appPackages: brain.selectedApps.length ? brain.selectedApps : appPackages.slice(0, 4),
@@ -3240,6 +3389,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
   });
   const codeRuntime = buildCodeRuntime({
     raw,
+    summary,
     oneclawTask,
     oneclawRun,
     runtimeError,
