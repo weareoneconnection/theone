@@ -103,7 +103,14 @@ export async function evaluateAutomationPolicy(input: {
 
   if (input.preflight.status === 'blocked') {
     decision = 'blocked';
-    reasons.push('Production preflight blocked this task.');
+    // Surface the actual failing checks — "blocked" without the why is undebuggable.
+    const failing = (input.preflight.checks || [])
+      .filter((item) => item.status === 'fail')
+      .slice(0, 3)
+      .map((item) => `${item.label}: ${item.detail}`);
+    reasons.push(failing.length
+      ? `Production preflight blocked this task — ${failing.join(' | ')}`
+      : 'Production preflight blocked this task.');
   } else if (input.preflight.status === 'needs_approval') {
     decision = 'manual';
     reasons.push('Production preflight requires approval.');

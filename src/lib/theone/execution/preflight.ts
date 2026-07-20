@@ -148,15 +148,32 @@ function codeRuntimeChecks(task: OneClawTask, action: string, stepInput: Record<
     `max ${sandbox.maxFiles} files / ${sandbox.maxTotalBytes} bytes / ${sandbox.timeoutMs}ms.`
   ));
 
+  if (action === 'code.patch.apply') {
+    const hasFiles = ['files', 'changes', 'patchFiles'].some((key) => (
+      Array.isArray(stepInput[key]) && (stepInput[key] as unknown[]).length > 0
+    )) || Boolean(String(stepInput.patch || '').trim());
+    const hasObjective = Boolean(String(stepInput.objective || stepInput.goal || '').trim());
+    checks.push(check(
+      `code_patch_mode_${action}`,
+      'Patch input contract',
+      hasFiles || hasObjective ? 'pass' : 'fail',
+      hasFiles
+        ? 'Direct mode: planner-generated file contents will be written.'
+        : hasObjective
+          ? 'Agent mode: the coding agent loop will implement the objective in the workspace.'
+          : 'code.patch.apply needs either files[]/patch (direct mode) or objective (agent mode).'
+    ));
+  }
+
   if (action === 'code.test.run') {
     const scripts = Array.isArray(stepInput.scripts) ? stepInput.scripts : [];
     checks.push(check(
       `code_test_scripts_${action}`,
       'Approved test scripts',
-      scripts.length > 0 ? 'warn' : 'fail',
+      'warn',
       scripts.length > 0
         ? `Requested package.json validation scripts: ${scripts.join(', ')}.`
-        : 'code.test.run requires at least one approved package.json validation script.'
+        : 'No scripts requested; the worker runs the approved default set (check/typecheck/lint/test/build) from package.json.'
     ));
   }
 

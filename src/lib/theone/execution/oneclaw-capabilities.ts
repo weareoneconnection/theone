@@ -157,7 +157,9 @@ export const oneClawCapabilityRegistry: OneClawCapabilityDefinition[] = [
     approvalRequired: true,
     supportsDryRun: false,
     supportsRollback: true,
-    inputRequired: ['patch'],
+    // One-of contract (files[]/patch for direct mode, objective for agent
+    // mode) — enforced by a dedicated preflight check, not a required list.
+    inputRequired: [],
     outputContract: ['status', 'files', 'rollbackToken', 'receipt'],
     productionNote: 'Applying a patch mutates a workspace and must remain approval-gated with proof.',
   },
@@ -173,7 +175,9 @@ export const oneClawCapabilityRegistry: OneClawCapabilityDefinition[] = [
     approvalRequired: true,
     supportsDryRun: false,
     supportsRollback: false,
-    inputRequired: ['scripts'],
+    // Optional: the worker falls back to the approved script set
+    // (check/typecheck/lint/test/build) declared in package.json.
+    inputRequired: [],
     outputContract: ['status', 'passed', 'results'],
     productionNote: 'Only approved validation scripts declared in package.json can run inside the code workspace.',
   },
