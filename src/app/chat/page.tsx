@@ -85,6 +85,40 @@ async function readSse(
   }
 }
 
+// Long pasted material would otherwise push the whole conversation off screen.
+function CollapsibleText({
+  text,
+  className,
+  collapseAfterLines,
+  defaultOpen,
+  children,
+}: {
+  text: string;
+  className: string;
+  collapseAfterLines: number;
+  defaultOpen: boolean;
+  children?: React.ReactNode;
+}) {
+  const lines = text.split('\n');
+  const collapsible = lines.length > collapseAfterLines;
+  const [open, setOpen] = useState(defaultOpen);
+
+  if (!collapsible) {
+    return <div className={className}>{text}{children}</div>;
+  }
+
+  const preview = lines.slice(0, 3).join('\n');
+  return (
+    <div className={className}>
+      {open ? text : `${preview}\n…`}
+      {children}
+      <button className="tc-fold" onClick={() => setOpen(!open)}>
+        {open ? '收起' : `展开全部(${lines.length} 行)`}
+      </button>
+    </div>
+  );
+}
+
 export default function ChatPage() {
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState('');
@@ -474,6 +508,8 @@ export default function ChatPage() {
         .tc-runlink:hover { color: #9fd7c2; }
         .tc-attach { background: none; border: none; font-size: 16px; cursor: pointer; color: #6f9c8d; padding: 0 4px; }
         .tc-attachrow { max-width: 860px; margin: 0 auto 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+        .tc-fold { display: block; margin-top: 8px; background: none; border: none; color: #6f9c8d; font-size: 12px; cursor: pointer; padding: 0; font-family: inherit; }
+        .tc-fold:hover { color: #9fd7c2; }
       `}</style>
 
       <header className="tc-header">
@@ -520,14 +556,33 @@ export default function ChatPage() {
           ) : null}
 
           {items.map((item) => {
-            if (item.kind === 'user') return <div key={item.id} className="tc-user">{item.text}</div>;
+            if (item.kind === 'user') {
+              return (
+                <CollapsibleText
+                  key={item.id}
+                  className="tc-user"
+                  text={item.text}
+                  collapseAfterLines={8}
+                  defaultOpen={false}
+                />
+              );
+            }
             if (item.kind === 'assistant') {
               if (!item.text && !item.streaming) return null;
-              return (
+              // Streaming answers must never collapse mid-flight.
+              return item.streaming ? (
                 <div key={item.id} className="tc-assistant">
                   {item.text}
-                  {item.streaming ? <span className="tc-cursor" /> : null}
+                  <span className="tc-cursor" />
                 </div>
+              ) : (
+                <CollapsibleText
+                  key={item.id}
+                  className="tc-assistant"
+                  text={item.text}
+                  collapseAfterLines={60}
+                  defaultOpen
+                />
               );
             }
             if (item.kind === 'status') return <div key={item.id} className="tc-status">{item.text}</div>;
