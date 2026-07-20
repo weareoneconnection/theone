@@ -33,6 +33,9 @@ export type AgentUsage = {
   inputTokens: number;
   outputTokens: number;
   llmCalls: number;
+  // Prompt-caching split: reads are ~10x cheaper than fresh input tokens.
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
 };
 
 export type AgentRunResult = {
@@ -47,6 +50,9 @@ export type AgentRunResult = {
   // Detached git commit recording the pre-run tree; null when the workspace
   // is not a git repository or snapshotting was disabled.
   snapshotCommit: string | null;
+  // Soft verification gate: true only when the run completed AND at least one
+  // verification-looking command (test/lint/build/typecheck) was executed.
+  verified: boolean;
   error?: string;
 };
 
@@ -62,6 +68,7 @@ export type AgentReceipt = {
   commands: string[];
   usage: AgentUsage;
   snapshotCommit: string | null;
+  verified: boolean;
   diffStat: string;
   diff: string;
   startedAt: string;
@@ -77,6 +84,14 @@ export type AgentTask = {
   // When true, the workspace is snapshotted with git before the run so every
   // change can be rolled back.
   snapshot?: boolean;
+  // Summary of the previous agent session in this workspace, injected into
+  // the system prompt so follow-up tasks skip cold-start exploration.
+  priorContext?: string;
+  // Aborting mid-run returns status 'aborted'; the workspace keeps whatever
+  // edits were already applied (snapshot commit still allows rollback).
+  signal?: AbortSignal;
+  // Called after each event is recorded — lets the runtime stream progress.
+  onEvent?: (event: AgentEvent) => void;
 };
 
 export type AgentSessionState = {
@@ -91,11 +106,17 @@ export type LLMResponse = {
   text: string;
   toolCalls: ToolCall[];
   stopReason: 'tool_use' | 'end_turn' | 'max_tokens' | 'error';
-  usage: { inputTokens: number; outputTokens: number };
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens?: number;
+    cacheReadInputTokens?: number;
+  };
 };
 
 export type LLMClient = (input: {
   system: string;
   messages: AgentMessage[];
   model: string;
+  signal?: AbortSignal;
 }) => Promise<LLMResponse>;

@@ -206,6 +206,85 @@ describe('agent loop', () => {
     expect(sawError).toBe(true);
   });
 
+  it('marks completed runs unverified when no verification command ran', async () => {
+    const client = scripted([
+      {
+        text: 'Editing without verifying.',
+        toolCalls: [{ id: 'c1', name: 'bash', input: { command: 'echo hello' } }],
+        stopReason: 'tool_use',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+      { text: 'Done.', toolCalls: [], stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 } },
+    ]);
+    const result = await runAgentTask({ objective: 'No verify', workspace, snapshot: false }, client);
+    expect(result.status).toBe('completed');
+    expect(result.verified).toBe(false);
+  });
+
+  it('marks completed runs verified after a test command', async () => {
+    const client = scripted([
+      {
+        text: 'Verifying.',
+        toolCalls: [{ id: 'c1', name: 'bash', input: { command: 'true # npm test placeholder' } }],
+        stopReason: 'tool_use',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+      { text: 'Done.', toolCalls: [], stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 } },
+    ]);
+    const result = await runAgentTask({ objective: 'Verify', workspace, snapshot: false }, client);
+    expect(result.verified).toBe(true);
+  });
+
+  it('aborts when the signal fires', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const client = scripted([{
+      text: 'Should not matter.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    }]);
+    const result = await runAgentTask(
+      { objective: 'Abort me', workspace, snapshot: false, signal: controller.signal },
+      client,
+    );
+    expect(result.status).toBe('aborted');
+  });
+
+  it('injects prior session context into the system prompt', async () => {
+    let seenSystem = '';
+    const client: LLMClient = async ({ system }) => {
+      seenSystem = system;
+      return { text: 'Done.', toolCalls: [], stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 } };
+    };
+    await runAgentTask(
+      { objective: 'Follow-up', workspace, snapshot: false, priorContext: 'Outcome (completed): fixed parseAmount' },
+      client,
+    );
+    expect(seenSystem).toContain('# Previous session in this workspace');
+    expect(seenSystem).toContain('fixed parseAmount');
+  });
+
+  it('streams events through onEvent', async () => {
+    const types: string[] = [];
+    const client = scripted([
+      {
+        text: 'Working.',
+        toolCalls: [{ id: 'c1', name: 'bash', input: { command: 'echo hi' } }],
+        stopReason: 'tool_use',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+      { text: 'Done.', toolCalls: [], stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 } },
+    ]);
+    await runAgentTask(
+      { objective: 'Stream', workspace, snapshot: false, onEvent: (event) => types.push(event.type) },
+      client,
+    );
+    expect(types).toContain('tool_call');
+    expect(types).toContain('tool_result');
+    expect(types).toContain('done');
+  });
+
   it('counts llm calls in usage', async () => {
     const client = scripted([
       {

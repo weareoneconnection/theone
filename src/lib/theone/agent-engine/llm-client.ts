@@ -12,12 +12,33 @@ export function getAgentEngineConfig() {
   };
 }
 
+type CacheControl = { type: 'ephemeral' };
+const CACHE_CONTROL: CacheControl = { type: 'ephemeral' };
+
 type AnthropicContentBlock =
-  | { type: 'text'; text: string }
-  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean };
+  | { type: 'text'; text: string; cache_control?: CacheControl }
+  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; cache_control?: CacheControl }
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean; cache_control?: CacheControl };
 
 type AnthropicMessage = { role: 'user' | 'assistant'; content: string | AnthropicContentBlock[] };
+
+// Prompt-caching breakpoints: tools and system are stable across the whole
+// run; the tail breakpoint moves forward each turn so every request re-reads
+// the shared history prefix from cache instead of re-billing it.
+const CACHED_TOOLS = TOOL_DEFINITIONS.map((tool, index) =>
+  index === TOOL_DEFINITIONS.length - 1 ? { ...tool, cache_control: CACHE_CONTROL } : tool
+);
+
+function withTailCacheBreakpoint(messages: AnthropicMessage[]): AnthropicMessage[] {
+  if (!messages.length) return messages;
+  const last = messages[messages.length - 1];
+  const content: AnthropicContentBlock[] = typeof last.content === 'string'
+    ? [{ type: 'text', text: last.content }]
+    : last.content.map((block) => ({ ...block }));
+  if (!content.length) return messages;
+  content[content.length - 1] = { ...content[content.length - 1], cache_control: CACHE_CONTROL };
+  return [...messages.slice(0, -1), { ...last, content }];
+}
 
 // Convert engine history into Anthropic message format. Tool results become
 // user-role tool_result blocks, per the Messages API contract.
@@ -48,7 +69,7 @@ function toAnthropicMessages(messages: AgentMessage[]): AnthropicMessage[] {
   return out;
 }
 
-export const anthropicLLMClient: LLMClient = async ({ system, messages, model }): Promise<LLMResponse> => {
+export const anthropicLLMClient: LLMClient = async ({ system, messages, model, signal }): Promise<LLMResponse> => {
   const { apiKey, maxTokens } = getAgentEngineConfig();
   if (!apiKey) {
     return {
@@ -69,11 +90,11 @@ export const anthropicLLMClient: LLMClient = async ({ system, messages, model })
     body: JSON.stringify({
       model,
       max_tokens: maxTokens,
-      system,
-      tools: TOOL_DEFINITIONS,
-      messages: toAnthropicMessages(messages),
+      system: [{ type: 'text', text: system, cache_control: CACHE_CONTROL }],
+      tools: CACHED_TOOLS,
+      messages: withTailCacheBreakpoint(toAnthropicMessages(messages)),
     }),
-    signal: AbortSignal.timeout(300_000),
+    signal: signal ? AbortSignal.any([AbortSignal.timeout(300_000), signal]) : AbortSignal.timeout(300_000),
   });
 
   if (!res.ok) {
@@ -84,7 +105,12 @@ export const anthropicLLMClient: LLMClient = async ({ system, messages, model })
   const json = await res.json() as {
     content?: AnthropicContentBlock[];
     stop_reason?: string;
-    usage?: { input_tokens?: number; output_tokens?: number };
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_creation_input_tokens?: number;
+      cache_read_input_tokens?: number;
+    };
   };
 
   const text = (json.content || [])
@@ -105,6 +131,8 @@ export const anthropicLLMClient: LLMClient = async ({ system, messages, model })
     usage: {
       inputTokens: json.usage?.input_tokens || 0,
       outputTokens: json.usage?.output_tokens || 0,
+      cacheCreationInputTokens: json.usage?.cache_creation_input_tokens || 0,
+      cacheReadInputTokens: json.usage?.cache_read_input_tokens || 0,
     },
   };
 };
