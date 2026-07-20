@@ -17,7 +17,10 @@ type ChatItem =
   | { id: string; kind: 'activity'; lines: ActivityLine[] }
   | { id: string; kind: 'approval'; runId: string; count: number; actions: string[]; resolved?: 'approved' | 'dismissed' }
   | { id: string; kind: 'diff'; diff: string; diffStat: string; verified: boolean | null; open?: boolean }
+  | { id: string; kind: 'worker'; title: string; entries: string[] }
   | { id: string; kind: 'error'; text: string };
+
+type ChatAttachment = Record<string, unknown> & { id?: string; name?: string; error?: string };
 
 type ApiMessage = { role: 'user' | 'assistant'; content: string };
 
@@ -28,28 +31,41 @@ function nextId() {
 }
 
 const PATH_PATTERN = /(?:\/app\/workspaces|\/Users\/|\/home\/)[^\s,，。;:"'）)]+/;
-const TASK_PATTERN = /workspace|修复|修一下|改代码|重构|加个|补上|npm|测试|test|fix|bug|refactor|implement|diff|patch|部署|deploy|运行|跑一下|code\./i;
+
+// Routing is inverted: everything goes through the full AI OS pipeline by
+// default; only clearly conversational turns take the fast token stream.
+const ACTION_PATTERN = /分析|检查|研究|调研|准备|生成|创建|发布|发[个一条]|推文|报告|总结|汇总|抓取|爬|读取|读[一下]|查[询一]|搜索|下载|上传|部署|运行|执行|跑|修|改|写[个一]|新增|删除|翻译|整理|监控|提醒|安排|计划|工作流|任务|浏览器|桌面|文件|网站|网页|仓库|测试|workspace|npm|github|repo|worker|url|https?:|post|tweet|analy|research|check|inspect|generate|create|publish|scrape|fetch|search|deploy|run|fix|refactor|implement|write|report|summar|schedule|monitor|browse|code\./i;
+
+function isChitchat(text: string) {
+  return !PATH_PATTERN.test(text) && !ACTION_PATTERN.test(text);
+}
 
 function extractWorkspacePath(text: string): string | null {
   const match = text.match(PATH_PATTERN);
   return match ? match[0].replace(/[，。;:]+$/, '') : null;
 }
 
-function parseAgentLog(line: string): ActivityLine | null {
-  const match = line.match(/\[agent:(\w+)\]\s*([\s\S]*)/);
-  if (!match) return null;
-  const type = match[1];
-  const detail = match[2].trim();
-  if (type === 'tool_call') {
-    const call = detail.match(/^(\w+)\((.*)\)$/s);
-    return { tool: call?.[1] || 'tool', detail: call?.[2]?.slice(0, 160) || detail.slice(0, 160) };
+function parseTaskLog(line: string): ActivityLine | null {
+  const agent = line.match(/\[agent:(\w+)\]\s*([\s\S]*)/);
+  if (agent) {
+    const type = agent[1];
+    const detail = agent[2].trim();
+    if (type === 'tool_call') {
+      const call = detail.match(/^(\w+)\((.*)\)$/s);
+      return { tool: call?.[1] || 'tool', detail: call?.[2]?.slice(0, 160) || detail.slice(0, 160) };
+    }
+    if (type === 'tool_result' && detail.startsWith('error')) {
+      return { tool: 'error', detail: detail.slice(0, 160), error: true };
+    }
+    if (type === 'compaction') return { tool: 'compact', detail };
+    if (type === 'done') return { tool: 'done', detail: detail.slice(0, 160) };
+    return null;
   }
-  if (type === 'tool_result' && detail.startsWith('error')) {
-    return { tool: 'error', detail: detail.slice(0, 160), error: true };
-  }
-  if (type === 'compaction') return { tool: 'compact', detail };
-  if (type === 'done') return { tool: 'done', detail: detail.slice(0, 160) };
-  return null;
+  // Generic worker logs: strip the timestamp/step prefix, keep the message
+  // so non-code AI OS tasks are visible in the stream too.
+  const generic = line.replace(/^[0-9T:.Z-]+\s*(\[[^\]]*\]\s*)?/, '').trim();
+  if (!generic || /^ROUTER HIT|^BODY/i.test(generic)) return null;
+  return { tool: 'log', detail: generic.slice(0, 160) };
 }
 
 async function readSse(
@@ -88,6 +104,10 @@ export default function ChatPage() {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [workspace, setWorkspace] = useState<string | null>(null);
+  const [mode, setMode] = useState<'manual' | 'assist' | 'auto'>('assist');
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const sessionIdRef = useRef(`chat_${Date.now().toString(36)}`);
   const historyRef = useRef<ApiMessage[]>([]);
   const contextRef = useRef<Record<string, unknown> | null>(null);
@@ -126,13 +146,13 @@ export default function ChatPage() {
         const response = await fetch(`/api/theone/agent/task/${encodeURIComponent(taskId)}`, { cache: 'no-store' });
         const payload = await response.json();
         if (!payload?.ok) throw new Error(payload?.error || 'poll failed');
-        const task = payload.task as { status: string; logs: string[]; steps: Array<{ action: string; output: { status: string; verified: boolean; diff: string; diffStat: string; summary: string; mode: string } }> };
+        const task = payload.task as { status: string; logs: string[]; steps: Array<{ action: string; status?: string; output: { status: string; verified: boolean; diff: string; diffStat: string; summary: string; mode: string; note?: string } }> };
 
         const fresh: ActivityLine[] = [];
         for (const raw of task.logs) {
           if (seen.has(raw)) continue;
           seen.add(raw);
-          const parsed = parseAgentLog(raw);
+          const parsed = parseTaskLog(raw);
           if (parsed) fresh.push(parsed);
         }
         if (fresh.length) {
@@ -168,6 +188,19 @@ export default function ChatPage() {
             if (agentStep.output.summary) {
               pushItem({ id: nextId(), kind: 'assistant', text: agentStep.output.summary });
             }
+          }
+          // Generic worker summary for every step (X, GitHub, browser, files…).
+          const nonCodeSteps = task.steps.filter((step) => step !== agentStep);
+          if (nonCodeSteps.length) {
+            pushItem({
+              id: nextId(),
+              kind: 'worker',
+              title: `Worker 步骤(${task.steps.length})`,
+              entries: nonCodeSteps.map((step) => {
+                const detail = step.output?.summary || step.output?.note || '';
+                return `${step.action} → ${step.output?.status || step.status}${detail ? `:${detail.slice(0, 120)}` : ''}`;
+              }),
+            });
           }
           pushItem({
             id: nextId(),
@@ -267,16 +300,19 @@ export default function ChatPage() {
     const approvalActions: string[] = [];
 
     try {
+      const outgoingAttachments = attachments.filter((attachment) => !attachment.error);
       const response = await fetch('/api/theone/chat/stream', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           messages: historyRef.current,
           sessionId: sessionIdRef.current,
-          mode: 'assist',
+          mode,
           context: contextRef.current,
+          attachments: outgoingAttachments.length ? outgoingAttachments : undefined,
         }),
       });
+      if (outgoingAttachments.length) setAttachments([]);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
       await readSse(response, (event, data) => {
@@ -300,11 +336,22 @@ export default function ChatPage() {
           answer += String(record.text || '');
           patchItem(assistantId, (item) => (item.kind === 'assistant' ? { ...item, text: answer } : item));
         } else if (event === 'result') {
-          const result = record as { runId?: string; networkSignals?: { oneClawRunId?: string | null }; chat?: { codeRuntime?: { workspacePath?: string | null } }; codeMission?: unknown };
+          const result = record as { runId?: string; networkSignals?: { oneClawRunId?: string | null }; chat?: { codeRuntime?: { workspacePath?: string | null } }; codeMission?: unknown; executions?: Array<Record<string, unknown>> };
           taskId = String(result.networkSignals?.oneClawRunId || '');
           runId = String(result.runId || '');
           const resultWorkspace = result.chat?.codeRuntime?.workspacePath;
           if (resultWorkspace) setWorkspace(String(resultWorkspace));
+          const executions = Array.isArray(result.executions) ? result.executions : [];
+          if (executions.length) {
+            pushItem({
+              id: nextId(),
+              kind: 'worker',
+              title: `已执行(${executions.length})`,
+              entries: executions.slice(-8).map((execution) => (
+                `${String(execution.taskName || execution.action || 'step')} → ${String(execution.status || '')}`
+              )),
+            });
+          }
           contextRef.current = {
             codeMission: (result as Record<string, unknown>).codeMission || null,
             lastAssistant: answer.slice(0, 2400),
@@ -349,8 +396,12 @@ export default function ChatPage() {
     const mentionedPath = extractWorkspacePath(raw);
     if (mentionedPath) setWorkspace(mentionedPath);
     const activeWorkspace = mentionedPath || workspace;
-    const isTask = TASK_PATTERN.test(raw) || Boolean(mentionedPath);
-    const outgoing = isTask && !mentionedPath && activeWorkspace
+
+    // Inverted routing: the full AI OS pipeline is the default; only clearly
+    // conversational turns (no action verbs, no paths, no attachments) take
+    // the fast direct token stream.
+    const usePipeline = !isChitchat(raw) || attachments.length > 0;
+    const outgoing = usePipeline && !mentionedPath && activeWorkspace && /workspace|代码|修|改|测试|npm|repo/i.test(raw)
       ? `workspace 是 ${activeWorkspace}。${raw}`
       : raw;
 
@@ -358,12 +409,31 @@ export default function ChatPage() {
     historyRef.current.push({ role: 'user', content: outgoing });
 
     try {
-      if (isTask) await runPipelineStream(outgoing);
+      if (usePipeline) await runPipelineStream(outgoing);
       else await runDirectStream(outgoing);
     } finally {
       setBusy(false);
     }
-  }, [busy, input, pushItem, runDirectStream, runPipelineStream, workspace]);
+  }, [attachments.length, busy, input, pushItem, runDirectStream, runPipelineStream, workspace]);
+
+  const uploadFiles = useCallback(async (files: FileList | null) => {
+    if (!files?.length || uploading) return;
+    setUploading(true);
+    try {
+      const form = new FormData();
+      Array.from(files).slice(0, 8).forEach((file) => form.append('files', file));
+      const response = await fetch('/api/theone/chat/upload', { method: 'POST', body: form });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data?.ok === false) throw new Error(data?.error || `upload failed (${response.status})`);
+      const uploaded = Array.isArray(data.attachments) ? data.attachments as ChatAttachment[] : [];
+      setAttachments((current) => [...current, ...uploaded].slice(0, 8));
+    } catch (error) {
+      pushItem({ id: nextId(), kind: 'error', text: `上传失败:${error instanceof Error ? error.message : String(error)}` });
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }, [pushItem, uploading]);
 
   return (
     <div className="tc-root">
@@ -406,6 +476,12 @@ export default function ChatPage() {
         .tc-inputbox { max-width: 860px; margin: 0 auto; display: flex; gap: 10px; background: #111917; border: 1px solid #223330; border-radius: 14px; padding: 10px 12px; }
         .tc-inputbox textarea { flex: 1; background: none; border: none; outline: none; resize: none; color: #e6ece9; font-size: 14px; line-height: 1.5; font-family: inherit; max-height: 160px; }
         .tc-empty { text-align: center; color: #5d7268; margin-top: 18vh; font-size: 14px; line-height: 2; }
+        .tc-modes { margin-left: auto; display: inline-flex; gap: 2px; background: #101917; border: 1px solid #1c2c27; border-radius: 999px; padding: 2px; }
+        .tc-mode { background: none; border: none; color: #6f8a81; font-size: 11.5px; padding: 3px 10px; border-radius: 999px; cursor: pointer; }
+        .tc-mode.on { background: #1d5c44; color: #eafff5; }
+        .tc-runlink { color: #6f9c8d; font-size: 12px; text-decoration: none; }
+        .tc-attach { background: none; border: none; font-size: 16px; cursor: pointer; color: #6f9c8d; padding: 0 4px; }
+        .tc-attachrow { max-width: 860px; margin: 0 auto 8px; display: flex; gap: 8px; flex-wrap: wrap; }
       `}</style>
 
       <header className="tc-header">
@@ -416,6 +492,16 @@ export default function ChatPage() {
             <button onClick={() => setWorkspace(null)} title="清除 workspace">✕</button>
           </span>
         ) : null}
+        <span className="tc-modes">
+          {(['manual', 'assist', 'auto'] as const).map((key) => (
+            <button
+              key={key}
+              className={`tc-mode${mode === key ? ' on' : ''}`}
+              onClick={() => setMode(key)}
+            >{key}</button>
+          ))}
+        </span>
+        <a className="tc-runlink" href="/run">专业模式 ↗</a>
       </header>
 
       <div className="tc-scroll">
@@ -473,6 +559,14 @@ export default function ChatPage() {
                 </div>
               );
             }
+            if (item.kind === 'worker') {
+              return (
+                <details key={item.id} className="tc-plan">
+                  <summary>▸ {item.title}</summary>
+                  <ul>{item.entries.map((entry, index) => <li key={index}>{entry}</li>)}</ul>
+                </details>
+              );
+            }
             if (item.kind === 'diff') {
               return (
                 <details key={item.id} className="tc-diff">
@@ -494,7 +588,31 @@ export default function ChatPage() {
       </div>
 
       <div className="tc-inputbar">
+        {attachments.length ? (
+          <div className="tc-attachrow">
+            {attachments.map((attachment, index) => (
+              <span key={String(attachment.id || index)} className="tc-chip">
+                📄 {String(attachment.name || 'file')}
+                {attachment.error ? ' ⚠️' : ''}
+                <button onClick={() => setAttachments((current) => current.filter((_, i) => i !== index))}>✕</button>
+              </span>
+            ))}
+          </div>
+        ) : null}
         <div className="tc-inputbox">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            style={{ display: 'none' }}
+            onChange={(event) => void uploadFiles(event.target.files)}
+          />
+          <button
+            className="tc-attach"
+            title="上传文件"
+            disabled={busy || uploading}
+            onClick={() => fileInputRef.current?.click()}
+          >{uploading ? '…' : '📎'}</button>
           <textarea
             rows={2}
             value={input}
