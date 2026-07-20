@@ -87,12 +87,14 @@ export function normalizeOneClawTaskContract(input: {
       nextStepInput.workspacePath = taskWorkspacePath;
     }
 
-    // Agent-engine handoff: a patch apply without planner-generated files[]
-    // needs an objective so OneClaw runs the coding-agent loop instead of
-    // rejecting the step.
+    // Agent-engine handoff: a patch apply without real write payloads needs
+    // an objective so OneClaw runs the coding-agent loop instead of
+    // rejecting the step. Path-only files[] entries are hints, not payloads.
     if (step.action === 'code.patch.apply') {
       const hasFiles = [nextStepInput.files, nextStepInput.changes, nextStepInput.patchFiles]
-        .some((value) => Array.isArray(value) && value.length > 0);
+        .some((value) => Array.isArray(value) && value.some((item) => (
+          isRecord(item) && ('content' in item || 'after' in item || 'newContent' in item)
+        )));
       if (!hasFiles && !textValue(nextStepInput.objective)) {
         const objective = firstText(nextStepInput.goal, input.intent.objective);
         if (objective) {

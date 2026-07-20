@@ -36,6 +36,14 @@ describe('normalizeOneClawTaskContract agent-engine handoff', () => {
     expect(normalized?.steps[0]?.input?.objective).toBeUndefined();
   });
 
+  it('treats path-only files[] as hints and still injects the objective', () => {
+    const normalized = normalizeOneClawTaskContract({
+      task: task({ files: [{ path: 'src/client.js' }] }),
+      intent,
+    });
+    expect(normalized?.steps[0]?.input?.objective).toBe(intent.objective);
+  });
+
   it('keeps an explicit step objective over the intent objective', () => {
     const normalized = normalizeOneClawTaskContract({
       task: task({ objective: 'Explicit narrower goal' }),
@@ -80,5 +88,12 @@ describe('preflight agent-mode contract', () => {
     const report = preflight({});
     expect(report.status).toBe('blocked');
     expect(report.checks.some((c) => c.id.startsWith('code_patch_mode') && c.status === 'fail')).toBe(true);
+  });
+
+  it('path-only files[] with objective resolves to agent mode, not blocked', () => {
+    const report = preflight({ objective: 'Fix timeout', files: [{ path: 'src/client.js' }] });
+    expect(report.status).not.toBe('blocked');
+    const modeCheck = report.checks.find((c) => c.id.startsWith('code_patch_mode'));
+    expect(modeCheck?.detail).toContain('Agent mode');
   });
 });

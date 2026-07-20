@@ -149,8 +149,13 @@ function codeRuntimeChecks(task: OneClawTask, action: string, stepInput: Record<
   ));
 
   if (action === 'code.patch.apply') {
+    // Only entries with real content count as direct-write payloads;
+    // path-only lists are hints for the agent run.
     const hasFiles = ['files', 'changes', 'patchFiles'].some((key) => (
-      Array.isArray(stepInput[key]) && (stepInput[key] as unknown[]).length > 0
+      Array.isArray(stepInput[key]) && (stepInput[key] as unknown[]).some((item) => (
+        Boolean(item) && typeof item === 'object' &&
+        ('content' in (item as object) || 'after' in (item as object) || 'newContent' in (item as object))
+      ))
     )) || Boolean(String(stepInput.patch || '').trim());
     const hasObjective = Boolean(String(stepInput.objective || stepInput.goal || '').trim());
     checks.push(check(
