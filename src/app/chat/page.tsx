@@ -6,6 +6,7 @@
 // collapsed. The legacy /run dashboard remains untouched.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { extractWorkspacePath, needsPipeline } from '@/lib/theone/chat/message-routing';
 
 type ActivityLine = { tool: string; detail: string; error?: boolean };
 
@@ -28,21 +29,6 @@ let itemCounter = 0;
 function nextId() {
   itemCounter += 1;
   return `item_${Date.now()}_${itemCounter}`;
-}
-
-const PATH_PATTERN = /(?:\/app\/workspaces|\/Users\/|\/home\/)[^\s,，。;:"'）)]+/;
-
-// Routing is inverted: everything goes through the full AI OS pipeline by
-// default; only clearly conversational turns take the fast token stream.
-const ACTION_PATTERN = /分析|检查|研究|调研|准备|生成|创建|发布|发[个一条]|推文|报告|总结|汇总|抓取|爬|读取|读[一下]|查[询一]|搜索|下载|上传|部署|运行|执行|跑|修|改|写[个一]|新增|删除|翻译|整理|监控|提醒|安排|计划|工作流|任务|浏览器|桌面|文件|网站|网页|仓库|测试|workspace|npm|github|repo|worker|url|https?:|post|tweet|analy|research|check|inspect|generate|create|publish|scrape|fetch|search|deploy|run|fix|refactor|implement|write|report|summar|schedule|monitor|browse|code\./i;
-
-function isChitchat(text: string) {
-  return !PATH_PATTERN.test(text) && !ACTION_PATTERN.test(text);
-}
-
-function extractWorkspacePath(text: string): string | null {
-  const match = text.match(PATH_PATTERN);
-  return match ? match[0].replace(/[，。;:]+$/, '') : null;
 }
 
 function parseTaskLog(line: string): ActivityLine | null {
@@ -134,7 +120,7 @@ export default function ChatPage() {
 
   // ---- agent run polling (activity lines + diff + verified) ----
 
-  const pollAgentTask = useCallback(async (taskId: string) => {
+  const pollAgentTask = useCallback(async (taskId: string, answerDelivered = false) => {
     const control = { stop: false };
     pollAbortRef.current = control;
     const activityId = pushItem({ id: nextId(), kind: 'activity', lines: [] });
@@ -202,12 +188,17 @@ export default function ChatPage() {
               }),
             });
           }
+          // A failed worker does not mean a failed turn: when the answer above
+          // already satisfied the request, say so instead of crying failure.
+          const succeeded = terminal === 'success' || terminal === 'completed';
           pushItem({
             id: nextId(),
             kind: 'status',
-            text: terminal === 'success' || terminal === 'completed'
+            text: succeeded
               ? '任务完成 ✓'
-              : `任务结束:${terminal}`,
+              : answerDelivered
+                ? `已直接作答(worker 未能提供有效证据:${terminal})`
+                : `任务结束:${terminal}`,
           });
           break;
         }
@@ -375,7 +366,7 @@ export default function ChatPage() {
         });
       } else if (taskId) {
         approvedTasksRef.current.add(taskId);
-        void pollAgentTask(taskId);
+        void pollAgentTask(taskId, Boolean(answer.trim()));
       }
     } catch (error) {
       removeItem(statusId);
@@ -400,7 +391,7 @@ export default function ChatPage() {
     // Inverted routing: the full AI OS pipeline is the default; only clearly
     // conversational turns (no action verbs, no paths, no attachments) take
     // the fast direct token stream.
-    const usePipeline = !isChitchat(raw) || attachments.length > 0;
+    const usePipeline = needsPipeline(raw, attachments.length > 0);
     const outgoing = usePipeline && !mentionedPath && activeWorkspace && /workspace|代码|修|改|测试|npm|repo/i.test(raw)
       ? `workspace 是 ${activeWorkspace}。${raw}`
       : raw;
