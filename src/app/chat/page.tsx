@@ -479,7 +479,8 @@ export default function ChatPage() {
         .tc-modes { margin-left: auto; display: inline-flex; gap: 2px; background: #101917; border: 1px solid #1c2c27; border-radius: 999px; padding: 2px; }
         .tc-mode { background: none; border: none; color: #6f8a81; font-size: 11.5px; padding: 3px 10px; border-radius: 999px; cursor: pointer; }
         .tc-mode.on { background: #1d5c44; color: #eafff5; }
-        .tc-runlink { color: #6f9c8d; font-size: 12px; text-decoration: none; }
+        .tc-runlink { color: #6f9c8d; font-size: 12px; text-decoration: none; background: none; border: none; cursor: pointer; padding: 0 2px; font-family: inherit; }
+        .tc-runlink:hover { color: #9fd7c2; }
         .tc-attach { background: none; border: none; font-size: 16px; cursor: pointer; color: #6f9c8d; padding: 0 4px; }
         .tc-attachrow { max-width: 860px; margin: 0 auto 8px; display: flex; gap: 8px; flex-wrap: wrap; }
       `}</style>
@@ -501,7 +502,20 @@ export default function ChatPage() {
             >{key}</button>
           ))}
         </span>
-        <a className="tc-runlink" href="/run">专业模式 ↗</a>
+        <button
+          className="tc-runlink"
+          onClick={() => {
+            historyRef.current = [];
+            contextRef.current = null;
+            approvedTasksRef.current.clear();
+            pollAbortRef.current.stop = true;
+            sessionIdRef.current = `chat_${Date.now().toString(36)}`;
+            setItems([]);
+            setAttachments([]);
+          }}
+        >新对话</button>
+        <a className="tc-runlink" href="/runs">历史</a>
+        <a className="tc-runlink" href="/run">任务台 ↗</a>
       </header>
 
       <div className="tc-scroll">

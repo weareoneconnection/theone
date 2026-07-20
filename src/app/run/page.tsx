@@ -126,6 +126,7 @@ const workerPrompts = [
 
 const sessionShortcuts = [
   { label: 'New chat', labelZh: '新对话', href: '/run' },
+  { label: 'Chat mode', labelZh: '对话模式', href: '/chat' },
   { label: 'Search', labelZh: '历史', href: '/runs' },
   { label: 'Workspaces', labelZh: '工作区', href: '/workspaces' },
 ];

@@ -11,8 +11,11 @@ export default function HomePage() {
             <span>说出目标，TheOne 负责规划、治理、执行和交付结果。</span>
           </p>
           <div className="landing-actions">
-            <Link className="primary-link" href="/run">
-              Start TheOne
+            <Link className="primary-link" href="/chat">
+              开始对话 · Chat
+            </Link>
+            <Link className="secondary-link" href="/run">
+              任务台 · Console
             </Link>
             <Link className="secondary-link" href="/admin">
               Admin
