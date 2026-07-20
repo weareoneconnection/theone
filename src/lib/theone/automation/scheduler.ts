@@ -335,10 +335,33 @@ export async function tickAutomationScheduler({ limit = 3, force = false } = {})
     results.push(await executeAutomationJob(job));
   }
 
+  // Track submitted OneClaw tasks to completion (approval execution loop).
+  const { syncInFlightExecutions, decayMemories } = await import('../state/run-store');
+  const executionSync = await syncInFlightExecutions(5);
+
+  // Memory lifecycle: decay importance and archive stale low-value memories.
+  const memoryDecay = await decayMemories();
+
+  // Refresh learning insights so the next planning pass sees recent outcomes.
+  const learning = await import('../learning/learning-engine')
+    .then((mod) => mod.runLearningCycle())
+    .catch((error) => ({ ok: false as const, generated: 0, error: error instanceof Error ? error.message : 'learning cycle failed' }));
+
+  await recordTheOneEvent({
+    type: 'automation.tick',
+    provider: 'theone',
+    status: 'completed',
+    summary: `Tick processed ${jobs.length} job(s), synced ${executionSync.checked} in-flight run(s), archived ${memoryDecay.archived} memories.`,
+    payload: { checked: jobs.length, executionSync, learning, memoryDecay },
+  }).catch(() => undefined);
+
   return {
     ok: true,
     checked: jobs.length,
     results,
+    executionSync,
+    learning,
+    memoryDecay,
   };
 }
 

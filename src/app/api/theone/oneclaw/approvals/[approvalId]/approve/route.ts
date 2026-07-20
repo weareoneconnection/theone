@@ -1,9 +1,13 @@
 import { approveOneClawApproval } from '@/lib/theone/providers/oneclaw';
+import { requireAdmin } from '@/lib/theone/security/api-guard';
 
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ approvalId: string }> }
 ) {
+  const guard = requireAdmin(req);
+  if (!guard.allowed) return guard.response;
+
   try {
     const body = await req.json().catch(() => ({}));
     const { approvalId } = await params;

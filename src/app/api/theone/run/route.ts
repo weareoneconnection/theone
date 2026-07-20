@@ -2,11 +2,17 @@ import { runTheOne } from '@/lib/theone/orchestrator';
 import { saveRunResult } from '@/lib/theone/state/run-store';
 import { routeRunToApp, runUnifiedAppRoute } from '@/lib/theone/apps/run-app-router';
 import type { TheOneMode } from '@/lib/theone/types';
+import { inputTooLarge, rateLimit } from '@/lib/theone/security/api-guard';
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, { key: 'run', limit: 30, windowMs: 60_000 });
+  if (!limited.allowed) return limited.response;
+
   try {
     const body = await req.json();
     const raw = String(body.input ?? '');
+    const tooLarge = inputTooLarge(raw);
+    if (tooLarge) return tooLarge;
     const mode = (body.mode || 'assist') as TheOneMode;
     const appRoute = routeRunToApp(raw);
 

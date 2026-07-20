@@ -4,6 +4,7 @@ import { THEONE_CONFIG } from './config';
 import { canSubmitExternalTasks, evaluatePlanPolicy } from './policy/approval-policy';
 import { buildPlan } from './planners/buildPlan';
 import { validatePlan } from './planners/validatePlan';
+import { refinePlanWithLLM } from './planners/refinePlan';
 import { routeIntent } from './router';
 import { runSkillWorkflow } from './skills/runtime';
 import { createRunId } from './runtime';
@@ -104,7 +105,10 @@ export async function runTheOne(input: IntentInput): Promise<TheOneRunResult> {
     const intent = normalizeIntent(rawIntent);
     bus.emit({ type: 'intent.classified', payload: intent });
 
-    const basePlan = validatePlan(buildPlan(intent));
+    const rulePlan = validatePlan(buildPlan(intent));
+    // LLM planner pass: may restructure the rule-generated plan; falls back to it on any failure.
+    const refinement = await refinePlanWithLLM({ intent, plan: rulePlan });
+    const basePlan = refinement.plan;
     const memoryContext = await queryMemoryGraph({
       query: intent.objective,
       intentType: intent.type,
@@ -114,6 +118,9 @@ export async function runTheOne(input: IntentInput): Promise<TheOneRunResult> {
     const plan: ExecutionPlan = {
       ...basePlan,
       memoryContext,
+      ...(refinement.refined
+        ? { summary: `${basePlan.summary} (LLM-refined: ${refinement.reason || 'plan restructured'})` }
+        : {}),
     };
     bus.emit({ type: 'plan.created', payload: plan });
 

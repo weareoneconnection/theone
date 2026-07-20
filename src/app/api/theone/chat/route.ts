@@ -3,6 +3,7 @@ import { saveRunResult } from '@/lib/theone/state/run-store';
 import { saveChatSessionSnapshot, type TheOneChatAttachment } from '@/lib/theone/state/chat-session-store';
 import { attachCodeMission } from '@/lib/theone/code/code-mission';
 import type { TheOneMode } from '@/lib/theone/types';
+import { rateLimit } from '@/lib/theone/security/api-guard';
 
 type ChatRole = 'user' | 'assistant' | 'system';
 
@@ -259,6 +260,9 @@ function publicChatFailure(error: unknown) {
 }
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, { key: 'chat', limit: 60, windowMs: 60_000 });
+  if (!limited.allowed) return limited.response;
+
   try {
     const body = await req.json();
     const contextMessage = normalizeContextMessage(body.context);

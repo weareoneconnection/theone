@@ -676,6 +676,7 @@ function buildObjectiveAssessment(input: {
   runtimeError: string | null;
   approvalGated: boolean;
   documentRuntime: ReturnType<typeof buildDocumentRuntime>;
+  codeRuntime: ReturnType<typeof buildCodeRuntime>;
   oneclawRun: OneClawTaskRun | null;
   oneclawTask: OneClawTask | null;
 }) {
@@ -683,8 +684,11 @@ function buildObjectiveAssessment(input: {
   const documentFailed = input.documentRuntime?.status === 'failed';
   const documentDone = !documentFailed && (input.documentRuntime?.status === 'report_ready' || input.documentRuntime?.status === 'artifact_ready');
   const workerDone = Boolean(input.oneclawRun && !input.runtimeError);
-  const directAnswer = !input.oneclawTask && hasAnswer;
-  const satisfied = Boolean(!documentFailed && !input.runtimeError && !input.approvalGated && (documentDone || workerDone || directAnswer));
+  const codeArtifacts = Array.isArray(input.codeRuntime?.artifacts) ? input.codeRuntime.artifacts : [];
+  const codeDelivered = input.codeRuntime?.delivery?.ready === true;
+  const codeDraftReady = codeArtifacts.length > 0 && !codeDelivered;
+  const directAnswer = !input.oneclawTask && hasAnswer && !codeDraftReady;
+  const satisfied = Boolean(!documentFailed && !input.runtimeError && !input.approvalGated && (documentDone || workerDone || codeDelivered || directAnswer));
 
   return {
     schemaVersion: 'theone.objective_assessment.v1',
@@ -694,6 +698,8 @@ function buildObjectiveAssessment(input: {
       ? 'The requested outcome has a usable answer or worker result.'
       : input.approvalGated
         ? 'The workflow is prepared, but a human approval is required before execution.'
+        : codeDraftReady
+          ? 'Code drafts are ready for review, but they have not been applied, tested, verified, or delivered.'
         : documentFailed
           ? `The document source is not available: ${input.documentRuntime?.failureReason || 'source file could not be read.'}`
         : input.runtimeError
@@ -702,10 +708,13 @@ function buildObjectiveAssessment(input: {
     evidence: [
       documentDone ? 'Attachment content was read and converted into a report.' : null,
       workerDone ? 'OneClaw returned a worker receipt.' : null,
+      codeDraftReady ? 'Generated code artifacts are ready for review.' : null,
+      codeDelivered ? 'The code delivery package is ready.' : null,
       directAnswer ? 'TheOne answered directly without external execution.' : null,
     ].filter(Boolean),
     gaps: [
       input.approvalGated ? 'Approval is still waiting.' : null,
+      codeDraftReady ? 'The generated files have not been applied to a workspace, tested, or verified.' : null,
       documentFailed ? input.documentRuntime?.failureReason || 'The document source could not be read.' : null,
       input.runtimeError ? input.runtimeError : null,
       !hasAnswer ? 'No final readable answer was produced yet.' : null,
@@ -714,6 +723,8 @@ function buildObjectiveAssessment(input: {
       ? 'Use the result, ask a follow-up, save it, or export it.'
       : input.approvalGated
         ? 'Approve, reject, or ask TheOne to revise the task.'
+        : codeDraftReady
+          ? 'Review the generated files, select a workspace, then apply and test the change.'
         : documentFailed
           ? 'Re-upload the file and retry the report.'
         : input.runtimeError
@@ -892,6 +903,8 @@ const generatedCodeExtensions: Record<string, string> = {
   cs: 'cs',
   csharp: 'cs',
   css: 'css',
+  dotenv: 'env',
+  env: 'env',
   go: 'go',
   html: 'html',
   java: 'java',
@@ -901,6 +914,7 @@ const generatedCodeExtensions: Record<string, string> = {
   json: 'json',
   kotlin: 'kt',
   php: 'php',
+  plaintext: 'txt',
   py: 'py',
   python: 'py',
   ruby: 'rb',
@@ -909,16 +923,62 @@ const generatedCodeExtensions: Record<string, string> = {
   shell: 'sh',
   sql: 'sql',
   swift: 'swift',
+  text: 'txt',
   toml: 'toml',
   ts: 'ts',
   tsx: 'tsx',
   typescript: 'ts',
+  txt: 'txt',
   yaml: 'yaml',
   yml: 'yml',
 };
 
+function normalizeGeneratedFileName(value: string) {
+  const cleaned = value.trim().replace(/^["'`“”]+|["'`“”]+$/g, '');
+  if (!cleaned || cleaned.includes('/') || cleaned.includes('\\') || cleaned.includes('..')) return null;
+  if (cleaned === '.env') return '.env.example';
+  if (!/^(?:\.env(?:\.[A-Za-z0-9_-]+)?|[A-Za-z0-9_.-]+\.[A-Za-z0-9]+)$/.test(cleaned)) return null;
+  return cleaned;
+}
+
+function explicitGeneratedFileName(summary: string, fenceIndex: number) {
+  const prefix = summary.slice(Math.max(0, fenceIndex - 320), fenceIndex);
+  const lines = prefix
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-6)
+    .reverse();
+
+  for (const line of lines) {
+    if (!/(创建|新建|create|file|保存为|save as)/i.test(line)) continue;
+    const backtickMatches = Array.from(line.matchAll(/`([^`]+)`/g)).reverse();
+    for (const match of backtickMatches) {
+      const normalized = normalizeGeneratedFileName(match[1]);
+      if (normalized) return normalized;
+    }
+    const plainMatch = line.match(/(?:^|\s)(\.env(?:\.[\w-]+)?|[\w.-]+\.[A-Za-z0-9]+)(?=\s|[:：]|$)/);
+    const normalized = normalizeGeneratedFileName(plainMatch?.[1] || '');
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
 function generatedCodeFileName(language: string, content: string, index: number) {
   const normalized = language.toLowerCase();
+  if (
+    ['text', 'txt', 'plaintext'].includes(normalized) &&
+    /(?:^|\n)\s*[A-Za-z0-9_.-]+(?:\[[^\]]+\])?\s*(?:==|~=|>=|<=)\s*[^\s]+/m.test(content)
+  ) {
+    return 'requirements.txt';
+  }
+  if (
+    ['env', 'dotenv'].includes(normalized) ||
+    (['text', 'txt', 'plaintext'].includes(normalized) &&
+      /(?:^|\n)\s*[A-Z][A-Z0-9_]*\s*=\s*\S*/m.test(content))
+  ) {
+    return '.env.example';
+  }
   if ((normalized === 'python' || normalized === 'py') && /(telegram\.ext|ApplicationBuilder|run_polling)/.test(content)) {
     return 'bot.py';
   }
@@ -961,7 +1021,9 @@ function extractGeneratedCodeArtifacts(summary: string) {
     const language = (match[1] || '').toLowerCase();
     const content = match[2].replace(/\s+$/, '');
     if (!content || !generatedCodeExtensions[language]) continue;
-    let fileName = generatedCodeFileName(language, content, artifacts.length);
+    let fileName =
+      explicitGeneratedFileName(summary, match.index) ||
+      generatedCodeFileName(language, content, artifacts.length);
     if (names.has(fileName)) {
       const extensionIndex = fileName.lastIndexOf('.');
       fileName = extensionIndex > 0
@@ -3412,6 +3474,7 @@ export async function runTheOneChatRuntime(input: TheOneChatRuntimeInput): Promi
     runtimeError,
     approvalGated,
     documentRuntime,
+    codeRuntime,
     oneclawRun,
     oneclawTask,
   });

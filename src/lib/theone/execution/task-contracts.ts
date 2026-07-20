@@ -87,6 +87,22 @@ export function normalizeOneClawTaskContract(input: {
       nextStepInput.workspacePath = taskWorkspacePath;
     }
 
+    // Agent-engine handoff: a patch apply without planner-generated files[]
+    // needs an objective so OneClaw runs the coding-agent loop instead of
+    // rejecting the step.
+    if (step.action === 'code.patch.apply') {
+      const hasFiles = [nextStepInput.files, nextStepInput.changes, nextStepInput.patchFiles]
+        .some((value) => Array.isArray(value) && value.length > 0);
+      if (!hasFiles && !textValue(nextStepInput.objective)) {
+        const objective = firstText(nextStepInput.goal, input.intent.objective);
+        if (objective) {
+          repaired = true;
+          repairs.push(`${step.id}.input.objective`);
+          nextStepInput.objective = objective;
+        }
+      }
+    }
+
     if (step.action === 'social.post') {
       const content = inferSocialContent({
         stepInput: nextStepInput,

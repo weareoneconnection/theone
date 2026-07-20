@@ -696,3 +696,84 @@ export async function runOneAI<T = unknown>(payload: OneAIGeneratePayload): Prom
     },
   };
 }
+
+// ── Embedding ─────────────────────────────────────────────────────────────────
+
+export type EmbeddingResult = {
+  embedding: number[];
+  model: string;
+  mock: boolean;
+};
+
+function mockEmbedding(text: string): number[] {
+  // Deterministic pseudo-embedding for offline/mock mode (128-dim)
+  const seed = Array.from(text.slice(0, 128)).reduce((acc, c) => acc + c.charCodeAt(0), 0);
+  return Array.from({ length: 128 }, (_, i) => Math.sin(seed * (i + 1) * 0.1) * 0.5 + 0.5);
+}
+
+function getEmbeddingProviderConfig() {
+  return {
+    baseUrl: String(process.env.EMBEDDING_API_URL || '').trim().replace(/\/$/, ''),
+    apiKey: String(process.env.EMBEDDING_API_KEY || '').trim(),
+    model: String(process.env.EMBEDDING_MODEL || 'text-embedding-3-small').trim(),
+  };
+}
+
+// Dedicated OpenAI-compatible embedding endpoint (POST {baseUrl}/embeddings).
+async function embedViaProvider(text: string): Promise<EmbeddingResult | null> {
+  const { baseUrl, apiKey, model } = getEmbeddingProviderConfig();
+  if (!baseUrl || !apiKey) return null;
+
+  try {
+    const res = await fetch(`${baseUrl}/embeddings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model, input: text.slice(0, 8000) }),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const json = await res.json() as { data?: { embedding?: number[] }[]; model?: string };
+    const embedding = json.data?.[0]?.embedding;
+    if (!Array.isArray(embedding) || embedding.length === 0) return null;
+    return { embedding, model: json.model ?? model, mock: false };
+  } catch {
+    return null;
+  }
+}
+
+export async function embedText(text: string): Promise<EmbeddingResult> {
+  const viaProvider = await embedViaProvider(text);
+  if (viaProvider) return viaProvider;
+
+  const { baseUrl, apiKey } = getOneAIConfig();
+
+  if (!apiKey) {
+    return { embedding: mockEmbedding(text), model: 'mock', mock: true };
+  }
+
+  try {
+    const res = await fetch(`${baseUrl}/v1/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
+      body: JSON.stringify({ text: text.slice(0, 8000) }),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (!res.ok) {
+      return { embedding: mockEmbedding(text), model: 'mock-fallback', mock: true };
+    }
+
+    const json = await res.json() as { embedding?: number[]; vector?: number[]; data?: { embedding?: number[] }[]; model?: string };
+    const embedding = json.embedding ?? json.vector ?? json.data?.[0]?.embedding;
+
+    if (!Array.isArray(embedding) || embedding.length === 0) {
+      return { embedding: mockEmbedding(text), model: 'mock-fallback', mock: true };
+    }
+
+    return { embedding, model: json.model ?? 'oneai-embed', mock: false };
+  } catch {
+    return { embedding: mockEmbedding(text), model: 'mock-error', mock: true };
+  }
+}

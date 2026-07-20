@@ -1,9 +1,9 @@
-import { ensureTheOneDatabase, prisma } from '../db/prisma';
+import { embeddingDimension, ensureTheOneDatabase, isPgVectorAvailable, prisma } from '../db/prisma';
 import { recordTheOneEvent } from '../events/event-ledger';
 import { computeExecutionStats } from '../metrics';
 import { normalizeOneClawTaskContract } from '../execution/task-contracts';
 import { canSubmitExternalTasks } from '../policy/approval-policy';
-import { extractOneAIData, runOneAI } from '../providers/oneai';
+import { extractOneAIData, runOneAI, embedText } from '../providers/oneai';
 import { getOneClawTask, runOneClawTask } from '../providers/oneclaw';
 import { normalizeWorkerReceipt, receiptForTheOne, receiptFromOneClawRun } from '../providers/receipts';
 import { createExecutionRecord, createWorkflowTrace, markApprovalBlockedSteps } from '../runtime/workflow-runtime';
@@ -523,16 +523,40 @@ async function createMemory(input: {
 }) {
   try {
     await ensureTheOneDatabase();
+
+    // Generate embedding from title + summary for semantic search
+    const embeddingText = `${input.kind}: ${input.title}. ${input.summary}`.slice(0, 2000);
+    const embeddingResult = await embedText(embeddingText).catch(() => null);
+    const embeddingJson = embeddingResult ? safeStringify(embeddingResult.embedding) : null;
+
+    const memoryId = createLedgerId('mem');
     await prisma.theOneMemory.create({
       data: {
-        id: createLedgerId('mem'),
+        id: memoryId,
         runId: input.runId,
         kind: input.kind,
         title: input.title,
         summary: input.summary,
         contentJson: input.content === undefined ? null : safeStringify(input.content),
+        embeddingJson,
       },
     });
+
+    // Populate the pgvector column so semantic search runs SQL-side.
+    if (
+      isPgVectorAvailable()
+      && embeddingResult
+      && embeddingResult.embedding.length === embeddingDimension()
+    ) {
+      const vectorLiteral = `[${embeddingResult.embedding.join(',')}]`;
+      await prisma.$executeRawUnsafe(
+        `update "TheOneMemory" set embedding = $1::vector where id = $2`,
+        vectorLiteral,
+        memoryId,
+      ).catch((error) => {
+        console.warn('[theone] pgvector write skipped:', databaseWarning(error));
+      });
+    }
   } catch (error) {
     rememberOfflineMemory(input);
     console.warn('[theone] memory stored in offline ledger:', databaseWarning(error));
@@ -992,6 +1016,69 @@ export async function resumeRun(input: { runId: string }) {
   return run;
 }
 
+// Closes the execution loop: called from the automation tick so submitted
+// OneClaw tasks are tracked to completion without a manual resume.
+export async function syncInFlightExecutions(limit = 5) {
+  try {
+    await ensureTheOneDatabase();
+    const rows = await prisma.theOneExecution.findMany({
+      where: {
+        provider: 'oneclaw',
+        externalId: { not: null },
+        status: { in: ['submitted', 'running', 'pending', 'queued'] },
+      },
+      orderBy: { updatedAt: 'asc' },
+      take: Math.max(1, Math.min(limit, 20)),
+      select: { runId: true },
+    });
+
+    const runIds = Array.from(new Set(rows.map((row) => row.runId)));
+    const synced: { runId: string; ok: boolean; error?: string }[] = [];
+    for (const runId of runIds) {
+      try {
+        await syncRunExecution({ runId });
+        synced.push({ runId, ok: true });
+      } catch (error) {
+        synced.push({ runId, ok: false, error: error instanceof Error ? error.message : 'sync failed' });
+      }
+    }
+    return { ok: true, checked: runIds.length, synced };
+  } catch (error) {
+    console.warn('[theone] in-flight execution sync skipped:', databaseWarning(error));
+    return { ok: false, checked: 0, synced: [] };
+  }
+}
+
+// Memory lifecycle: decay importance over time and archive stale low-value
+// memories instead of deleting them. Called from the automation tick.
+export async function decayMemories() {
+  try {
+    await ensureTheOneDatabase();
+
+    // Gentle global decay so unaccessed memories drift down (floor 0.05).
+    await prisma.$executeRawUnsafe(
+      `update "TheOneMemory" set importance = greatest(0.05, importance - 0.01) where archived = false`,
+    );
+
+    // Archive: older than 30 days, never retrieved, low importance.
+    const cutoff = new Date(Date.now() - 30 * 24 * 3_600_000);
+    const archived = await prisma.theOneMemory.updateMany({
+      where: {
+        archived: false,
+        createdAt: { lt: cutoff },
+        accessCount: 0,
+        importance: { lt: 0.3 },
+      },
+      data: { archived: true },
+    });
+
+    return { ok: true, archived: archived.count };
+  } catch (error) {
+    console.warn('[theone] memory decay skipped:', databaseWarning(error));
+    return { ok: false, archived: 0 };
+  }
+}
+
 export async function listRuns(limit = 20) {
   try {
     await ensureTheOneDatabase();
@@ -1178,6 +1265,18 @@ export async function listMemory(limit = 50) {
   }
 }
 
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0;
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom === 0 ? 0 : dot / denom;
+}
+
 export async function queryMemoryGraph(input: {
   query: string;
   intentType?: string;
@@ -1190,23 +1289,41 @@ export async function queryMemoryGraph(input: {
     ...(input.capabilities || []),
   ]);
 
+  // Generate query embedding for semantic scoring (best-effort, non-blocking)
+  const queryEmbedding = await embedText(input.query.slice(0, 2000)).then((r) => r.embedding).catch(() => null);
+
   try {
     await ensureTheOneDatabase();
+
+    // SQL-side nearest-neighbor similarity via pgvector, when available.
+    const vectorSimilarity = new Map<string, number>();
+    if (isPgVectorAvailable() && queryEmbedding && queryEmbedding.length === embeddingDimension()) {
+      const vectorLiteral = `[${queryEmbedding.join(',')}]`;
+      const vecRows = await prisma.$queryRawUnsafe<{ id: string; similarity: number }[]>(
+        `select id, 1 - (embedding <=> $1::vector) as similarity
+         from "TheOneMemory"
+         where embedding is not null
+         order by embedding <=> $1::vector
+         limit 100`,
+        vectorLiteral,
+      ).catch(() => []);
+      for (const row of vecRows) {
+        vectorSimilarity.set(row.id, Number(row.similarity) || 0);
+      }
+    }
+
     const rows = await prisma.theOneMemory.findMany({
+      where: { archived: false },
       orderBy: { createdAt: 'desc' },
       take: 200,
       include: {
         run: {
-          select: {
-            id: true,
-            intentType: true,
-            objective: true,
-          },
+          select: { id: true, intentType: true, objective: true },
         },
       },
     });
 
-    return rows
+    const hits = rows
       .map((row) => {
         const content = safeParse<Record<string, unknown> | null>(row.contentJson, null);
         const haystack = [
@@ -1217,8 +1334,27 @@ export async function queryMemoryGraph(input: {
           row.run?.objective,
           content ? JSON.stringify(content) : '',
         ].filter(Boolean).join(' ').toLowerCase();
-        const score = scoreMemoryText(haystack, terms)
+
+        const keywordScore = scoreMemoryText(haystack, terms)
           + (input.intentType && row.run?.intentType === input.intentType ? 4 : 0);
+
+        // Semantic boost: pgvector SQL similarity when available, else in-memory cosine
+        let semanticScore = 0;
+        if (vectorSimilarity.has(row.id)) {
+          semanticScore = (vectorSimilarity.get(row.id) ?? 0) * 10;
+        } else if (queryEmbedding) {
+          const storedEmbedding = safeParse<number[] | null>(
+            (row as unknown as { embeddingJson?: string | null }).embeddingJson,
+            null,
+          );
+          if (Array.isArray(storedEmbedding) && storedEmbedding.length > 0) {
+            semanticScore = cosineSimilarity(queryEmbedding, storedEmbedding) * 10;
+          }
+        }
+
+        // Important memories rank higher; importance defaults to 0.5.
+        const importance = (row as unknown as { importance?: number }).importance ?? 0.5;
+        const score = (keywordScore + semanticScore) * (0.5 + importance);
         const matchedTerms = terms.filter((term) => haystack.includes(term));
 
         return {
@@ -1236,6 +1372,16 @@ export async function queryMemoryGraph(input: {
       .filter((item) => item.score > 0)
       .sort((a, b) => b.score - a.score || b.createdAt.localeCompare(a.createdAt))
       .slice(0, limit);
+
+    // Reinforcement: retrieved memories gain access count and importance.
+    if (hits.length > 0) {
+      await prisma.theOneMemory.updateMany({
+        where: { id: { in: hits.map((hit) => hit.id) } },
+        data: { accessCount: { increment: 1 }, importance: { increment: 0.02 } },
+      }).catch(() => undefined);
+    }
+
+    return hits;
   } catch (error) {
     console.warn('[theone] memory graph using offline ledger:', databaseWarning(error));
     return offlineMemory

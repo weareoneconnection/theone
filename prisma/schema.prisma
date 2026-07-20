@@ -88,15 +88,19 @@ model TheOneProof {
 }
 
 model TheOneMemory {
-  id          String     @id @default(cuid())
-  runId       String?
-  kind        String
-  title       String
-  summary     String
-  contentJson String?
-  createdAt   DateTime   @default(now())
+  id            String     @id @default(cuid())
+  runId         String?
+  kind          String
+  title         String
+  summary       String
+  contentJson   String?
+  embeddingJson String?
+  importance    Float      @default(0.5)
+  accessCount   Int        @default(0)
+  archived      Boolean    @default(false)
+  createdAt     DateTime   @default(now())
 
-  run         TheOneRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+  run           TheOneRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
 
   @@index([runId])
   @@index([kind])

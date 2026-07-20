@@ -19,6 +19,31 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 let ensurePromise: Promise<void> | null = null;
+let pgVectorAvailable = false;
+
+export function isPgVectorAvailable() {
+  return pgVectorAvailable;
+}
+
+export function embeddingDimension() {
+  const parsed = Number.parseInt(String(process.env.EMBEDDING_DIM || '').trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 128;
+}
+
+async function ensurePgVector() {
+  const dim = embeddingDimension();
+  try {
+    await prisma.$executeRawUnsafe(`create extension if not exists vector`);
+    await prisma.$executeRawUnsafe(`alter table "TheOneMemory" add column if not exists embedding vector(${dim})`);
+    await prisma.$executeRawUnsafe(
+      `create index if not exists "TheOneMemory_embedding_idx" on "TheOneMemory" using hnsw (embedding vector_cosine_ops)`,
+    );
+    pgVectorAvailable = true;
+  } catch (error) {
+    pgVectorAvailable = false;
+    console.warn('[theone] pgvector unavailable, semantic search falls back to in-memory cosine:', error instanceof Error ? error.message : error);
+  }
+}
 
 async function ensurePostgresAuxTables() {
   await prisma.$executeRawUnsafe(`
@@ -166,6 +191,17 @@ async function ensurePostgresAuxTables() {
   await prisma.$executeRawUnsafe(`create index if not exists "TheOneLearningInsight_category_idx" on "TheOneLearningInsight"(category)`);
   await prisma.$executeRawUnsafe(`create index if not exists "TheOneLearningInsight_status_idx" on "TheOneLearningInsight"(status)`);
   await prisma.$executeRawUnsafe(`create index if not exists "TheOneLearningInsight_target_idx" on "TheOneLearningInsight"(targetType, targetId)`);
+
+  // Semantic memory column migration (idempotent)
+  await prisma.$executeRawUnsafe(`alter table "TheOneMemory" add column if not exists "embeddingJson" text`);
+
+  // Memory tiering columns (importance decay + archive instead of delete)
+  await prisma.$executeRawUnsafe(`alter table "TheOneMemory" add column if not exists importance double precision not null default 0.5`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneMemory" add column if not exists "accessCount" integer not null default 0`);
+  await prisma.$executeRawUnsafe(`alter table "TheOneMemory" add column if not exists archived boolean not null default false`);
+
+  // pgvector-based semantic search (best-effort; Neon supports it out of the box)
+  await ensurePgVector();
 }
 
 export function ensureTheOneDatabase() {
@@ -270,6 +306,10 @@ export function ensureTheOneDatabase() {
     await prisma.$executeRawUnsafe(`create index if not exists TheOneMemory_runId_idx on TheOneMemory(runId)`);
     await prisma.$executeRawUnsafe(`create index if not exists TheOneMemory_kind_idx on TheOneMemory(kind)`);
     await prisma.$executeRawUnsafe(`create index if not exists TheOneMemory_createdAt_idx on TheOneMemory(createdAt)`);
+    await prisma.$executeRawUnsafe(`alter table TheOneMemory add column if not exists embeddingJson text`);
+    await prisma.$executeRawUnsafe(`alter table TheOneMemory add column if not exists importance real not null default 0.5`);
+    await prisma.$executeRawUnsafe(`alter table TheOneMemory add column if not exists accessCount integer not null default 0`);
+    await prisma.$executeRawUnsafe(`alter table TheOneMemory add column if not exists archived boolean not null default false`);
 
     await prisma.$executeRawUnsafe(`
       create table if not exists TheOnePolicyRule (

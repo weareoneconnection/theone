@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/theone/automation/tick",
+      "schedule": "*/15 * * * *"
+    }
+  ]
+}
