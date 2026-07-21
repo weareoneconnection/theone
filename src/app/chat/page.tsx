@@ -125,6 +125,7 @@ export default function ChatPage() {
   const [busy, setBusy] = useState(false);
   const [workspace, setWorkspace] = useState<string | null>(null);
   const [mode, setMode] = useState<'manual' | 'assist' | 'auto'>('assist');
+  const [wsPicker, setWsPicker] = useState<{ open: boolean; loading: boolean; error: string; list: Array<{ path: string; name: string }> }>({ open: false, loading: false, error: '', list: [] });
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -441,6 +442,26 @@ export default function ChatPage() {
     }
   }, [attachments.length, busy, input, pushItem, runDirectStream, runPipelineStream, workspace]);
 
+  // Reading a codebase = pointing the agent at a workspace path. Browsers
+  // can't hand a local folder to a remote server, so instead we list the repos
+  // the backend actually has (its allowlisted roots) and let the user pick one.
+  const openWorkspacePicker = useCallback(async () => {
+    setWsPicker({ open: true, loading: true, error: '', list: [] });
+    try {
+      const response = await fetch('/api/theone/agent/workspaces', { cache: 'no-store' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data?.ok === false) {
+        throw new Error(data?.hint || data?.error || `HTTP ${response.status}`);
+      }
+      const list = Array.isArray(data.workspaces)
+        ? (data.workspaces as Array<{ path: string; name: string }>).map((w) => ({ path: w.path, name: w.name }))
+        : [];
+      setWsPicker({ open: true, loading: false, error: list.length ? '' : '后端没有可用的代码库。请在 ONECLAW_CODE_WORKSPACE_ALLOWLIST 里配置仓库根目录(线上还需 ONECLAW_WORKSPACE_GIT_URLS 克隆仓库)。', list });
+    } catch (error) {
+      setWsPicker({ open: true, loading: false, error: error instanceof Error ? error.message : String(error), list: [] });
+    }
+  }, []);
+
   const uploadFiles = useCallback(async (files: FileList | null) => {
     if (!files?.length || uploading) return;
     // The serverless request-body limit (~4.5MB total) rejects large uploads
@@ -537,6 +558,13 @@ export default function ChatPage() {
         .tc-attachrow { max-width: 860px; margin: 0 auto 8px; display: flex; gap: 8px; flex-wrap: wrap; }
         .tc-fold { display: block; margin-top: 8px; background: none; border: none; color: #6f9c8d; font-size: 12px; cursor: pointer; padding: 0; font-family: inherit; }
         .tc-fold:hover { color: #9fd7c2; }
+        .tc-wsoverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 20; display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; }
+        .tc-wspanel { width: 640px; max-width: 92vw; max-height: 70vh; overflow-y: auto; background: #101917; border: 1px solid #24413a; border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 6px; }
+        .tc-wshead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; color: #e6ece9; }
+        .tc-wsitem { text-align: left; background: #14201c; border: 1px solid #1c2c27; border-radius: 8px; padding: 9px 12px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
+        .tc-wsitem:hover { border-color: #2a5a48; background: #16241f; }
+        .tc-wsitem .n { color: #dfe8e4; font-size: 13.5px; }
+        .tc-wsitem .p { color: #6f8a81; font-size: 11.5px; font-family: ui-monospace, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; }
       `}</style>
 
       <header className="tc-header">
@@ -546,7 +574,9 @@ export default function ChatPage() {
             📁 {workspace}
             <button onClick={() => setWorkspace(null)} title="清除 workspace">✕</button>
           </span>
-        ) : null}
+        ) : (
+          <button className="tc-runlink" onClick={() => void openWorkspacePicker()} title="选择要让 agent 读取/修改的代码库">📂 打开代码库</button>
+        )}
         <span className="tc-modes">
           {(['manual', 'assist', 'auto'] as const).map((key) => (
             <button
@@ -572,12 +602,39 @@ export default function ChatPage() {
         <a className="tc-runlink" href="/run">任务台 ↗</a>
       </header>
 
+      {wsPicker.open ? (
+        <div className="tc-wsoverlay" onClick={() => setWsPicker((s) => ({ ...s, open: false }))}>
+          <div className="tc-wspanel" onClick={(event) => event.stopPropagation()}>
+            <div className="tc-wshead">
+              <strong>打开代码库</strong>
+              <button className="tc-runlink" onClick={() => setWsPicker((s) => ({ ...s, open: false }))}>✕</button>
+            </div>
+            {wsPicker.loading ? <div className="tc-status">正在读取后端可用仓库…</div> : null}
+            {wsPicker.error ? <div className="tc-error">{wsPicker.error}</div> : null}
+            {wsPicker.list.map((ws) => (
+              <button
+                key={ws.path}
+                className="tc-wsitem"
+                onClick={() => { setWorkspace(ws.path); setWsPicker((s) => ({ ...s, open: false })); }}
+              >
+                <span className="n">📁 {ws.name}</span>
+                <span className="p">{ws.path}</span>
+              </button>
+            ))}
+            <div className="tc-status" style={{ marginTop: 8 }}>
+              选中后,直接说「帮我在这个仓库里加个功能 / 修某个 bug」即可,不用再写路径。
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="tc-scroll">
         <div className="tc-list">
           {items.length === 0 ? (
             <div className="tc-empty">
               直接聊天,或描述一个代码任务。<br />
-              任务示例:「帮我修 /app/workspaces/OneClaw/bench/fixtures/timeout-propagation 里 buildRequestOptions 忽略 timeoutMs 的 bug,跑 npm test 验证」<br />
+              <b>要让 agent 读/改代码库</b>:点顶部「📂 打开代码库」选一个仓库,然后说「帮我在这个仓库里…」。<br />
+              📎 上传只用于给单个文档/截图做分析,不是打开代码库。<br />
               说过一次 workspace 后,后续任务可以省略路径。
             </div>
           ) : null}

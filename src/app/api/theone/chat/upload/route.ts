@@ -6,7 +6,6 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { inflateRawSync, inflateSync } from 'node:zlib';
-import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 
 export const runtime = 'nodejs';
 export const maxDuration = 30;
@@ -319,12 +318,16 @@ function extractPdfTextWithPython(filePath: string) {
   return '';
 }
 
-function importPdfJs() {
-  return pdfjs;
+// Lazy import — pdfjs-dist can crash at module load on serverless, and a
+// static top-level import takes the whole upload route down (empty-body 500).
+// Loading it only when a PDF actually needs parsing keeps every other upload
+// (images, text, spreadsheets) working even if pdfjs is broken here.
+async function importPdfJs() {
+  return import('pdfjs-dist/legacy/build/pdf.mjs');
 }
 
 async function extractPdfTextWithPdfJs(buffer: Buffer) {
-  const pdfjs = importPdfJs();
+  const pdfjs = await importPdfJs();
 
   const task = pdfjs.getDocument({
     data: new Uint8Array(buffer),
