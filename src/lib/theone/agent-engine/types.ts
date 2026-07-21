@@ -53,7 +53,18 @@ export type AgentRunResult = {
   // Soft verification gate: true only when the run completed AND at least one
   // verification-looking command (test/lint/build/typecheck) was executed.
   verified: boolean;
+  // PR-only delivery outcome, present when the run was asked to deliver.
+  delivery?: AgentDelivery;
   error?: string;
+};
+
+export type AgentDelivery = {
+  attempted: boolean;
+  ok: boolean;
+  branch?: string;
+  prUrl?: string;
+  commit?: string;
+  message: string;
 };
 
 // TheOne governance contract: one receipt per agent run, returned to the
@@ -71,6 +82,7 @@ export type AgentReceipt = {
   verified: boolean;
   diffStat: string;
   diff: string;
+  delivery?: AgentDelivery;
   startedAt: string;
   finishedAt: string;
 };
@@ -92,6 +104,10 @@ export type AgentTask = {
   signal?: AbortSignal;
   // Called after each event is recorded — lets the runtime stream progress.
   onEvent?: (event: AgentEvent) => void;
+  // PR-only auto-delivery: after a verified run, commit onto a fresh
+  // theone-agent/* branch, push it, and open a pull request. Never pushes a
+  // protected branch and never merges — merging stays a human action.
+  deliver?: boolean;
 };
 
 export type AgentSessionState = {

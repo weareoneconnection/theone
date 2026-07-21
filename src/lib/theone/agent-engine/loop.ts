@@ -2,6 +2,8 @@ import { anthropicLLMClient, getAgentEngineConfig } from './llm-client';
 import { buildSystemPrompt } from './system-prompt';
 import { executeTool } from './tools';
 import { diffAgainstSnapshot, snapshotWorkspace } from './workspace';
+import { buildRepoOverview } from './repo-overview';
+import { deliverAsPullRequest } from './git-deliver';
 import type {
   AgentEvent,
   AgentMessage,
@@ -88,10 +90,15 @@ export async function runAgentTask(
     log('turn', snapshotCommit ? `Workspace snapshot: ${snapshotCommit.slice(0, 12)}` : 'Workspace snapshot unavailable (not a git repo)');
   }
 
+  // Codex-style bird's-eye view, generated once and injected up front.
+  const repoOverview = await buildRepoOverview(task.workspace).catch(() => '');
+  if (repoOverview) log('turn', `Repo overview ready (${repoOverview.split('\n').length} lines).`);
+
   const system = buildSystemPrompt({
     workspace: task.workspace,
     objective: task.objective,
     priorContext: task.priorContext,
+    repoOverview,
   });
   let messages: AgentMessage[] = [{ role: 'user', content: task.objective }];
   const usage = {
@@ -191,6 +198,28 @@ export async function runAgentTask(
     if (!completedRun.verified) {
       log('done', 'Verification gate: no test/lint/build/typecheck command was run — receipt marked unverified.');
     }
+
+    // PR-only delivery: only after a verified completion, and only if asked.
+    if (task.deliver && completedRun.verified && state.editedFiles.size > 0) {
+      log('turn', 'Delivering: committing to a new branch and opening a pull request…');
+      const delivery = await deliverAsPullRequest({
+        workspace: task.workspace,
+        objective: task.objective,
+        title: finalText ? finalText.split('\n')[0].slice(0, 72) : undefined,
+      }).catch((error) => ({
+        ok: false,
+        message: `Delivery threw: ${error instanceof Error ? error.message : String(error)}`,
+      }));
+      completedRun.delivery = { attempted: true, ...delivery };
+      log(delivery.ok ? 'done' : 'error', delivery.message);
+    } else if (task.deliver && !completedRun.verified) {
+      completedRun.delivery = {
+        attempted: false,
+        ok: false,
+        message: 'Delivery skipped: the run was not verified (no test/lint/build ran). Nothing was pushed.',
+      };
+      log('done', completedRun.delivery.message);
+    }
     return completedRun;
   } catch (error) {
     log('error', error instanceof Error ? error.message : String(error));
@@ -226,6 +255,7 @@ export async function buildAgentReceipt(
     verified: result.verified,
     diffStat: diff.diffStat,
     diff: diff.diff,
+    delivery: result.delivery,
     startedAt: timing.startedAt,
     finishedAt: timing.finishedAt,
   };
