@@ -443,14 +443,41 @@ export default function ChatPage() {
 
   const uploadFiles = useCallback(async (files: FileList | null) => {
     if (!files?.length || uploading) return;
+    // The serverless request-body limit (~4.5MB total) rejects large uploads
+    // before the route runs, surfacing as an opaque 500. Catch it here with a
+    // clear message instead. Leave headroom for multipart overhead.
+    const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+    const picked = Array.from(files).slice(0, 8);
+    const total = picked.reduce((sum, file) => sum + file.size, 0);
+    const oversized = picked.find((file) => file.size > MAX_UPLOAD_BYTES);
+    if (oversized || total > MAX_UPLOAD_BYTES) {
+      const mb = ((oversized?.size ?? total) / 1024 / 1024).toFixed(1);
+      pushItem({
+        id: nextId(),
+        kind: 'error',
+        text: `文件过大(${mb}MB)。上传上限约 4MB。请压缩、拆分,或直接把文本粘贴到对话里(粘贴的长文本会自动折叠)。`,
+      });
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
     setUploading(true);
     try {
       const form = new FormData();
-      Array.from(files).slice(0, 8).forEach((file) => form.append('files', file));
+      picked.forEach((file) => form.append('files', file));
       const response = await fetch('/api/theone/chat/upload', { method: 'POST', body: form });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || data?.ok === false) throw new Error(data?.error || `upload failed (${response.status})`);
-      const uploaded = Array.isArray(data.attachments) ? data.attachments as ChatAttachment[] : [];
+      // A framework-level rejection has no JSON body; fall back to text so the
+      // real reason (size, timeout) is not hidden behind a generic 500.
+      const raw = await response.text();
+      let data: { ok?: boolean; error?: string; attachments?: ChatAttachment[] } = {};
+      try { data = raw ? JSON.parse(raw) : {}; } catch { /* non-JSON error body */ }
+      if (!response.ok || data?.ok === false) {
+        const detail = data?.error
+          || (response.status === 413 ? '文件超过服务端上限(约 4MB)。' : '')
+          || (raw && raw.length < 200 ? raw : `服务端返回 ${response.status}`);
+        throw new Error(detail);
+      }
+      const uploaded = Array.isArray(data.attachments) ? data.attachments : [];
       setAttachments((current) => [...current, ...uploaded].slice(0, 8));
     } catch (error) {
       pushItem({ id: nextId(), kind: 'error', text: `上传失败:${error instanceof Error ? error.message : String(error)}` });

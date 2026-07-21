@@ -617,9 +617,23 @@ function unsupportedLegacySpreadsheetReason(name: string) {
 }
 
 export async function POST(req: Request) {
+  let form: FormData;
   try {
-    const form = await req.formData();
-    const files = form.getAll('files').filter((item): item is File => item instanceof File).slice(0, MAX_FILES);
+    form = await req.formData();
+  } catch (error) {
+    // Body too large or malformed multipart — the platform may also reject
+    // this before we run, but when it reaches us, say why.
+    const message = errorMessage(error, 'Could not read the uploaded files.');
+    const tooLarge = /body|size|large|limit|413/i.test(message);
+    return Response.json({
+      ok: false,
+      error: tooLarge
+        ? 'Upload exceeds the request size limit (about 4MB on serverless). Compress or split the file, or paste the text into chat instead.'
+        : message,
+    }, { status: tooLarge ? 413 : 400 });
+  }
+  try {
+    const files = (form as FormData).getAll('files').filter((item): item is File => item instanceof File).slice(0, MAX_FILES);
     const uploadDir = uploadDirectory();
     let uploadDirError = '';
     try {
