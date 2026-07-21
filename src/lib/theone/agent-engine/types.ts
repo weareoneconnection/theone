@@ -2,7 +2,7 @@
 // Tool schemas deliberately mirror Claude Code's observable tool behavior
 // (Read/Edit/Bash/Grep-Glob) so the model's training priors apply directly.
 
-export type ToolName = "read_file" | "edit_file" | "bash" | "search" | "write_file" | "multi_edit" | "web_fetch";
+export type ToolName = "read_file" | "edit_file" | "bash" | "search" | "write_file" | "multi_edit" | "web_fetch" | "read_image";
 
 export type ToolCall = {
   id: string;
@@ -10,10 +10,15 @@ export type ToolCall = {
   input: Record<string, unknown>;
 };
 
+export type ToolImage = { mediaType: string; data: string };
+
 export type ToolResult = {
   toolCallId: string;
   ok: boolean;
   output: string;
+  // Vision: images returned to the model as base64 blocks (e.g. a screenshot
+  // the agent read to debug UI). Sent as image content in the tool_result.
+  images?: ToolImage[];
 };
 
 export type AgentMessage =

@@ -126,7 +126,25 @@ export const TOOL_DEFINITIONS = [
       required: ["url"],
     },
   },
+  {
+    name: "read_image",
+    description: "Reads an image file (png/jpg/jpeg/gif/webp) from the workspace and returns it so you can see it — e.g. a screenshot of a bug, a design mockup, or a chart. Use this instead of read_file for images.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        file_path: { type: "string", description: "Path to the image, relative to the workspace root" },
+      },
+      required: ["file_path"],
+    },
+  },
 ];
+
+const IMAGE_MEDIA_TYPES: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp",
+};
+// The Messages API rejects images much larger than this; fail early with a
+// clear message rather than a 400.
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -369,6 +387,24 @@ async function runWebFetch(input: Record<string, unknown>): Promise<string> {
 
 const MUTATING_TOOLS = new Set<string>(["edit_file", "write_file", "multi_edit"]);
 
+async function runImage(state: AgentSessionState, input: Record<string, unknown>): Promise<{ output: string; images: Array<{ mediaType: string; data: string }> }> {
+  const filePath = asString(input.file_path);
+  if (!filePath) throw new Error("file_path is required");
+  const ext = filePath.split(".").pop()?.toLowerCase() || "";
+  const mediaType = IMAGE_MEDIA_TYPES[ext];
+  if (!mediaType) throw new Error(`Unsupported image type: .${ext}. Supported: png, jpg, jpeg, gif, webp.`);
+  const resolved = resolveWorkspacePath(state.workspace, filePath);
+  const buffer = await fs.readFile(resolved);
+  if (buffer.length > MAX_IMAGE_BYTES) {
+    throw new Error(`Image is ${buffer.length} bytes, over the ${MAX_IMAGE_BYTES}-byte limit. Downsize it first.`);
+  }
+  state.readFiles.add(resolved);
+  return {
+    output: `Loaded image ${filePath} (${mediaType}, ${buffer.length} bytes).`,
+    images: [{ mediaType, data: buffer.toString("base64") }],
+  };
+}
+
 export async function executeTool(state: AgentSessionState, call: ToolCall): Promise<ToolResult> {
   try {
     // Plan mode refuses file mutations so the run stays a read-only proposal.
@@ -378,6 +414,11 @@ export async function executeTool(state: AgentSessionState, call: ToolCall): Pro
         ok: false,
         output: `ERROR: ${call.name} is disabled in plan mode. Explore with read_file/search/web_fetch, then finish with a step-by-step plan (no changes).`,
       };
+    }
+    // read_image returns image blocks, not just text.
+    if (call.name === "read_image") {
+      const result = await runImage(state, call.input);
+      return { toolCallId: call.id, ok: true, output: result.output, images: result.images };
     }
     let output: string;
     switch (call.name) {

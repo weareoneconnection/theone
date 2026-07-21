@@ -105,6 +105,29 @@ describe('new tools (write / multi_edit / web_fetch)', () => {
     expect((await call(s, 'web_fetch', { url: 'https://169.254.169.254/latest/meta-data' })).output).toMatch(/private|internal/);
     expect((await call(s, 'web_fetch', { url: 'https://10.0.0.5/' })).output).toMatch(/private|internal/);
   });
+
+  it('read_image returns a base64 image block for a real png', async () => {
+    // Smallest valid 1x1 PNG.
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    await fs.writeFile(path.join(workspace, 'shot.png'), png);
+    const s = state();
+    const result = await call(s, 'read_image', { file_path: 'shot.png' });
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain('image/png');
+    expect(result.images?.[0]?.mediaType).toBe('image/png');
+    expect(result.images?.[0]?.data).toBe(png.toString('base64'));
+  });
+
+  it('read_image rejects unsupported file types', async () => {
+    await fs.writeFile(path.join(workspace, 'notes.txt'), 'hello');
+    const s = state();
+    const result = await call(s, 'read_image', { file_path: 'notes.txt' });
+    expect(result.ok).toBe(false);
+    expect(result.output).toMatch(/Unsupported image type/);
+  });
 });
 
 describe('deliverAsPullRequest safety rails', () => {
