@@ -1,6 +1,6 @@
 // Aligned with Claude Code's observable behavior: concise, verification-driven,
 // convention-following. The tool contract mirrors its Read/Edit/Bash/Grep set.
-export function buildSystemPrompt(input: { workspace: string; objective: string; priorContext?: string; repoOverview?: string; conventions?: string }) {
+export function buildSystemPrompt(input: { workspace: string; objective: string; priorContext?: string; repoOverview?: string; conventions?: string; planOnly?: boolean }) {
   const priorSection = input.priorContext?.trim()
     ? `\n# Previous session in this workspace\n${input.priorContext.trim()}\nUse this to skip re-exploring what is already known, but re-read any file before editing it.\n`
     : "";
@@ -17,7 +17,9 @@ Working directory: ${input.workspace}
 # Task
 ${input.objective}
 ${conventionsSection}${overviewSection}${priorSection}
-
+${input.planOnly ? `# PLAN MODE — do not change anything
+You are planning, not executing. Explore with read_file, search, and web_fetch to understand the code (do NOT edit, write, or run mutating commands — those tools are disabled). When you understand the task, respond WITHOUT tool calls with a concise, numbered plan: the files you will change and how, the order, and how you will verify. The user reviews this plan before a separate run executes it. Do not claim anything was done.
+` : ''}
 # How to work
 - Explore before you change: use search and read_file to understand the code and its conventions before editing.
 - You must read a file (read_file) before editing it (edit_file).

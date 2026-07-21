@@ -88,6 +88,9 @@ export type AgentTask = {
   // theone-agent/* branch, push it, and open a pull request. Never pushes a
   // protected branch and never merges — merging stays a human action.
   deliver?: boolean;
+  // Plan mode: the agent explores and returns a step-by-step plan without
+  // changing any files. Nothing is delivered. Run again without it to execute.
+  planOnly?: boolean;
 };
 
 export type AgentSessionState = {
@@ -96,6 +99,9 @@ export type AgentSessionState = {
   readFiles: Set<string>;
   editedFiles: Set<string>;
   commands: string[];
+  // Plan mode: exploration only. Mutating tools are refused so the run
+  // produces a plan the user approves before anything changes.
+  planMode?: boolean;
 };
 
 export type LLMResponse = {

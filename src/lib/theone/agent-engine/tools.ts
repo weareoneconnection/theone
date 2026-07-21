@@ -367,8 +367,18 @@ async function runWebFetch(input: Record<string, unknown>): Promise<string> {
   return `Fetched ${response.url} (${contentType.split(";")[0] || "unknown"}):\n\n${clipped}`;
 }
 
+const MUTATING_TOOLS = new Set<string>(["edit_file", "write_file", "multi_edit"]);
+
 export async function executeTool(state: AgentSessionState, call: ToolCall): Promise<ToolResult> {
   try {
+    // Plan mode refuses file mutations so the run stays a read-only proposal.
+    if (state.planMode && MUTATING_TOOLS.has(call.name)) {
+      return {
+        toolCallId: call.id,
+        ok: false,
+        output: `ERROR: ${call.name} is disabled in plan mode. Explore with read_file/search/web_fetch, then finish with a step-by-step plan (no changes).`,
+      };
+    }
     let output: string;
     switch (call.name) {
       case "read_file": output = await runRead(state, call.input); break;

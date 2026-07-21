@@ -285,6 +285,30 @@ describe('agent loop', () => {
     expect(types).toContain('done');
   });
 
+  it('plan mode refuses edits and returns a plan without changing files', async () => {
+    await fs.writeFile(path.join(workspace, 'target.txt'), 'original');
+    let sawBlock = false;
+    const client: LLMClient = async ({ messages }) => {
+      const last = messages[messages.length - 1] as AgentMessage;
+      if (last.role === 'tool' && last.results.some((r) => !r.ok && r.output.includes('plan mode'))) sawBlock = true;
+      if (messages.length === 1) {
+        return {
+          text: 'Trying to edit in plan mode.',
+          toolCalls: [{ id: 'c1', name: 'edit_file', input: { file_path: 'target.txt', old_string: 'original', new_string: 'changed' } }],
+          stopReason: 'tool_use',
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      }
+      return { text: 'Plan: 1. edit target.txt 2. run tests', toolCalls: [], stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 } };
+    };
+    const result = await runAgentTask({ objective: 'Change target', workspace, snapshot: false, planOnly: true }, client);
+    expect(result.status).toBe('completed');
+    expect(sawBlock).toBe(true);
+    expect(result.editedFiles).toHaveLength(0);
+    expect(await fs.readFile(path.join(workspace, 'target.txt'), 'utf8')).toBe('original');
+    expect(result.summary).toContain('Plan');
+  });
+
   it('counts llm calls in usage', async () => {
     const client = scripted([
       {

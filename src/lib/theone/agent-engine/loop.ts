@@ -71,6 +71,7 @@ export async function runAgentTask(
     readFiles: new Set(),
     editedFiles: new Set(),
     commands: [],
+    planMode: task.planOnly === true,
   };
 
   const events: AgentEvent[] = [];
@@ -104,6 +105,7 @@ export async function runAgentTask(
     priorContext: task.priorContext,
     repoOverview,
     conventions,
+    planOnly: task.planOnly === true,
   });
   let messages: AgentMessage[] = [{ role: 'user', content: task.objective }];
   const usage = {
