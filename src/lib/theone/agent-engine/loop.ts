@@ -2,7 +2,7 @@ import { anthropicLLMClient, getAgentEngineConfig } from './llm-client';
 import { buildSystemPrompt } from './system-prompt';
 import { executeTool } from './tools';
 import { diffAgainstSnapshot, snapshotWorkspace } from './workspace';
-import { buildRepoOverview } from './repo-overview';
+import { buildRepoOverview, readProjectConventions } from './repo-overview';
 import { deliverAsPullRequest } from './git-deliver';
 import type {
   AgentEvent,
@@ -90,15 +90,20 @@ export async function runAgentTask(
     log('turn', snapshotCommit ? `Workspace snapshot: ${snapshotCommit.slice(0, 12)}` : 'Workspace snapshot unavailable (not a git repo)');
   }
 
-  // Codex-style bird's-eye view, generated once and injected up front.
-  const repoOverview = await buildRepoOverview(task.workspace).catch(() => '');
+  // Codex-style bird's-eye view + the project's own convention files.
+  const [repoOverview, conventions] = await Promise.all([
+    buildRepoOverview(task.workspace).catch(() => ''),
+    readProjectConventions(task.workspace).catch(() => ''),
+  ]);
   if (repoOverview) log('turn', `Repo overview ready (${repoOverview.split('\n').length} lines).`);
+  if (conventions) log('turn', 'Loaded project convention files.');
 
   const system = buildSystemPrompt({
     workspace: task.workspace,
     objective: task.objective,
     priorContext: task.priorContext,
     repoOverview,
+    conventions,
   });
   let messages: AgentMessage[] = [{ role: 'user', content: task.objective }];
   const usage = {

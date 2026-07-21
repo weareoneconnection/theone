@@ -1,8 +1,8 @@
-// TheOne Agent Engine — self-hosted coding agent loop.
+// TheOne Agent Engine — self-hosted coding agent loop (OneClaw runtime port).
 // Tool schemas deliberately mirror Claude Code's observable tool behavior
 // (Read/Edit/Bash/Grep-Glob) so the model's training priors apply directly.
 
-export type ToolName = 'read_file' | 'edit_file' | 'bash' | 'search';
+export type ToolName = "read_file" | "edit_file" | "bash" | "search" | "write_file" | "multi_edit" | "web_fetch";
 
 export type ToolCall = {
   id: string;
@@ -17,17 +17,17 @@ export type ToolResult = {
 };
 
 export type AgentMessage =
-  | { role: 'user'; content: string }
-  | { role: 'assistant'; content: string; toolCalls: ToolCall[] }
-  | { role: 'tool'; results: ToolResult[] };
+  | { role: "user"; content: string }
+  | { role: "assistant"; content: string; toolCalls: ToolCall[] }
+  | { role: "tool"; results: ToolResult[] };
 
 export type AgentEvent = {
-  type: 'turn' | 'tool_call' | 'tool_result' | 'text' | 'compaction' | 'done' | 'error';
+  type: "turn" | "tool_call" | "tool_result" | "text" | "compaction" | "done" | "error";
   at: string;
   detail: string;
 };
 
-export type AgentRunStatus = 'completed' | 'max_turns' | 'budget_exceeded' | 'aborted' | 'error';
+export type AgentRunStatus = "completed" | "max_turns" | "budget_exceeded" | "aborted" | "error";
 
 export type AgentUsage = {
   inputTokens: number;
@@ -67,26 +67,6 @@ export type AgentDelivery = {
   message: string;
 };
 
-// TheOne governance contract: one receipt per agent run, returned to the
-// control plane as proof of what happened (proofPolicy.receiptRequired).
-export type AgentReceipt = {
-  schemaVersion: 'theone.agent_receipt.v1';
-  status: AgentRunStatus;
-  summary: string;
-  turns: number;
-  toolCalls: number;
-  editedFiles: string[];
-  commands: string[];
-  usage: AgentUsage;
-  snapshotCommit: string | null;
-  verified: boolean;
-  diffStat: string;
-  diff: string;
-  delivery?: AgentDelivery;
-  startedAt: string;
-  finishedAt: string;
-};
-
 export type AgentTask = {
   objective: string;
   workspace: string;
@@ -121,7 +101,7 @@ export type AgentSessionState = {
 export type LLMResponse = {
   text: string;
   toolCalls: ToolCall[];
-  stopReason: 'tool_use' | 'end_turn' | 'max_tokens' | 'error';
+  stopReason: "tool_use" | "end_turn" | "max_tokens" | "error";
   usage: {
     inputTokens: number;
     outputTokens: number;
@@ -136,3 +116,23 @@ export type LLMClient = (input: {
   model: string;
   signal?: AbortSignal;
 }) => Promise<LLMResponse>;
+
+// TheOne governance contract: one receipt per agent run, returned to the
+// control plane as proof of what happened (proofPolicy.receiptRequired).
+export type AgentReceipt = {
+  schemaVersion: "theone.agent_receipt.v1";
+  status: AgentRunStatus;
+  summary: string;
+  turns: number;
+  toolCalls: number;
+  editedFiles: string[];
+  commands: string[];
+  usage: AgentUsage;
+  snapshotCommit: string | null;
+  verified: boolean;
+  diffStat: string;
+  diff: string;
+  delivery?: AgentDelivery;
+  startedAt: string;
+  finishedAt: string;
+};

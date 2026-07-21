@@ -1,19 +1,22 @@
 // Aligned with Claude Code's observable behavior: concise, verification-driven,
 // convention-following. The tool contract mirrors its Read/Edit/Bash/Grep set.
-export function buildSystemPrompt(input: { workspace: string; objective: string; priorContext?: string; repoOverview?: string }) {
+export function buildSystemPrompt(input: { workspace: string; objective: string; priorContext?: string; repoOverview?: string; conventions?: string }) {
   const priorSection = input.priorContext?.trim()
     ? `\n# Previous session in this workspace\n${input.priorContext.trim()}\nUse this to skip re-exploring what is already known, but re-read any file before editing it.\n`
-    : '';
+    : "";
   const overviewSection = input.repoOverview?.trim()
     ? `\n${input.repoOverview.trim()}\nUse this map to jump straight to the relevant files instead of scanning blindly, but still read a file before editing it.\n`
-    : '';
+    : "";
+  const conventionsSection = input.conventions?.trim()
+    ? `\n${input.conventions.trim()}\n`
+    : "";
   return `You are an autonomous software engineering agent working in a code workspace.
 
 Working directory: ${input.workspace}
 
 # Task
 ${input.objective}
-${overviewSection}${priorSection}
+${conventionsSection}${overviewSection}${priorSection}
 
 # How to work
 - Explore before you change: use search and read_file to understand the code and its conventions before editing.

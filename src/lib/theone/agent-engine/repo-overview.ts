@@ -121,6 +121,28 @@ async function readmeSummary(workspace: string): Promise<string> {
   return "";
 }
 
+// Project convention files (CLAUDE.md, AGENTS.md, .cursorrules, …) are the
+// project's own instructions — style, no-go zones, how to run things. Reading
+// them makes the agent's output look like the team wrote it.
+const CONVENTION_FILES = [
+  "CLAUDE.md", "AGENTS.md", ".cursorrules", ".cursor/rules",
+  ".github/copilot-instructions.md", "CONVENTIONS.md",
+];
+
+export async function readProjectConventions(workspace: string): Promise<string> {
+  const found: string[] = [];
+  for (const name of CONVENTION_FILES) {
+    try {
+      const raw = await readFile(path.join(workspace, name), "utf8");
+      const body = raw.trim();
+      if (body) found.push(`## ${name}\n${body.slice(0, 6_000)}`);
+    } catch { /* not present */ }
+    if (found.length >= 2) break;
+  }
+  if (!found.length) return "";
+  return `# Project conventions (follow these — they are the project's own rules)\n${found.join("\n\n")}`;
+}
+
 export async function buildRepoOverview(workspace: string): Promise<string> {
   const [files, stack, readme] = await Promise.all([
     listTrackedOrWalked(workspace),

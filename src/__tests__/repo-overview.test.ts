@@ -2,8 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildRepoOverview } from '@/lib/theone/agent-engine/repo-overview';
+import { buildRepoOverview, readProjectConventions } from '@/lib/theone/agent-engine/repo-overview';
 import { deliverAsPullRequest } from '@/lib/theone/agent-engine/git-deliver';
+import { executeTool } from '@/lib/theone/agent-engine/tools';
+import type { AgentSessionState } from '@/lib/theone/agent-engine/types';
 
 let workspace: string;
 
@@ -42,6 +44,66 @@ describe('buildRepoOverview', () => {
     await fs.writeFile(path.join(workspace, 'go.mod'), 'module demo\n\ngo 1.22\n');
     const overview = await buildRepoOverview(workspace);
     expect(overview).toContain('Go');
+  });
+});
+
+describe('readProjectConventions', () => {
+  it('reads CLAUDE.md when present', async () => {
+    await fs.writeFile(path.join(workspace, 'CLAUDE.md'), '# Rules\nAlways use tabs. Never touch /legacy.');
+    const conventions = await readProjectConventions(workspace);
+    expect(conventions).toContain('Project conventions');
+    expect(conventions).toContain('Always use tabs');
+  });
+  it('returns empty when no convention file exists', async () => {
+    expect(await readProjectConventions(workspace)).toBe('');
+  });
+});
+
+describe('new tools (write / multi_edit / web_fetch)', () => {
+  const state = (): AgentSessionState => ({ workspace, readFiles: new Set(), editedFiles: new Set(), commands: [] });
+  const call = (s: AgentSessionState, name: string, input: Record<string, unknown>) =>
+    executeTool(s, { id: `t_${Math.random().toString(36).slice(2)}`, name: name as never, input });
+
+  it('write_file creates and overwrites, tracking it as read+edited', async () => {
+    const s = state();
+    const created = await call(s, 'write_file', { file_path: 'a/b.txt', content: 'one\ntwo' });
+    expect(created.ok).toBe(true);
+    expect(await fs.readFile(path.join(workspace, 'a/b.txt'), 'utf8')).toBe('one\ntwo');
+    const over = await call(s, 'write_file', { file_path: 'a/b.txt', content: 'changed' });
+    expect(over.output).toContain('Overwrote');
+  });
+
+  it('multi_edit applies all edits atomically after read', async () => {
+    await fs.writeFile(path.join(workspace, 'm.ts'), 'const a = 1;\nconst b = 2;\n');
+    const s = state();
+    await call(s, 'read_file', { file_path: 'm.ts' });
+    const result = await call(s, 'multi_edit', { file_path: 'm.ts', edits: [
+      { old_string: 'const a = 1;', new_string: 'const a = 10;' },
+      { old_string: 'const b = 2;', new_string: 'const b = 20;' },
+    ] });
+    expect(result.ok).toBe(true);
+    expect(await fs.readFile(path.join(workspace, 'm.ts'), 'utf8')).toBe('const a = 10;\nconst b = 20;\n');
+  });
+
+  it('multi_edit writes nothing if any edit fails', async () => {
+    await fs.writeFile(path.join(workspace, 'm.ts'), 'const a = 1;\n');
+    const s = state();
+    await call(s, 'read_file', { file_path: 'm.ts' });
+    const result = await call(s, 'multi_edit', { file_path: 'm.ts', edits: [
+      { old_string: 'const a = 1;', new_string: 'const a = 10;' },
+      { old_string: 'does-not-exist', new_string: 'x' },
+    ] });
+    expect(result.ok).toBe(false);
+    // Original file is untouched.
+    expect(await fs.readFile(path.join(workspace, 'm.ts'), 'utf8')).toBe('const a = 1;\n');
+  });
+
+  it('web_fetch refuses non-https and private/internal hosts (SSRF guard)', async () => {
+    const s = state();
+    expect((await call(s, 'web_fetch', { url: 'http://example.com' })).output).toContain('https');
+    expect((await call(s, 'web_fetch', { url: 'https://localhost/x' })).output).toMatch(/private|internal/);
+    expect((await call(s, 'web_fetch', { url: 'https://169.254.169.254/latest/meta-data' })).output).toMatch(/private|internal/);
+    expect((await call(s, 'web_fetch', { url: 'https://10.0.0.5/' })).output).toMatch(/private|internal/);
   });
 });
 
